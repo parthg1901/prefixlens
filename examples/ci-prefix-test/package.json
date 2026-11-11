@@ -1,0 +1,11 @@
+{
+  "name": "prefixlens-example-ci",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "prefixlens": "file:../.."
+  }
+}
