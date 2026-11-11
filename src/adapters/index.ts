@@ -2,7 +2,9 @@
 
 import type { Fidelity, TraceRecord } from "../trace.ts"
 import { importClaudeCode } from "./claude-code.ts"
+import { importCodex } from "./codex.ts"
 import { importOpencode, listOpencodeSessions } from "./opencode.ts"
+import { importOtel } from "./otel.ts"
 
 export interface ImportOptions {
   /** Session to import, for stores that hold many sessions. */
@@ -55,6 +57,24 @@ export const ADAPTERS: Adapter[] = [
       "Usage only: hit rates and costs per model call, with causes inferred from model changes, timing, compactions, agent switches and pruned tool outputs. opencode does not log the tool list, system prompt or history each call was sent with, so no block diffs; other misses are 'cause unknown'.",
     import: importOpencode,
     list: listOpencodeSessions,
+  },
+  {
+    name: "codex",
+    fidelity: "usage-only",
+    description: "Codex CLI rollout files (rollout-<timestamp>-<uuid>.jsonl), or a directory of them (each file one session).",
+    defaultPath: "~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl",
+    diagnoses:
+      "Usage only: hit rates and costs per model response, with causes inferred from model changes, timing, compactions and collaboration-mode switches. Codex logs the history items and base instructions but not the exact request (tool list, per-call instructions), so no block diffs; other misses are 'cause unknown'. Timestamps are response ends, not request starts. Written from the record shapes in local Codex rollouts and tested on synthetic fixtures only.",
+    import: importCodex,
+  },
+  {
+    name: "otel",
+    fidelity: "usage-only",
+    description: "OpenTelemetry GenAI spans: an OTLP/JSON export, JSONL of exports, or a JSON array of spans.",
+    defaultPath: "<otlp-export>.json",
+    diagnoses:
+      "Usage only: hit rates and costs per chat span (gen_ai.usage.*), with causes inferred from model changes and timing. Content attributes are opt-in and not the exact request, so no block diffs; other misses are 'cause unknown'. Assumes input_tokens includes cached tokens, as the GenAI semantic conventions specify.",
+    import: importOtel,
   },
 ]
 
