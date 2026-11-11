@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // prefixlens command line: import harness logs into traces, and report on traces.
 
+import { stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { ADAPTERS, findAdapter } from "./adapters/index.ts"
@@ -42,10 +43,15 @@ Examples:
 type Flags = Record<string, string | true>
 
 const VALUE_FLAGS = new Set(["out", "session", "pricing", "tolerance"])
+const KNOWN_FLAGS = new Set([...VALUE_FLAGS, "list", "no-subagents", "json", "html", "all", "no-color", "help", "version"])
 const ALIASES: Record<string, string> = { o: "out", h: "help", v: "version" }
 
 export async function main(argv: string[]): Promise<number> {
   const { positionals, flags } = parseArgs(argv)
+  const unknown = Object.keys(flags).find((name) => !KNOWN_FLAGS.has(name))
+  if (unknown) return fail(`unknown option --${unknown}; run prefixlens --help`)
+  const empty = [...VALUE_FLAGS].find((name) => flags[name] === "")
+  if (empty) return fail(`--${empty} needs a value`)
   if (flags.version) {
     console.log(pkg.version)
     return 0
@@ -98,6 +104,7 @@ async function runImport(args: string[], flags: Flags): Promise<number> {
   const adapter = findAdapter(name)
   if (!adapter) return fail(`unknown adapter "${name}"; available: ${ADAPTERS.map((a) => a.name).join(", ")}`)
   const source = expandHome(input)
+  if (!(await stat(source).catch(() => undefined))) return fail(`cannot read ${input}: no such file or directory`)
   if (flags.list) {
     if (!adapter.list) return fail(`the ${adapter.name} adapter imports one session file; --list is not needed`)
     for (const session of await adapter.list(source))
@@ -109,6 +116,7 @@ async function runImport(args: string[], flags: Flags): Promise<number> {
     subagents: flags["no-subagents"] !== true,
   })
   for (const warning of result.warnings) console.error(`warning: ${warning}`)
+  if (result.records.length === 0) return fail(`no model calls with usage found in ${input}; nothing written`)
   const text = serializeTrace(result.records)
   if (typeof flags.out === "string") {
     await Bun.write(flags.out, text)
@@ -125,7 +133,11 @@ async function runReport(args: string[], flags: Flags): Promise<number> {
   if (!input) return fail("usage: prefixlens report <trace.jsonl|->")
   const text = input === "-" ? await Bun.stdin.text() : await readFile(expandHome(input))
   if (text === undefined) return fail(`cannot read ${input}`)
+  const name = input === "-" ? "stdin" : input
+  if (text.trim() === "") return fail(`${name} is empty: no trace records (did the import find any model calls?)`)
   const parsed = parseTrace(text)
+  if (parsed.records.length === 0 && !looksLikeTrace(text))
+    return fail(`${name} is not a prefixlens trace (no line has "v": 1); convert harness logs first with prefixlens import <adapter> <path>`)
   for (const error of parsed.errors.slice(0, 20)) console.error(`error: ${error}`)
   if (parsed.errors.length > 20) console.error(`error: ... ${parsed.errors.length - 20} more`)
   if (parsed.records.length === 0) return fail(parsed.errors.length > 0 ? "no valid trace records" : "the trace has no records (the import found no model calls with usage)")
@@ -154,6 +166,11 @@ async function runReport(args: string[], flags: Flags): Promise<number> {
       }),
     )
   return 0
+}
+
+// A harness log passed to `report` by mistake would otherwise print an error for every field of every line.
+function looksLikeTrace(text: string): boolean {
+  return text.split("\n").some((line) => /^\s*\{.*"v"\s*:\s*1\b/.test(line))
 }
 
 async function readFile(file: string): Promise<string | undefined> {

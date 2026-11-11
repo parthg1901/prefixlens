@@ -38,8 +38,12 @@ export const DEFAULT_PRICING_URL = new URL("../pricing.json", import.meta.url)
 export async function loadPricing(path?: string): Promise<PricingTable> {
   const source = path ?? process.env.PREFIXLENS_PRICING
   const file = source ? Bun.file(source) : Bun.file(DEFAULT_PRICING_URL)
-  if (!(await file.exists())) throw new Error(`pricing table not found: ${source ?? DEFAULT_PRICING_URL.pathname}`)
-  return parsePricing(await file.json())
+  const name = source ?? DEFAULT_PRICING_URL.pathname
+  if (!(await file.exists())) throw new Error(`pricing table not found: ${name}`)
+  const value = await file.json().catch(() => {
+    throw new Error(`pricing table ${name} is not valid JSON`)
+  })
+  return parsePricing(value)
 }
 
 /** Validates a pricing table at the boundary so pricing code can trust its shape. */

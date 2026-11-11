@@ -95,4 +95,58 @@ describe("cli", () => {
     expect(result.stderr).toContain("line 1: ts must be an RFC 3339 timestamp string")
     expect(result.stderr).toContain("no valid trace records")
   })
+
+  test("errors a user hits by mistake are named, with exit code 1", async () => {
+    const expectFailure = (args: string[], message: string, stdin?: string) => {
+      const result = run(args, stdin)
+      expect(result.code).toBe(1)
+      expect(result.stderr).toContain(message)
+    }
+    const empty = path.join(temp, "empty.jsonl")
+    await Bun.write(empty, "")
+    const log = path.join(fixtures, "claude-code-session.jsonl")
+    const badPricing = path.join(temp, "bad-pricing.json")
+    await Bun.write(badPricing, "{ not json")
+    expectFailure(["import", "claude-code", path.join(temp, "missing.jsonl")], "missing.jsonl: no such file or directory")
+    expectFailure(["import", "claude-code", empty], `no model calls with usage found in ${empty}; nothing written`)
+    expectFailure(["report", empty], "is empty: no trace records")
+    expectFailure(["report", "-"], "stdin is empty", "")
+    expectFailure(["report", log], 'is not a prefixlens trace (no line has "v": 1); convert harness logs first with prefixlens import')
+    expectFailure(["report", log, "--jsno"], "unknown option --jsno")
+    expectFailure(["report", log, "--pricing"], "--pricing needs a value")
+    const trace = path.join(temp, "errors.trace.jsonl")
+    run(["import", "claude-code", log, "-o", trace])
+    expectFailure(["report", trace, "--pricing", badPricing], `pricing table ${badPricing} is not valid JSON`)
+  })
+
+  test("a truncated last line is reported and the rest of the trace still reads", async () => {
+    const trace = path.join(temp, "truncated.trace.jsonl")
+    run(["import", "claude-code", path.join(fixtures, "claude-code-session.jsonl"), "-o", trace])
+    const lines = (await Bun.file(trace).text()).trim().split("\n")
+    await Bun.write(trace, [...lines.slice(0, -1), lines.at(-1)!.slice(0, 40)].join("\n"))
+    const result = run(["report", trace])
+    expect(result.code).toBe(0)
+    expect(result.stderr).toContain(`line ${lines.length}: not valid JSON`)
+    expect(result.stdout).toContain(`${lines.length - 1} model calls`)
+  })
+
+  test("a session with one call is a cold start and nothing else", async () => {
+    const trace = path.join(temp, "one.trace.jsonl")
+    run(["import", "claude-code", path.join(fixtures, "claude-code-session.jsonl"), "--no-subagents", "-o", trace])
+    await Bun.write(trace, (await Bun.file(trace).text()).split("\n")[0] + "\n")
+    const result = run(["report", trace])
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("1 model calls")
+    expect(result.stdout).toContain("No cache misses after the first call in each lane.")
+  })
+
+  test("a model missing from the pricing table is reported without a cost", async () => {
+    const pricing = path.join(temp, "no-models.json")
+    await Bun.write(pricing, JSON.stringify({ version: 1, models: [] }))
+    const trace = path.join(temp, "unpriced.trace.jsonl")
+    run(["import", "claude-code", path.join(fixtures, "claude-code-session.jsonl"), "-o", trace])
+    const result = run(["report", trace, "--pricing", pricing])
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("No price for claude-opus-5-5: add it to the pricing table to get costs.")
+  })
 })
