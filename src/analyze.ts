@@ -179,7 +179,7 @@ function analyzeTurn(
     // The previous call cached only up to its last breakpoint, so a change after it cannot explain the loss.
     const lastBreakpoint = previous.request!.blocks.findLastIndex((block) => block.breakpoint)
     const afterCached = change?.block_index !== undefined && lastBreakpoint !== -1 && change.block_index > lastBreakpoint
-    const cause = confirmedCause(afterCached ? null : change, gap, ttl, previous.usage.cache_write_tokens ?? 0)
+    const cause = confirmedCause(afterCached ? null : change, gap, ttl, previous.usage.cache_write_tokens ?? 0, [previous.headers?.["session-id"], record.headers?.["session-id"]])
     if (!afterCached) return { ...turn, cause }
     const where = `cached prefix unchanged (the first change, at block ${change!.block_index! + 1}, is after the previous call's last cache breakpoint)`
     return { ...turn, cause: { ...cause, summary: cause.summary.replace(/^prefix unchanged/, where) }, prefix_change: fromChange(change!, "confirmed") }
@@ -195,15 +195,28 @@ function analyzeTurn(
 function expectedCached(previous: Usage, minimum: number): number {
   if (previous.cache_write_tokens !== null) return previous.cache_read_tokens + previous.cache_write_tokens
   const prompt = promptTokens(previous)
-  return prompt >= minimum ? prompt : 0
+  // Implicit caches hold whole 128-token steps; the partial step at the end is never read back.
+  return prompt >= minimum ? Math.floor(prompt / IMPLICIT_STEP_TOKENS) * IMPLICIT_STEP_TOKENS : 0
 }
+
+const IMPLICIT_STEP_TOKENS = 128
 
 // A request sent this soon after the call that wrote the cache can miss with
 // nothing changed: the new entry is not always readable yet.
 const FRESH_WRITE_SECONDS = 5
 
-function confirmedCause(change: PrefixChange | null, gap: number, ttl: number, previousWrite: number): CauseInfo {
+function confirmedCause(change: PrefixChange | null, gap: number, ttl: number, previousWrite: number, sessionIds: (string | undefined)[]): CauseInfo {
   if (change) return fromChange(change, "confirmed")
+  // OpenAI's ChatGPT sign-in flow routes requests to a cache by this header.
+  const [before, after] = sessionIds
+  if (before !== undefined && after !== undefined && before !== after)
+    return {
+      cause: "params_changed",
+      group: CAUSE_GROUP.params_changed,
+      summary: `prefix unchanged, but the session-id header changed (${before} → ${after}); the provider routes requests to a cache by it`,
+      confidence: "confirmed",
+      detail: { header: "session-id", from: before, to: after },
+    }
   if (gap > ttl)
     return {
       cause: "cache_expired",

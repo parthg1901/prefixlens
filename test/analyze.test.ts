@@ -118,12 +118,12 @@ describe("analyze", () => {
     expect(result.summary.notes.join(" ")).toContain("nothing cacheable")
   })
 
-  test("implicit caching (no write figure) expects the whole previous prompt", () => {
+  test("implicit caching (no write figure) expects the previous prompt in whole 128-token steps", () => {
     const openai = (input: number, read: number, gap = 10): TraceRecord => ({ ...usageRecord("gpt-test", usage(input, read, null), {}, gap), provider: "openai" })
     const result = run([openai(3000, 0), openai(200, 3000), openai(3300, 0), openai(1500, 1100)])
     expect(result.turns.map((turn) => turn.status)).toEqual(["cold", "hit", "miss", "partial"])
     expect(result.turns[3]!.lost_tokens).toBe(1500)
-    expect(result.turns[1]!.expected_cached_tokens).toBe(3000)
+    expect(result.turns[1]!.expected_cached_tokens).toBe(2944)
     expect(result.turns[1]!.cost!.total).toBeCloseTo((200 * 2 + 3000 * 0.5 + 50 * 8) / 1e6, 10)
   })
 
@@ -198,5 +198,15 @@ describe("analyze", () => {
   test("harness-reported costs are summed separately", () => {
     const result = run([usageRecord("claude-test-1", { ...usage(10, 0, 100), reported_cost: 0.5 }), usageRecord("claude-test-1", { ...usage(10, 100, 0), reported_cost: 0.25 })])
     expect(result.summary.reported_cost).toBe(0.75)
+  })
+
+  test("a miss with the prefix intact and a changed session-id header is a routing change", () => {
+    const first = [user("Hi.")]
+    const result = run([
+      fullRecord(body(first), usage(5, 0, 2000), { headers: { "session-id": "a" } }),
+      fullRecord(body([...first, assistant("Hello.")]), usage(5, 0, 2100), { headers: { "session-id": "b" } }),
+    ])
+    expect(result.turns[1]!.cause).toMatchObject({ cause: "params_changed", confidence: "confirmed" })
+    expect(result.turns[1]!.cause!.summary).toBe("prefix unchanged, but the session-id header changed (a → b); the provider routes requests to a cache by it")
   })
 })
