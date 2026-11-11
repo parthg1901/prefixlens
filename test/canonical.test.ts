@@ -48,6 +48,12 @@ describe("hashContent", () => {
 })
 
 describe("canonicalizeAnthropic", () => {
+  test("a system field that is neither a string nor a list is kept whole as one block, never dropped", () => {
+    const request = canonicalizeAnthropic(body([user("hello")], { system: { type: "text", text: "rules" } }))
+    expect(request.blocks.filter((block) => block.kind === "system").map((block) => block.content)).toEqual([{ type: "text", text: "rules" }])
+    expect(canonicalizeAnthropic(body([user("hello")], { system: null })).blocks.filter((block) => block.kind === "system")).toEqual([])
+  })
+
   test("orders blocks tools, then system, then messages", () => {
     const request = canonicalizeAnthropic(body([user("hello"), { role: "assistant", content: "hi" }]))
     expect(request.blocks.map((block) => block.kind)).toEqual(["tool", "tool", "tool", "system", "message", "message"])
@@ -149,6 +155,25 @@ describe("canonicalizeOpenAI", () => {
     expect(request.blocks[1]!.content).toEqual({ role: "user", content: [{ type: "input_text", text: "hi" }] })
   })
 
+  test("cache_control is stripped from tools, instructions and items alike, and kept as the breakpoint", () => {
+    const plain = { type: "function", name: "read", parameters: { type: "object" } }
+    const marked = canonicalizeOpenAI({ model: "m", instructions: "x", tools: [{ ...plain, cache_control: { type: "ephemeral" } }], input: [{ role: "user", content: "hi", cache_control: { type: "ephemeral" } }] })
+    const unmarked = canonicalizeOpenAI({ model: "m", instructions: "x", tools: [plain], input: [{ role: "user", content: "hi" }] })
+    expect(marked.blocks.map((block) => block.hash)).toEqual(unmarked.blocks.map((block) => block.hash))
+    expect(marked.blocks.map((block) => Boolean(block.breakpoint))).toEqual([true, false, true])
+    const chat = canonicalizeOpenAI({ model: "m", tools: [{ type: "function", function: { name: "read" }, cache_control: { type: "ephemeral" } }], messages: [{ role: "user", content: "hi" }] })
+    expect(chat.blocks[0]).toMatchObject({ key: "read", breakpoint: true, content: { type: "function", function: { name: "read" } } })
+  })
+
+  test("responses api: instructions that are null or absent make no block; any other value is kept as sent", () => {
+    expect(canonicalizeOpenAI({ model: "m", instructions: null, input: "hi" }).blocks.map((block) => block.kind)).toEqual(["message"])
+    const listed = canonicalizeOpenAI({ model: "m", instructions: [{ role: "developer", content: "rules" }], input: "hi" })
+    expect(listed.blocks.map((block) => block.kind)).toEqual(["system", "message"])
+    expect(listed.blocks[0]!.content).toEqual([{ role: "developer", content: "rules" }])
+    const changed = canonicalizeOpenAI({ model: "m", instructions: [{ role: "developer", content: "other rules" }], input: "hi" })
+    expect(changed.blocks[0]!.hash).not.toBe(listed.blocks[0]!.hash)
+  })
+
   test("responses api: a plain string input is one user message", () => {
     const request = canonicalizeOpenAI({ model: "gpt-test", input: "hi" })
     expect(request.blocks).toHaveLength(1)
@@ -172,5 +197,12 @@ describe("canonicalizeGemini", () => {
       ["message", "user"],
     ])
     expect(request.params).toEqual({ generationConfig: { temperature: 0 } })
+  })
+
+  test("strips cache_control the way every provider does, from the block and its parts", () => {
+    const marked = canonicalizeGemini({ contents: [{ role: "user", parts: [{ text: "hi", cache_control: { type: "ephemeral" } }] }] })
+    const unmarked = canonicalizeGemini({ contents: [{ role: "user", parts: [{ text: "hi" }] }] })
+    expect(marked.blocks[0]!.hash).toBe(unmarked.blocks[0]!.hash)
+    expect(marked.blocks[0]!.breakpoint).toBe(true)
   })
 })

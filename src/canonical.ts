@@ -84,8 +84,7 @@ export function canonicalizeAnthropic(body: Record<string, unknown>): CanonicalR
     const stripped = stripCacheControl(tool)
     return makeBlock("tool", stripped.value, toolName(stripped.value), stripped.marked)
   })
-  const system = typeof body.system === "string" ? [{ type: "text", text: body.system }] : asArray(body.system)
-  const systemBlocks = system.map((part) => {
+  const systemBlocks = systemParts(body.system, "system").map((part) => {
     const stripped = stripCacheControl(part)
     return makeBlock("system", stripped.value, undefined, stripped.marked)
   })
@@ -101,18 +100,23 @@ export function canonicalizeAnthropic(body: Record<string, unknown>): CanonicalR
 }
 
 export function canonicalizeOpenAI(body: Record<string, unknown>): CanonicalRequest {
-  const tools = [...asArray(body.tools), ...asArray(body.functions)].map((tool) =>
-    makeBlock("tool", tool, toolName(tool)),
-  )
+  // OpenAI defines no cache_control, but OpenAI-compatible gateways accept Anthropic-style markers in these bodies and
+  // move them between calls; they are stripped here as everywhere else so a moved marker never reads as an edit.
+  const tools = [...asArray(body.tools), ...asArray(body.functions)].map((tool) => {
+    const stripped = stripCacheControl(tool)
+    return makeBlock("tool", stripped.value, toolName(stripped.value), stripped.marked)
+  })
   const isResponses = body.input !== undefined || body.instructions !== undefined
   if (isResponses) {
-    const instructions =
-      typeof body.instructions === "string" ? [makeBlock("system", { type: "text", text: body.instructions })] : []
+    const instructions = systemParts(body.instructions, "instructions").map((part) => {
+      const stripped = stripCacheControl(part)
+      return makeBlock("system", stripped.value, undefined, stripped.marked)
+    })
     const input =
       typeof body.input === "string"
         ? [{ role: "user", content: [{ type: "input_text", text: body.input }] }]
         : asArray(body.input)
-    const items = leadingSystem(input.map((item) => normalizeMessage(item, (role) => (role === "assistant" ? "output_text" : "input_text")).value))
+    const items = leadingSystem(input.map((item) => normalizeMessage(item, (role) => (role === "assistant" ? "output_text" : "input_text"))))
     return {
       model: String(body.model ?? ""),
       params: paramsWithout(body, ["model", "tools", "functions", "instructions", "input"]),
@@ -122,7 +126,7 @@ export function canonicalizeOpenAI(body: Record<string, unknown>): CanonicalRequ
   return {
     model: String(body.model ?? ""),
     params: paramsWithout(body, ["model", "tools", "functions", "messages"]),
-    blocks: [...tools, ...leadingSystem(asArray(body.messages).map((message) => normalizeMessage(message).value))],
+    blocks: [...tools, ...leadingSystem(asArray(body.messages).map((message) => normalizeMessage(message)))],
   }
 }
 
@@ -130,13 +134,13 @@ export function canonicalizeGemini(body: Record<string, unknown>): CanonicalRequ
   const tools = asArray(body.tools).flatMap((tool) => {
     const record = isRecord(tool) ? tool : {}
     const declarations = asArray(record.functionDeclarations ?? record.function_declarations)
-    if (declarations.length === 0) return [makeBlock("tool", tool, Object.keys(record)[0])]
-    return declarations.map((declaration) => makeBlock("tool", declaration, toolName(declaration)))
+    if (declarations.length === 0) return [block("tool", stripCacheControl(tool), Object.keys(record)[0])]
+    return declarations.map((declaration) => block("tool", stripCacheControl(declaration), toolName(declaration)))
   })
   const instruction = body.systemInstruction ?? body.system_instruction
-  const systemParts = isRecord(instruction) ? asArray(instruction.parts) : typeof instruction === "string" ? [{ text: instruction }] : []
-  const system = systemParts.map((part) => makeBlock("system", part))
-  const contents = asArray(body.contents).map((content) => makeBlock("message", content, roleOf(content)))
+  const parts = isRecord(instruction) ? asArray(instruction.parts) : typeof instruction === "string" ? [{ text: instruction }] : []
+  const system = parts.map((part) => block("system", stripCacheControl(part)))
+  const contents = asArray(body.contents).map((content) => block("message", stripCacheControl(content, "parts"), roleOf(content)))
   return {
     model: String(body.model ?? ""),
     params: paramsWithout(body, ["model", "tools", "systemInstruction", "system_instruction", "contents"]),
@@ -149,15 +153,35 @@ export function canonicalizeGemini(body: Record<string, unknown>): CanonicalRequ
  * array. Breakpoint placement moves between requests and is not part of the
  * cached content, so it must not change a block's hash.
  */
-export function stripCacheControl(value: unknown): { value: unknown; marked: boolean } {
+export function stripCacheControl(value: unknown, partsKey: "content" | "parts" = "content"): { value: unknown; marked: boolean } {
   if (!isRecord(value)) return { value, marked: false }
   const { cache_control, ...rest } = value
-  if (!Array.isArray(rest.content)) return { value: rest, marked: cache_control !== undefined }
-  const parts = rest.content.map((part) => stripCacheControl(part))
+  const list = rest[partsKey]
+  if (!Array.isArray(list)) return { value: rest, marked: cache_control !== undefined }
+  const parts = list.map((part) => stripCacheControl(part))
   return {
-    value: { ...rest, content: parts.map((part) => part.value) },
+    value: { ...rest, [partsKey]: parts.map((part) => part.value) },
     marked: cache_control !== undefined || parts.some((part) => part.marked),
   }
+}
+
+function block(kind: BlockKind, stripped: { value: unknown; marked: boolean }, key?: string): Block {
+  return makeBlock(kind, stripped.value, key, stripped.marked)
+}
+
+/**
+ * The parts of a system prompt field (Anthropic `system`, Responses
+ * `instructions`): a string is one text part, an array is its elements,
+ * null or absent is none. Any other value is not a documented form; it is
+ * kept whole as one part, as sent, so that nothing the provider received is
+ * silently left out of the comparison.
+ */
+function systemParts(value: unknown, field: "system" | "instructions"): unknown[] {
+  if (value === undefined || value === null) return []
+  if (typeof value === "string") return [{ type: "text", text: value }]
+  // Anthropic documents `system` as a string or a list of text parts; Responses documents `instructions` as a string only.
+  if (Array.isArray(value) && field === "system") return value
+  return [value]
 }
 
 // A string message body and a single text part render the same prompt, so both
@@ -172,10 +196,10 @@ function normalizeMessage(message: unknown, textType: (role: unknown) => string 
 
 // System and developer messages before the first other message are the system
 // prompt; later ones are part of the conversation and stay message blocks.
-function leadingSystem(messages: unknown[]): Block[] {
-  const firstOther = messages.findIndex((message) => !["system", "developer"].includes(roleOf(message) ?? ""))
+function leadingSystem(messages: { value: unknown; marked: boolean }[]): Block[] {
+  const firstOther = messages.findIndex((message) => !["system", "developer"].includes(roleOf(message.value) ?? ""))
   const cut = firstOther === -1 ? messages.length : firstOther
-  return messages.map((message, index) => makeBlock(index < cut ? "system" : "message", message, roleOf(message) ?? typeOf(message)))
+  return messages.map((message, index) => block(index < cut ? "system" : "message", message, roleOf(message.value) ?? typeOf(message.value)))
 }
 
 function toolName(tool: unknown): string | undefined {
