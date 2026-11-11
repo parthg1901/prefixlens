@@ -32,6 +32,24 @@ describe("claude-code adapter", () => {
     expect(result.warnings).toEqual(["main: 1 logged requests had no response (errors or interruptions); skipped"])
   })
 
+  test("checks each rebuilt request against Claude Code's request digest", async () => {
+    const { records } = await importClaudeCode(path.join(fixtures, "claude-code-session.jsonl"), { subagents: false })
+    expect(records.map((record) => record.source?.request)).toEqual(["verified", "verified", "verified"])
+    // The first message's blob was logged as a string body; the request carried it as a text part.
+    expect(records[0]!.request!.blocks.at(-1)!.content).toEqual({ role: "user", content: [{ type: "text", text: "List the files." }] })
+  })
+
+  test("a request that does not match its digest is imported usage-only", async () => {
+    const text = await Bun.file(path.join(fixtures, "claude-code-session.jsonl")).text()
+    const file = path.join(temp, "tampered.jsonl")
+    // Change the system prompt of the second shape only: requests 3 and 4 no longer match what was sent.
+    await Bun.write(file, text.replace(/("shapeHash": "8d98ec[0-9a-f]+", "shape": \{"system": \[\{"type": "text", "text": ")You are/, "$1Edited: you are"))
+    const result = await importClaudeCode(file, { subagents: false })
+    expect(result.records.map((record) => record.fidelity)).toEqual(["full-request", "full-request", "usage-only"])
+    expect(result.records[2]!.request).toBeUndefined()
+    expect(result.warnings).toContain("main: 1 requests rebuilt from the log did not match the request digest Claude Code recorded; imported as usage-only")
+  })
+
   test("carries model, params, usage, TTL, breakpoints and identity", async () => {
     const [first] = (await importClaudeCode(path.join(fixtures, "claude-code-session.jsonl"), { subagents: false })).records
     expect(first).toMatchObject({

@@ -111,7 +111,7 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
   const requests: Entry[] = []
   for (const entry of entries) {
     if (entry.type === "api-request-shape" && typeof entry.shapeHash === "string" && isRecord(entry.shape)) shapes.set(entry.shapeHash, entry.shape)
-    if (entry.type === "api-request-blob" && typeof entry.hash === "string") blobs.set(entry.hash, entry.message)
+    if (entry.type === "api-request-blob" && typeof entry.hash === "string") blobs.set(entry.hash, wireForm(entry.hash, entry.message))
     if (entry.type === "api-request" && typeof entry.id === "string") requests.push(entry)
   }
   const responses = responsesByRequest(entries)
@@ -158,6 +158,8 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
   const sessionHints = hintsByTime(entries)
   let missingShape = 0
   let noResponse = 0
+  let mismatched = 0
+  let unverified = 0
   const records = requests.flatMap((request): TraceRecord[] => {
     const id = request.id as string
     const response = responses.get(id)
@@ -167,8 +169,18 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
     }
     const shape = shapes.get(request.shapeHash as string)
     if (!shape) missingShape++
+    const hashes = messageHashes(id)
+    const messages = hashes.map((hash) => blobs.get(hash) ?? transcript.get(hash))
     const params = isRecord(request.params) ? request.params : {}
-    const blocks = applyBreakpoints([...shapeBlocks(request.shapeHash as string, shape), ...messageHashes(id).map(messageBlock)], request.cacheControl)
+    const check = shape && !messages.includes(undefined) ? verifyDigest(request, params, shape, messages) : "unverifiable"
+    // A rebuilt request that does not match what Claude Code says it sent would
+    // produce wrong diffs; keep its usage but do not claim to know the request.
+    if (check === "mismatch") {
+      mismatched++
+      return [usageRecord(request, response, lane, params, sessionHints)]
+    }
+    if (check === "unverifiable") unverified++
+    const blocks = applyBreakpoints([...shapeBlocks(request.shapeHash as string, shape), ...hashes.map(messageBlock)], request.cacheControl)
     const message = response.message as Entry
     const ts = typeof request.timestamp === "string" ? request.timestamp : (response.timestamp as string)
     const hints = sessionHints(ts)
@@ -177,7 +189,7 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
         v: 1,
         id,
         ...(typeof request.sessionId === "string" ? { session: request.sessionId } : {}),
-        lane: lane === "main" && typeof request.querySource === "string" && request.querySource !== "sdk" && request.querySource !== "repl_main_thread" ? request.querySource : lane,
+        lane: laneOf(request, lane),
         ts,
         provider: "anthropic",
         model: typeof message.model === "string" ? message.model : String(params.model ?? ""),
@@ -187,15 +199,74 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
         usage: normalizeUsage("anthropic", message.usage),
         cache_ttl_seconds: ttlOf(request.cacheControl),
         ...(hints.length > 0 ? { hints } : {}),
-        source: { adapter: "claude-code", ...(typeof request.version === "string" ? { version: request.version } : {}) },
+        source: { adapter: "claude-code", ...(typeof request.version === "string" ? { version: request.version } : {}), request: check },
       },
     ]
   })
+  if (mismatched > 0)
+    warnings.push(
+      `${lane}: ${mismatched} requests rebuilt from the log did not match the request digest Claude Code recorded; imported as usage-only`,
+    )
+  if (unverified > 0)
+    warnings.push(`${lane}: ${unverified} requests could not be checked against Claude Code's request digest (content or digest missing)`)
   if (noResponse > 0) warnings.push(`${lane}: ${noResponse} logged requests had no response (errors or interruptions); skipped`)
   if (missingShape > 0) warnings.push(`${lane}: ${missingShape} requests referenced a tools/system shape that is not in the log`)
   if (unresolved > 0)
     warnings.push(`${lane}: ${unresolved} distinct messages could not be resolved to content; they are compared by hash only`)
   return records
+}
+
+/**
+ * Claude Code records `requestDigest`, the SHA-256 of the key-sorted JSON of the
+ * request body it sent ({...params, system, tools, messages} with cache_control
+ * set at the logged paths). Rebuilding that body and matching the digest proves
+ * the reconstruction is exactly the request.
+ */
+function verifyDigest(request: Entry, params: Entry, shape: Entry, messages: unknown[]): "verified" | "mismatch" | "unverifiable" {
+  if (typeof request.requestDigest !== "string") return "unverifiable"
+  const body: Entry = { ...params, system: shape.system, tools: shape.tools, messages }
+  for (const mark of Array.isArray(request.cacheControl) ? request.cacheControl : []) {
+    if (!isRecord(mark) || !Array.isArray(mark.path) || mark.path.length === 0) return "unverifiable"
+    // Copy only the nodes along the path, so the shared transcript messages are never mutated.
+    let node: Entry = body
+    for (const key of mark.path) {
+      const child: unknown = node[key as string]
+      if (!isRecord(child) && !Array.isArray(child)) return "mismatch"
+      const copy: unknown[] | Entry = Array.isArray(child) ? [...child] : { ...child }
+      node[key as string] = copy
+      node = copy as Entry
+    }
+    node.cache_control = mark.value
+  }
+  return ccHash(body) === request.requestDigest ? "verified" : "mismatch"
+}
+
+/** A call whose request could not be trusted: its usage alone. */
+function usageRecord(request: Entry, response: Entry, lane: string, params: Entry, hints: (ts: string) => Hint[]): TraceRecord {
+  const message = response.message as Entry
+  const ts = typeof request.timestamp === "string" ? request.timestamp : (response.timestamp as string)
+  const found = hints(ts)
+  return {
+    v: 1,
+    id: request.id as string,
+    ...(typeof request.sessionId === "string" ? { session: request.sessionId } : {}),
+    lane: laneOf(request, lane),
+    ts,
+    provider: "anthropic",
+    model: typeof message.model === "string" ? message.model : String(params.model ?? ""),
+    fidelity: "usage-only",
+    usage: normalizeUsage("anthropic", message.usage),
+    ...(ttlOf(request.cacheControl) ? { cache_ttl_seconds: ttlOf(request.cacheControl) } : {}),
+    ...(found.length > 0 ? { hints: found } : {}),
+    source: { adapter: "claude-code", ...(typeof request.version === "string" ? { version: request.version } : {}), request: "mismatch" },
+  }
+}
+
+// Side queries in the main file (compaction, titles) get their own lane.
+function laneOf(request: Entry, lane: string): string {
+  return lane === "main" && typeof request.querySource === "string" && request.querySource !== "sdk" && request.querySource !== "repl_main_thread"
+    ? request.querySource
+    : lane
 }
 
 /** One response per API call: the last transcript record carrying its usage. */
@@ -243,6 +314,17 @@ function transcriptMessages(entries: Entry[]): Map<string, unknown> {
   flush()
   for (const group of turns.values()) add({ role: "assistant", content: group.flatMap((entry) => parts((entry.message as Entry).content)) })
   return out
+}
+
+/**
+ * Some blobs are logged with a string body while the message Claude Code
+ * hashed and sent had it as one text part. Returns the form whose hash is the
+ * blob's key, so the rebuilt request is the one that was sent.
+ */
+function wireForm(hash: string, message: unknown): unknown {
+  if (!isRecord(message) || typeof message.content !== "string" || ccHash(message) === hash) return message
+  const parts = { ...message, content: [{ type: "text", text: message.content }] }
+  return ccHash(parts) === hash ? parts : message
 }
 
 /** Claude Code's message hash: SHA-256 of JSON with keys sorted at every depth. */
