@@ -127,19 +127,41 @@ export function sseEvents(text: string): unknown[] {
 /** Request headers worth keeping: they route requests to a cache or change what is cached. Nothing else is ever written. */
 export const RECORDED_HEADERS = ["session-id", "anthropic-beta", "anthropic-version", "openai-beta"]
 
-export interface ExchangeInput {
+/** What `buildRecord` needs to know about one model call. */
+export interface RecordInput {
+  /** Which API the call went to. `apiFromPath(url.pathname)` or `apiFromBody(body)` tell it. */
   api: Api
+  /** The request body exactly as sent, parsed from JSON. */
   body: Record<string, unknown>
+  /** The response as `readResponse(api, raw)` summarizes it, from the JSON body, the SSE text or the parsed stream events. */
   response: ResponseSummary
-  startedAt: Date
-  headers?: Headers
+  /** When the request was sent. Cache lifetimes run from the request start. */
+  startedAt: Date | number | string
+  /** Request headers. Only `RECORDED_HEADERS` are kept; credentials never are. */
+  headers?: Headers | Record<string, string>
   session?: string
-  lane: string
-  recorder: string
+  /** Default "main". */
+  lane?: string
+  /** `source.recorder`. The proxy writes "proxy", `wrap` "wrap", `lens.observe` "observe"; default "library". */
+  recorder?: string
 }
 
-/** Builds the trace record, or explains why there is none (no usage in the response). */
-export function buildRecord(input: ExchangeInput): TraceRecord | string {
+/** @deprecated Use RecordInput. Removed in the next minor. */
+export type ExchangeInput = RecordInput
+
+/**
+ * Builds the trace record for one model call from its request and response:
+ * the same function the recording proxy, `wrap` and `lens.observe` use, so a
+ * harness that calls it with the same inputs gets the same record, and
+ * `serializeTrace` or `createTraceEncoder` then writes the same line.
+ *
+ * Returns a string, the reason, when no record can be built: the response
+ * reported no usage (an error, a stream cut off before usage, a Chat
+ * Completions stream without `stream_options.include_usage`).
+ *
+ * Stable from 0.3: inputs may gain optional fields, never lose or change one.
+ */
+export function buildRecord(input: RecordInput): TraceRecord | string {
   const provider = PROVIDER_OF[input.api]
   if (!input.response.usage)
     return input.api === "openai-chat" && input.body.stream === true
@@ -148,14 +170,15 @@ export function buildRecord(input: ExchangeInput): TraceRecord | string {
         ? "the response had no usage"
         : "the response ended before it reported usage"
   const canonical = canonicalizeRequest(provider, input.body)
-  const headers = Object.fromEntries(RECORDED_HEADERS.flatMap((name) => (input.headers?.get(name) ? [[name, input.headers.get(name)!]] : [])))
+  const given = input.headers instanceof Headers ? input.headers : new Headers(input.headers)
+  const headers = Object.fromEntries(RECORDED_HEADERS.flatMap((name) => (given.get(name) ? [[name, given.get(name)!]] : [])))
   const ttl = input.api === "anthropic-messages" ? anthropicTtl(input.body) : undefined
   return {
     v: 1,
     ...(input.response.id ? { id: input.response.id } : {}),
     ...(input.session ? { session: input.session } : {}),
-    lane: input.lane,
-    ts: input.startedAt.toISOString(),
+    lane: input.lane ?? "main",
+    ts: new Date(input.startedAt).toISOString(),
     provider,
     model: canonical.model || input.response.model || "",
     params: canonical.params,
@@ -164,7 +187,7 @@ export function buildRecord(input: ExchangeInput): TraceRecord | string {
     usage: normalizeUsage(provider, input.response.usage),
     ...(ttl ? { cache_ttl_seconds: ttl } : {}),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
-    source: { recorder: input.recorder, api: input.api, version: pkg.version, ...(input.response.complete ? {} : { complete: false }) },
+    source: { recorder: input.recorder ?? "library", api: input.api, version: pkg.version, ...(input.response.complete ? {} : { complete: false }) },
   }
 }
 

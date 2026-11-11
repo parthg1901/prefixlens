@@ -62,6 +62,24 @@ describe("reading responses", () => {
   })
 })
 
+describe("buildRecord, the public record builder", () => {
+  test("gives the same record lens.observe writes, from the same request and response", async () => {
+    const { buildRecord, createLens, readResponse } = await import("../src/index.ts")
+    const request = { model: "gpt-test-1", stream: true, instructions: "Synthetic.", tool_choice: "none", input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Hi." }] }] }
+    const response = { type: "response.completed", response: { id: "resp_1", model: "gpt-test-1", usage: { input_tokens: 2000, input_tokens_details: { cached_tokens: 1920 }, output_tokens: 5 } } }
+    const startedAt = "2026-01-01T10:00:00.000Z"
+    const headers = { "session-id": "synthetic", authorization: "Bearer never-written" }
+    const observed = createLens({ trace: false }).observe({ request, response, startedAt, headers })!
+    const built = buildRecord({ api: "openai-responses", body: request, response: readResponse("openai-responses", response), startedAt: Date.parse(startedAt), headers, recorder: "observe" })
+    expect(built).toEqual(observed)
+    expect(JSON.stringify(built)).not.toContain("never-written")
+    // Defaults: lane "main", recorder "library".
+    const plain = buildRecord({ api: "openai-responses", body: request, response: readResponse("openai-responses", response), startedAt })
+    expect(plain).toMatchObject({ lane: "main", source: { recorder: "library" } })
+    expect(buildRecord({ api: "openai-responses", body: request, response: { complete: true }, startedAt })).toBe("the response had no usage")
+  })
+})
+
 describe("recording proxy", () => {
   const trace = path.join(temp, "proxy.trace.jsonl")
   const records: TraceRecord[] = []
