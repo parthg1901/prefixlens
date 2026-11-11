@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": [
+      "bun"
+    ],
+    "paths": {
+      "prefixlens": [
+        "../../src/index.ts"
+      ],
+      "prefixlens/test": [
+        "../../src/assert.ts"
+      ]
+    }
+  }
+}

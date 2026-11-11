@@ -4,8 +4,5 @@
   "type": "module",
   "scripts": {
     "test": "bun test"
-  },
-  "devDependencies": {
-    "prefixlens": "file:../.."
   }
 }
