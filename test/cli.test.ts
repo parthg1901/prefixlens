@@ -150,3 +150,50 @@ describe("cli", () => {
     expect(result.stdout).toContain("No price for claude-opus-5-5: add it to the pricing table to get costs.")
   })
 })
+
+describe("cli record", () => {
+  test("records through the proxy until stopped, then the trace reports", async () => {
+    const { startFakeUpstream } = await import("./fake-upstream.ts")
+    const upstream = startFakeUpstream()
+    const trace = path.join(temp, "recorded.trace.jsonl")
+    const child = Bun.spawn(["bun", path.join(root, "src/cli.ts"), "record", "--provider", "openai", "--port", "0", "--upstream", upstream.url, "-o", trace], {
+      cwd: temp,
+      stderr: "pipe",
+      env: { ...process.env, NO_COLOR: "1" },
+    })
+    const reader = child.stderr.getReader()
+    let stderr = ""
+    while (!stderr.includes("OPENAI_BASE_URL=")) stderr += new TextDecoder().decode((await reader.read()).value)
+    const base = stderr.match(/OPENAI_BASE_URL=(\S+)/)![1]!
+    const input = [{ type: "message", role: "user", content: [{ type: "input_text", text: "Hi." }] }]
+    for (const extra of [[], [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Hello." }] }]]) {
+      const response = await fetch(`${base}/responses`, {
+        method: "POST",
+        headers: { authorization: "Bearer sk-synthetic-cli-secret", "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-test-1", stream: true, instructions: "Synthetic.", input: [...input, ...extra] }),
+      })
+      await response.text()
+    }
+    await Bun.sleep(50)
+    child.kill("SIGINT")
+    await child.exited
+    while (true) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      stderr += new TextDecoder().decode(chunk.value)
+    }
+    upstream.stop()
+    expect(child.exitCode).toBe(0)
+    expect(stderr).toContain("#1 main gpt-test-1: prompt 3,200, cache read 3,072 (96%), output 40")
+    expect(stderr).toContain("stopped; 2 calls recorded")
+    const text = await Bun.file(trace).text()
+    expect(text).not.toContain("sk-synthetic-cli-secret")
+    const report = run(["report", trace])
+    expect(report.code).toBe(0)
+    expect(report.stdout).toContain("2 model calls")
+  })
+
+  test("record needs a provider", () => {
+    expect(run(["record"]).stderr).toContain("record needs --provider anthropic or --provider openai")
+  })
+})

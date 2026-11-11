@@ -11,6 +11,7 @@ import { renderHtml } from "./report/html.ts"
 import { renderJson } from "./report/json.ts"
 import { renderTerminal } from "./report/terminal.ts"
 import { parseTrace, serializeTrace } from "./trace.ts"
+import { promptTokens } from "./usage.ts"
 import pkg from "../package.json" with { type: "json" }
 
 const HELP = `prefixlens ${pkg.version}: explains prompt-cache hits and misses
@@ -18,6 +19,7 @@ const HELP = `prefixlens ${pkg.version}: explains prompt-cache hits and misses
 Usage:
   prefixlens import <adapter> <path> [options]   convert harness logs to a trace (JSONL)
   prefixlens report <trace.jsonl|-> [options]    report hit rates, costs and miss causes
+  prefixlens record --provider <p> [options]     run a local proxy that records every model call
   prefixlens adapters                            list adapters and what they can diagnose
 
 import options:
@@ -25,6 +27,14 @@ import options:
   --session <id>        session to import, for stores holding many (opencode)
   --list                list sessions in the store instead of importing
   --no-subagents        leave out subagent sessions
+
+record options:
+  --provider <name>     anthropic or openai (required)
+  --port <n>            port to listen on (default 8787)
+  --host <address>      address to listen on (default 127.0.0.1)
+  -o, --out <file>      trace to append to (default prefixlens.trace.jsonl)
+  --upstream <url>      where to forward (default https://api.anthropic.com or https://api.openai.com)
+  --quiet               do not print a line per recorded call
 
 report options:
   --json                print the report as JSON
@@ -38,12 +48,13 @@ Examples:
   prefixlens import claude-code ~/.claude/projects/-my-project/<session-id>.jsonl -o session.trace.jsonl
   prefixlens import opencode ~/.local/share/opencode/opencode.db --list
   prefixlens report session.trace.jsonl --html
+  prefixlens record --provider anthropic -o run.trace.jsonl   # then ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 `
 
 type Flags = Record<string, string | true>
 
-const VALUE_FLAGS = new Set(["out", "session", "pricing", "tolerance"])
-const KNOWN_FLAGS = new Set([...VALUE_FLAGS, "list", "no-subagents", "json", "html", "all", "no-color", "help", "version"])
+const VALUE_FLAGS = new Set(["out", "session", "pricing", "tolerance", "provider", "port", "host", "upstream"])
+const KNOWN_FLAGS = new Set([...VALUE_FLAGS, "list", "no-subagents", "json", "html", "all", "no-color", "quiet", "help", "version"])
 const ALIASES: Record<string, string> = { o: "out", h: "help", v: "version" }
 
 export async function main(argv: string[]): Promise<number> {
@@ -64,6 +75,7 @@ export async function main(argv: string[]): Promise<number> {
   if (command === "adapters") return listAdapters()
   if (command === "import") return runImport(positionals.slice(1), flags)
   if (command === "report") return runReport(positionals.slice(1), flags)
+  if (command === "record") return runRecord(flags)
   return fail(`unknown command "${command}"; run prefixlens --help`)
 }
 
@@ -165,6 +177,47 @@ async function runReport(args: string[], flags: Flags): Promise<number> {
         pricingNote,
       }),
     )
+  return 0
+}
+
+async function runRecord(flags: Flags): Promise<number> {
+  const provider = flags.provider
+  if (provider !== "anthropic" && provider !== "openai") return fail("record needs --provider anthropic or --provider openai")
+  const port = flags.port === undefined ? 8787 : Number(flags.port)
+  if (!Number.isInteger(port) || port < 0 || port > 65535) return fail("--port must be a port number")
+  if (typeof flags.upstream === "string" && !URL.canParse(flags.upstream)) return fail(`--upstream must be a URL, got ${flags.upstream}`)
+  const { startProxy } = await import("./proxy.ts")
+  const trace = typeof flags.out === "string" ? flags.out : "prefixlens.trace.jsonl"
+  const quiet = flags.quiet === true
+  let count = 0
+  const proxy = startProxy({
+    provider,
+    port,
+    trace,
+    ...(typeof flags.host === "string" ? { hostname: flags.host } : {}),
+    ...(typeof flags.upstream === "string" ? { upstream: flags.upstream } : {}),
+    onRecord: (record) => {
+      count++
+      if (quiet) return
+      const prompt = promptTokens(record.usage)
+      const rate = prompt === 0 ? 0 : (record.usage.cache_read_tokens / prompt) * 100
+      console.error(
+        `#${count} ${record.lane} ${record.model}: prompt ${prompt.toLocaleString("en-US")}, cache read ${record.usage.cache_read_tokens.toLocaleString("en-US")} (${rate.toFixed(0)}%), output ${record.usage.output_tokens.toLocaleString("en-US")}`,
+      )
+    },
+    onSkip: (reason) => {
+      if (!quiet) console.error(reason)
+    },
+  })
+  const variable = provider === "anthropic" ? `ANTHROPIC_BASE_URL=${proxy.url}` : `OPENAI_BASE_URL=${proxy.url}/v1`
+  console.error(`prefixlens recording ${provider} calls to ${trace}, forwarding to ${proxy.upstream}`)
+  console.error(`point your harness at it: ${variable}`)
+  console.error("auth headers are forwarded and never written; press Ctrl-C to stop")
+  await new Promise<void>((resolve) => {
+    for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => resolve())
+  })
+  proxy.stop()
+  console.error(`\nstopped; ${count} ${count === 1 ? "call" : "calls"} recorded in ${trace}. Next: prefixlens report ${trace}`)
   return 0
 }
 

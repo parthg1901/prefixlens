@@ -1,0 +1,3 @@
+[test]
+# examples/ are separate projects with their own `bun test`.
+root = "test"

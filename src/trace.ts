@@ -2,6 +2,8 @@
 // the normative description; this file is its TypeScript form plus a reader
 // that validates records once at the boundary.
 
+import { appendFileSync, existsSync, readFileSync } from "node:fs"
+import path from "node:path"
 import { hashContent, isRecord } from "./canonical.ts"
 
 export const TRACE_VERSION = 1
@@ -63,6 +65,8 @@ export interface TraceRecord {
   usage: Usage
   cache_ttl_seconds?: number
   hints?: Hint[]
+  /** Non-secret request headers that affect caching or routing, e.g. `session-id`. Never credentials. */
+  headers?: Record<string, string>
   source?: Record<string, unknown>
 }
 
@@ -100,31 +104,76 @@ export function parseTrace(text: string): ParseResult {
  * With `compact: false` every record lists every block with its content.
  */
 export function serializeTrace(records: TraceRecord[], options: { compact?: boolean } = {}): string {
+  const encoder = createTraceEncoder(options)
+  return records.map((record) => encoder.encode(record) + "\n").join("")
+}
+
+/**
+ * The incremental form of `serializeTrace`: encodes one record at a time,
+ * remembering what earlier lines already carried. Seed it with the records of
+ * an existing file to append to that file.
+ */
+export function createTraceEncoder(options: { compact?: boolean; after?: TraceRecord[] } = {}) {
   const compact = options.compact ?? true
   const written = new Set<string>()
   const last = new Map<string, Block[]>()
-  const lines = records.map((record) => {
-    if (!compact || !record.request) return JSON.stringify(record)
-    const all = record.request.blocks
-    const lane = laneKey(record)
-    const previous = last.get(lane) ?? []
-    last.set(lane, all)
-    let reuse = 0
-    while (reuse < previous.length && reuse < all.length && sameBlock(previous[reuse]!, all[reuse]!)) reuse++
-    const blocks = all.slice(reuse).map((block) => {
-      if (block.content === undefined) return block
-      if (written.has(block.hash)) {
-        const { content, ...rest } = block
-        return rest
-      }
-      written.add(block.hash)
-      return block
-    })
-    for (const block of all.slice(0, reuse)) written.add(block.hash)
-    return JSON.stringify({ ...record, request: { ...(reuse > 0 ? { reuse } : {}), blocks } })
-  })
-  return lines.join("\n") + (lines.length > 0 ? "\n" : "")
+  const remember = (record: TraceRecord) => {
+    if (!record.request) return
+    last.set(laneKey(record), record.request.blocks)
+    for (const block of record.request.blocks) if (block.content !== undefined) written.add(block.hash)
+  }
+  for (const record of options.after ?? []) remember(record)
+  return {
+    /** One JSONL line, without the newline. */
+    encode(record: TraceRecord): string {
+      if (!compact || !record.request) return JSON.stringify(record)
+      const all = record.request.blocks
+      const previous = last.get(laneKey(record)) ?? []
+      let reuse = 0
+      while (reuse < previous.length && reuse < all.length && sameBlock(previous[reuse]!, all[reuse]!)) reuse++
+      const blocks = all.slice(reuse).map((block) => {
+        if (block.content === undefined) return block
+        if (written.has(block.hash)) {
+          const { content, ...rest } = block
+          return rest
+        }
+        written.add(block.hash)
+        return block
+      })
+      remember(record)
+      return JSON.stringify({ ...record, request: { ...(reuse > 0 ? { reuse } : {}), blocks } })
+    },
+  }
 }
+
+/**
+ * Appends records to a trace file, one complete line per call, so the file is
+ * a valid trace at every moment (a crash loses at most the call in flight).
+ * An existing file is read first so new lines can reference its content.
+ */
+export function openTraceWriter(file: string): TraceWriter {
+  // Two writers on one file would each think they know what the file holds; share one per path.
+  const resolved = path.resolve(file)
+  const open = writers.get(resolved)
+  if (open) return open
+  const existing = existsSync(file) ? parseTrace(readFileSync(file, "utf8")).records : []
+  const encoder = createTraceEncoder({ after: existing })
+  const writer = {
+    file,
+    append(record: TraceRecord) {
+      appendFileSync(resolved, encoder.encode(record) + "\n")
+    },
+  }
+  writers.set(resolved, writer)
+  return writer
+}
+
+export interface TraceWriter {
+  file: string
+  append(record: TraceRecord): void
+}
+
+const writers = new Map<string, TraceWriter>()
 
 function sameBlock(a: Block, b: Block): boolean {
   return a.hash === b.hash && a.kind === b.kind && a.key === b.key && Boolean(a.breakpoint) === Boolean(b.breakpoint)
@@ -153,6 +202,8 @@ function readRecord(value: unknown, problems: string[], warnings: string[], line
   if (value.fidelity !== "full-request" && value.fidelity !== "usage-only")
     problems.push('fidelity must be "full-request" or "usage-only"')
   if (value.params !== undefined && !isRecord(value.params)) problems.push("params must be an object")
+  if (value.headers !== undefined && !(isRecord(value.headers) && Object.values(value.headers).every((header) => typeof header === "string")))
+    problems.push("headers must be an object of strings")
   if (value.cache_ttl_seconds !== undefined && !isCount(value.cache_ttl_seconds))
     problems.push("cache_ttl_seconds must be a non-negative integer")
   const usage = readUsage(value.usage, problems)
