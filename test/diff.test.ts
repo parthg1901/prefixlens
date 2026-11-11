@@ -161,6 +161,13 @@ describe("comparePrefix", () => {
     expect(change?.diff).toContain("+ content[0].text: start, but reworded")
   })
 
+  test("a part appended to an already-sent message", () => {
+    const appended = { role: "user", content: [{ type: "text", text: "start" }, { type: "text", text: "late reminder" }] }
+    const change = comparePrefix(view(body(history)), view(body([appended, ...history.slice(1)])))
+    expect(change?.summary).toBe("message #1 (user) was edited after it was sent: 1 part appended")
+    expect(change?.detail).toMatchObject({ parts_added: 1, parts_removed: 0 })
+  })
+
   test("a date injected into the first user message", () => {
     const change = comparePrefix(view(body([user("Today is 2026-01-01. Task: x"), ...history.slice(1)])), view(body([user("Today is 2026-01-02. Task: x"), ...history.slice(1)])))
     expect(change?.cause).toBe("message_dynamic_value")

@@ -326,11 +326,19 @@ function explainEdit(before: Block, after: Block, position: number): PrefixChang
       summary: `message #${position} (${role}) edited: a ${dynamic} value was updated (${quoteShort(dynamicSpan(before, after))})`,
       detail: { message: position, role, dynamic },
     }
+  const added = changed.filter((part) => part.sizeBefore === 0).length
+  const removed = changed.filter((part) => part.sizeAfter === 0).length
+  const how =
+    changed.length > 0 && added === changed.length
+      ? `: ${added} ${plural(added, "part")} appended`
+      : changed.length > 0 && removed === changed.length
+        ? `: ${removed} ${plural(removed, "part")} removed`
+        : ""
   return {
     ...base,
     cause: "message_edited",
-    summary: `message #${position} (${role}) was edited after it was sent`,
-    detail: { message: position, role },
+    summary: `message #${position} (${role}) was edited after it was sent${how}`,
+    detail: { message: position, role, parts_added: added, parts_removed: removed },
   }
 }
 

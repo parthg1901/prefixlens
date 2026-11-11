@@ -96,12 +96,12 @@ function missDetail(turn: TurnResult, multiLane: boolean): string {
     turn.baseline_turn ? `compared with turn ${turn.baseline_turn}` : "",
     multiLane ? `lane ${turn.lane}` : "",
     turn.cause ? `${turn.cause.confidence}` : "",
-    turn.cause?.block_index !== undefined ? `first changed block #${turn.cause.block_index}` : "",
+    turn.cause?.block_index !== undefined ? `first changed block: #${turn.cause.block_index + 1} of the request (${turn.cause.region})` : "",
   ].filter(Boolean)
   return `<details class="miss ${turn.status}" id="turn-${turn.turn}"${turn.cause?.diff ? " open" : ""}>
   <summary>${escape(missLine(turn))}</summary>
   <p class="facts">${escape(facts.join(" · "))}</p>
-  ${turn.cause?.diff ? `<pre class="diff">${turn.cause.diff.split("\n").map(diffLine).join("\n")}</pre>` : ""}
+  ${turn.cause?.diff ? `<pre class="diff">${turn.cause.diff.split("\n").map(diffLine).join("")}</pre>` : ""}
 </details>`
 }
 

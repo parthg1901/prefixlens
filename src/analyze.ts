@@ -126,7 +126,7 @@ function analyzeTurn(
     turn: index + 1,
     ...(record.id ? { id: record.id } : {}),
     ...(record.session ? { session: record.session } : {}),
-    lane: laneOf(record),
+    lane: record.lane ?? "main",
     ts: record.ts,
     provider: record.provider,
     model: record.model,
