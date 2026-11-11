@@ -2,7 +2,7 @@
 // of inline script for filtering. No external requests.
 
 import type { Analysis, TurnResult } from "../analyze.ts"
-import { clock, exact, isMiss, missLine, money, percent, STATUS_LABEL, tokens } from "./format.ts"
+import { clock, exact, spansDays, isMiss, missLine, money, percent, STATUS_LABEL, tokens } from "./format.ts"
 
 export interface HtmlOptions {
   title?: string
@@ -64,9 +64,9 @@ ${misses.length > 0 ? `<section>
   <label class="filter"><input type="checkbox" id="only-misses"> show only misses and cold starts</label>
   <div class="scroll">
   <table class="turns" id="turns">
-    <thead><tr><th class="n">turn</th><th>time</th>${multiLane ? "<th>lane</th>" : ""}<th>model</th><th class="n">prompt</th><th class="n">read</th><th class="n">write</th><th class="n">uncached</th><th class="n">out</th><th class="n">hit</th><th class="n">cost</th><th>status</th></tr></thead>
+    <thead><tr><th class="n">turn</th><th>time (UTC)</th>${multiLane ? "<th>lane</th>" : ""}<th>model</th><th class="n">prompt</th><th class="n">read</th><th class="n">write</th><th class="n">uncached</th><th class="n">out</th><th class="n">hit</th><th class="n">cost</th><th>status</th></tr></thead>
     <tbody>
-    ${analysis.turns.map((turn) => row(turn, multiLane)).join("\n")}
+    ${analysis.turns.map((turn) => row(turn, multiLane, spansDays(analysis.turns))).join("\n")}
     </tbody>
   </table>
   </div>
@@ -110,11 +110,11 @@ function diffLine(line: string): string {
   return `<span class="${kind}">${escape(line)}</span>`
 }
 
-function row(turn: TurnResult, multiLane: boolean): string {
+function row(turn: TurnResult, multiLane: boolean, withDate: boolean): string {
   const status = isMiss(turn) ? `${STATUS_LABEL[turn.status]}: ${turn.cause?.summary ?? ""}` : STATUS_LABEL[turn.status]
   const cost = turn.cost ? money(turn.cost.total) : turn.usage.reported_cost !== undefined ? `${money(turn.usage.reported_cost)}*` : "-"
   const statusCell = isMiss(turn) ? `<a href="#turn-${turn.turn}">${escape(status)}</a>` : escape(status)
-  return `<tr class="${turn.status}" data-status="${turn.status}"><td class="n">${turn.turn}</td><td>${clock(turn.ts)}</td>${multiLane ? `<td>${escape(turn.lane)}</td>` : ""}<td>${escape(turn.model)}</td><td class="n">${exact(turn.prompt_tokens)}</td><td class="n">${exact(turn.usage.cache_read_tokens)}</td><td class="n">${turn.usage.cache_write_tokens === null ? "-" : exact(turn.usage.cache_write_tokens)}</td><td class="n">${exact(turn.usage.input_tokens)}</td><td class="n">${exact(turn.usage.output_tokens)}</td><td class="n">${percent(turn.hit_rate)}</td><td class="n">${cost}</td><td>${statusCell}</td></tr>`
+  return `<tr class="${turn.status}" data-status="${turn.status}"><td class="n">${turn.turn}</td><td>${clock(turn.ts, withDate)}</td>${multiLane ? `<td>${escape(turn.lane)}</td>` : ""}<td>${escape(turn.model)}</td><td class="n">${exact(turn.prompt_tokens)}</td><td class="n">${exact(turn.usage.cache_read_tokens)}</td><td class="n">${turn.usage.cache_write_tokens === null ? "-" : exact(turn.usage.cache_write_tokens)}</td><td class="n">${exact(turn.usage.input_tokens)}</td><td class="n">${exact(turn.usage.output_tokens)}</td><td class="n">${percent(turn.hit_rate)}</td><td class="n">${cost}</td><td>${statusCell}</td></tr>`
 }
 
 /** Stacked bars of read / write / uncached tokens; long traces are bucketed so the chart stays readable. */

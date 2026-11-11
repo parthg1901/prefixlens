@@ -19,9 +19,17 @@ export function percent(value: number): string {
   return `${(value * 100).toFixed(value >= 0.995 || value === 0 ? 0 : 1)}%`
 }
 
-export function clock(ts: string): string {
+/** HH:MM:SS (UTC), or MM-DD HH:MM when the trace spans more than one day. */
+export function clock(ts: string, withDate = false): string {
   const date = new Date(ts)
-  return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(11, 19)
+  if (Number.isNaN(date.getTime())) return ""
+  const iso = date.toISOString()
+  return withDate ? `${iso.slice(5, 10)} ${iso.slice(11, 16)}` : iso.slice(11, 19)
+}
+
+export function spansDays(turns: { ts: string }[]): boolean {
+  const days = new Set(turns.map((turn) => turn.ts.slice(0, 10)))
+  return days.size > 1
 }
 
 export const STATUS_LABEL: Record<Status, string> = {

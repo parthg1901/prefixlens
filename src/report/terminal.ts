@@ -1,7 +1,7 @@
 // Plain-text report for the terminal.
 
 import type { Analysis, TurnResult } from "../analyze.ts"
-import { clock, exact, isMiss, missLine, money, percent, shortModel, STATUS_LABEL, tokens } from "./format.ts"
+import { clock, exact, spansDays, isMiss, missLine, money, percent, shortModel, STATUS_LABEL, tokens } from "./format.ts"
 
 export interface TerminalOptions {
   color?: boolean
@@ -20,6 +20,7 @@ export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}
   const summary = analysis.summary
   const out: string[] = []
   const multiLane = summary.lanes.length > 1
+  const withDate = spansDays(analysis.turns)
 
   out.push(paint.bold(`prefixlens report${options.title ? `: ${options.title}` : ""}`))
   out.push(
@@ -29,10 +30,10 @@ export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}
   out.push("")
 
   const rows = options.all || analysis.turns.length <= ROW_LIMIT ? analysis.turns : analysis.turns.filter((turn) => turn.status !== "hit")
-  const header = ["turn", "time", ...(multiLane ? ["lane"] : []), "model", "prompt", "read", "write", "uncached", "out", "hit", "cost", "status"]
+  const header = ["turn", "time (UTC)", ...(multiLane ? ["lane"] : []), "model", "prompt", "read", "write", "uncached", "out", "hit", "cost", "status"]
   const body = rows.map((turn) => [
     String(turn.turn),
-    clock(turn.ts),
+    clock(turn.ts, withDate),
     ...(multiLane ? [laneLabel(turn.lane)] : []),
     shortModel(turn.model),
     tokens(turn.prompt_tokens),

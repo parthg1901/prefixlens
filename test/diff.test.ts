@@ -205,6 +205,13 @@ describe("comparePrefix", () => {
     expect(change?.summary).toBe("history compacted (12 → 2 messages from message #1)")
   })
 
+  test("a conversation rewound to an earlier prompt", () => {
+    const long = Array.from({ length: 12 }, (_, index) => (index % 2 === 0 ? user(`u${index}`) : assistant(`a${index}`)))
+    const change = comparePrefix(view(body(long)), view(body([...long.slice(0, 8), user("edited prompt")])))
+    expect(change?.cause).toBe("history_rewound")
+    expect(change?.summary).toBe("conversation rewound at message #9: the 4 messages from there were replaced (rewind or edited prompt)")
+  })
+
   test("a harness compaction hint names compaction even when the shape is ambiguous", () => {
     const change = comparePrefix(view(body(history)), view(body([user("summary"), ...history.slice(1)]), { hints: [{ kind: "compaction" }] }))
     expect(change?.cause).toBe("compaction")

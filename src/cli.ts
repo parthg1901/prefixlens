@@ -169,11 +169,14 @@ function fail(message: string): number {
 }
 
 if (import.meta.main) {
+  // Set the exit code instead of calling process.exit so piped output is flushed first.
   main(process.argv.slice(2)).then(
-    (code) => process.exit(code),
+    (code) => {
+      process.exitCode = code
+    },
     (error: unknown) => {
       console.error(`prefixlens: ${error instanceof Error ? error.message : String(error)}`)
-      process.exit(1)
+      process.exitCode = 1
     },
   )
 }

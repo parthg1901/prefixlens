@@ -16,6 +16,7 @@ export type Cause =
   | "system_dynamic_value"
   | "compaction"
   | "history_truncated"
+  | "history_rewound"
   | "message_edited"
   | "message_dynamic_value"
   | "tool_output_rewritten"
@@ -52,6 +53,7 @@ export const CAUSE_GROUP: Record<Cause, CauseGroup> = {
   system_dynamic_value: "system-prompt changes",
   compaction: "compaction",
   history_truncated: "history rewrites",
+  history_rewound: "history rewrites",
   message_edited: "history rewrites",
   message_dynamic_value: "history rewrites",
   tool_output_rewritten: "history rewrites",
@@ -270,6 +272,14 @@ function explainMessages(prev: Comparable, next: Comparable, blockIndex: number)
       detail: { message: position, role: after.key },
       ...diffOf({ kind: "message", hash: "" }, after),
     }
+  if (isRewind(prevHashes, nextHashes, index))
+    return {
+      cause: "history_rewound",
+      summary: `conversation rewound at message #${position}: the ${prevMessages.length - index} messages from there were replaced (rewind or edited prompt)`,
+      region: "messages",
+      detail: { message: position, replaced: prevMessages.length - index, before: prevMessages.length, after: nextMessages.length },
+      ...diffOf(before, after),
+    }
   const reordered = reorderWindow(prevHashes, nextHashes, index)
   if (reordered)
     return {
@@ -324,13 +334,23 @@ function explainEdit(before: Block, after: Block, position: number): PrefixChang
   }
 }
 
-// History was replaced rather than edited in place: the next request is
-// shorter and none of the old messages after the divergence survive.
-function isCompaction(prev: string[], next: string[], index: number): boolean {
-  if (next.length >= prev.length - 1) return false
+// History was replaced rather than edited in place: few of the old messages
+// after the divergence survive anywhere in the next request.
+function replaced(prev: string[], next: string[], index: number): boolean {
   const survivors = new Set(next.slice(index))
   const kept = prev.slice(index).filter((hash) => survivors.has(hash)).length
   return kept <= Math.max(1, Math.floor((prev.length - index) / 4))
+}
+
+// Compaction replaces most of the conversation with something shorter.
+function isCompaction(prev: string[], next: string[], index: number): boolean {
+  const lost = prev.length - index
+  return next.length < prev.length - 1 && lost >= Math.max(4, prev.length / 2) && replaced(prev, next, index)
+}
+
+// A rewind keeps the early conversation and replaces a later stretch of several messages.
+function isRewind(prev: string[], next: string[], index: number): boolean {
+  return prev.length - index >= 3 && next.length < prev.length && replaced(prev, next, index)
 }
 
 function aligned(a: string[], fromA: number, b: string[], fromB: number): boolean {

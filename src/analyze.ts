@@ -216,6 +216,7 @@ function confirmedCause(change: PrefixChange | null, gap: number, ttl: number): 
 }
 
 const USAGE_ONLY = "usage-only trace: root-cause diffs need full requests"
+const UNCONFIRMED = "unconfirmed (usage-only)"
 
 function inferredCause(previous: TraceRecord, record: TraceRecord, gap: number, ttl: number): CauseInfo {
   const inferred = (cause: Cause, summary: string, detail?: Record<string, unknown>): CauseInfo => ({
@@ -233,15 +234,15 @@ function inferredCause(previous: TraceRecord, record: TraceRecord, gap: number, 
   const hint = (kind: string) => record.hints?.find((candidate) => candidate.kind === kind)
   const compaction = hint("compaction")
   if (compaction)
-    return inferred("compaction", `history compacted before this call (from the harness log${compaction.detail ? `: ${compaction.detail}` : ""}); ${USAGE_ONLY} to confirm`)
+    return inferred("compaction", `history compacted before this call (harness log${compaction.detail ? `: ${compaction.detail}` : ""}); ${UNCONFIRMED}`)
   const agent = hint("agent_switch")
   if (agent)
-    return inferred("tools_changed", `agent switched (${agent.detail ?? "different agent"}); its tool list and system prompt usually differ. ${USAGE_ONLY} to confirm`)
+    return inferred("tools_changed", `agent switched (${agent.detail ?? "different agent"}); its tool list and system prompt usually differ; ${UNCONFIRMED}`)
   const pruned = hint("tool_output_pruned")
   if (pruned)
-    return inferred("tool_output_rewritten", `the harness pruned earlier tool outputs before this call${pruned.detail ? ` (${pruned.detail})` : ""}; ${USAGE_ONLY} to confirm`)
+    return inferred("tool_output_rewritten", `the harness pruned earlier tool outputs before this call${pruned.detail ? ` (${pruned.detail})` : ""}; ${UNCONFIRMED}`)
   if (gap > ttl)
-    return inferred("cache_expired", `likely cache expiry: ${duration(gap)} since the previous call (TTL ${duration(ttl)}); ${USAGE_ONLY} to confirm`, {
+    return inferred("cache_expired", `likely cache expiry: ${duration(gap)} since the previous call (TTL ${duration(ttl)}); ${UNCONFIRMED}`, {
       gap_seconds: gap,
       ttl_seconds: ttl,
     })
@@ -286,7 +287,7 @@ function summarize(turns: TurnResult[], records: TraceRecord[]): Summary {
     entry.cost += turn.miss_cost ?? 0
     groups.set(group, entry)
   }
-  const byGroup = [...groups.values()].sort((a, b) => b.cost - a.cost || b.misses - a.misses)
+  const byGroup = [...groups.values()].sort((a, b) => b.misses - a.misses || b.cost - a.cost)
   const status = { cold: 0, hit: 0, partial: 0, miss: 0, uncached: 0 }
   for (const turn of turns) status[turn.status]++
   const usageOnly = turns.filter((turn) => turn.fidelity === "usage-only").length
@@ -322,7 +323,7 @@ function summarize(turns: TurnResult[], records: TraceRecord[]): Summary {
 function headline(misses: number, cost: number | null, groups: GroupTotal[]): string {
   if (misses === 0) return "No cache misses after the first call in each lane."
   const costText = cost === null ? "" : ` cost ${money(cost)}`
-  const parts = groups.map((group) => `${group.misses} from ${group.group}`)
+  const parts = groups.map((group) => (group.group === "unknown causes" ? `${group.misses} with no known cause` : `${group.misses} from ${group.group}`))
   return `${misses} ${misses === 1 ? "miss" : "misses"}${costText}; ${parts.join(", ")}`
 }
 

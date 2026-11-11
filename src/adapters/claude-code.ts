@@ -27,19 +27,42 @@ type Entry = Record<string, unknown>
 export async function importClaudeCode(input: string, options: ImportOptions): Promise<ImportResult> {
   const files = await sessionFiles(input, options.subagents ?? true)
   const warnings: string[] = []
+  let costState: Entry | undefined
   const records = (
     await Promise.all(
-      files.map(async (file) => {
+      files.map(async (file, index) => {
         const entries = parseLines(await Bun.file(file.path).text(), file.path, warnings)
-        const imported = entries.some((entry) => entry.type === "api-request")
+        if (index === 0) costState = entries.findLast((entry) => entry.type === "cost-state")
+        return entries.some((entry) => entry.type === "api-request")
           ? fullRecords(entries, file.lane, warnings)
           : usageRecords(entries, file.lane, warnings)
-        return imported
       }),
     )
   ).flat()
   records.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
+  if (costState && (options.subagents ?? true)) warnings.push(...compareCostState(costState, records))
   return { records, warnings }
+}
+
+/**
+ * Claude Code keeps its own running token totals per model. When they exceed
+ * what the per-call records add up to, some calls (compaction summaries, side
+ * queries, failed requests) were billed but not logged call by call.
+ */
+function compareCostState(state: Entry, records: TraceRecord[]): string[] {
+  if (!isRecord(state.modelUsage)) return []
+  return Object.entries(state.modelUsage).flatMap(([model, usage]) => {
+    if (!isRecord(usage)) return []
+    const theirs = ["inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"].reduce((sum, key) => sum + Number(usage[key] ?? 0), 0)
+    const ours = records
+      .filter((record) => record.model === model)
+      .reduce((sum, record) => sum + record.usage.input_tokens + record.usage.cache_read_tokens + (record.usage.cache_write_tokens ?? 0), 0)
+    if (theirs - ours <= Math.max(1000, ours * 0.002)) return []
+    const cost = typeof usage.costUSD === "number" ? `; Claude Code puts its cost at ${usage.costUSD.toFixed(2)} USD` : ""
+    return [
+      `Claude Code's own totals for ${model} show ${(theirs - ours).toLocaleString("en-US")} more prompt tokens than the logged calls${cost}. Calls such as compaction summaries or side queries are billed but not logged one by one.`,
+    ]
+  })
 }
 
 async function sessionFiles(input: string, subagents: boolean) {
@@ -293,22 +316,33 @@ function usageRecords(entries: Entry[], lane: string, warnings: string[]): Trace
   }
   const sessionHints = hintsByTime(entries)
   if (groups.size === 0) warnings.push(`${lane}: no assistant responses with usage found`)
+  // The request's breakpoints are not logged, but the usage says which TTL its
+  // cache writes used; carry the last one seen forward per lane.
+  const ttls = new Map<string, number>()
   return [...groups.entries()].map(([id, group]): TraceRecord => {
     const first = group[0]!
     const last = group.at(-1)!
     const message = last.message as Entry
     const ts = String(first.timestamp)
     const hints = sessionHints(ts)
+    // Old logs kept sidechains inline in the main file; subagent files are already their own lane.
+    const recordLane = first.isSidechain === true && lane === "main" ? "sidechain" : lane
+    const creation = isRecord(message.usage) && isRecord(message.usage.cache_creation) ? message.usage.cache_creation : {}
+    const oneHour = Number(creation.ephemeral_1h_input_tokens ?? 0)
+    const fiveMinute = Number(creation.ephemeral_5m_input_tokens ?? 0)
+    if (oneHour > 0 || fiveMinute > 0) ttls.set(recordLane, oneHour >= fiveMinute ? 3600 : 300)
+    const ttl = ttls.get(recordLane)
     return {
       v: 1,
       id,
       ...(typeof first.sessionId === "string" ? { session: first.sessionId } : {}),
-      lane: first.isSidechain === true ? "sidechain" : lane,
+      lane: recordLane,
       ts,
       provider: "anthropic",
       model: String(message.model ?? ""),
       fidelity: "usage-only",
       usage: normalizeUsage("anthropic", message.usage),
+      ...(ttl ? { cache_ttl_seconds: ttl } : {}),
       ...(hints.length > 0 ? { hints } : {}),
       source: { adapter: "claude-code", ...(typeof first.version === "string" ? { version: first.version } : {}) },
     }
