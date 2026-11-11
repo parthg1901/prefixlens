@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import path from "node:path"
 import { analyze } from "../src/analyze.ts"
+import { paramRule } from "../src/params.ts"
 import { parsePricing } from "../src/pricing.ts"
 import { parseTrace } from "../src/trace.ts"
 import { TEST_PRICING } from "./helpers.ts"
@@ -22,5 +23,21 @@ describe("SPEC.md example", () => {
   test("the usage-only example is a valid record", () => {
     const record = spec.match(/A usage-only record needs only the required fields:\n\n```json\n([\s\S]*?)```/)![1]!
     expect(parseTrace(record).errors).toEqual([])
+  })
+})
+
+describe("SPEC.md section 8.1", () => {
+  test("the parameter table says what the code does", () => {
+    const section = spec.slice(spec.indexOf("### 8.1"), spec.indexOf("## 9."))
+    const rows = section.split("\n").filter((line) => /^\| (all|anthropic|openai) \|/.test(line))
+    expect(rows.length).toBeGreaterThan(8)
+    for (const row of rows) {
+      const [provider, keys, cached] = row.split("|").slice(1, 4).map((cell) => cell.trim())
+      // Only the backticked names before any parenthesis are parameters; "(effort)" names a field inside one.
+      const names = [...keys!.replace(/\([^)]*\)/g, "").matchAll(/`([a-z_]+)`/g)].map((match) => match[1]!)
+      const effect = cached!.replace(/\*/g, "").startsWith("yes") ? "prefix" : "none"
+      for (const target of provider === "all" ? ["anthropic", "openai", "gemini", "other-gateway"] : [provider!])
+        for (const name of names) expect({ target, name, effect: paramRule(target, name).effect }).toEqual({ target, name, effect })
+    }
   })
 })

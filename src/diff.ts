@@ -2,6 +2,7 @@
 // first block that changed, and names the change in plain words.
 
 import { canonicalJson, hashContent, isRecord } from "./canonical.ts"
+import { paramRule, type InvalidatesFrom } from "./params.ts"
 import { changedSpan, flatten, renderDiff } from "./textdiff.ts"
 import type { Block, Hint } from "./trace.ts"
 
@@ -83,6 +84,8 @@ export interface PrefixChange {
 }
 
 export interface Comparable {
+  /** Whose caching rules apply to params (SPEC 8.1). Unknown or absent: the rules common to every provider. */
+  provider?: string
   model: string
   params?: Record<string, unknown>
   blocks: Block[]
@@ -90,8 +93,9 @@ export interface Comparable {
 }
 
 /**
- * Parameters that do not change the prompt prefix. Changing them never
- * explains a cache miss, so they are left out of the params comparison.
+ * Parameters no provider caches on (sampling, output limits, bookkeeping).
+ * @deprecated The comparison is per provider now; see `paramRule` and
+ * `PARAM_RULES` in params.ts. Kept as the provider-independent part of that table.
  */
 export const PARAMS_IGNORED = new Set([
   "max_tokens",
@@ -138,15 +142,21 @@ export function comparePrefix(prev: Comparable, next: Comparable): PrefixChange 
   const region = index === -1 ? undefined : regionAt(prev.blocks, next.blocks, index)
   if (region === "tools") return { ...explainTools(prev.blocks, next.blocks), block_index: index }
   if (region === "system") return { ...explainSystem(prev.blocks, next.blocks), block_index: index }
-  const params = changedParams(prev.params ?? {}, next.params ?? {})
-  if (params.length > 0)
+  const provider = next.provider ?? prev.provider
+  const params = changedParams(prev.params ?? {}, next.params ?? {}, provider)
+  if (params.length > 0) {
+    const rules = Object.fromEntries(params.map((key) => [key, paramRule(provider, key)]))
+    // Several changed params invalidate from the earliest part any of them reaches.
+    const order: InvalidatesFrom[] = ["start", "system", "messages"]
+    const from = order.find((level) => params.some((key) => rules[key]!.from === level)) ?? "start"
     return {
       cause: "params_changed",
       summary: `request parameters changed: ${params.join(", ")}`,
       region: "params",
-      detail: { keys: params },
+      detail: { keys: params, from, evidence: Object.fromEntries(params.map((key) => [key, rules[key]!.evidence])) },
       diff: renderDiff(pick(prev.params ?? {}, params), pick(next.params ?? {}, params)),
     }
+  }
   if (region === "messages") return { ...explainMessages(prev, next, index), block_index: index }
   return null
 }
@@ -482,8 +492,8 @@ function spanAround(a: string, b: string) {
   return { a: trim(a.slice(start, endA)), b: trim(b.slice(start, endB)) }
 }
 
-function changedParams(prev: Record<string, unknown>, next: Record<string, unknown>): string[] {
-  const keys = [...new Set([...Object.keys(prev), ...Object.keys(next)])].filter((key) => !PARAMS_IGNORED.has(key))
+function changedParams(prev: Record<string, unknown>, next: Record<string, unknown>, provider: string | undefined): string[] {
+  const keys = [...new Set([...Object.keys(prev), ...Object.keys(next)])].filter((key) => paramRule(provider, key).effect === "prefix")
   return keys.filter((key) => canonicalJson(prev[key] ?? null) !== canonicalJson(next[key] ?? null)).sort()
 }
 

@@ -17,6 +17,18 @@ test("a compaction may replace history, but the tools and instructions must surv
   assertPrefixStable(buildRequest(second), buildRequest(compacted), { allowBreak: { after: "system", reason: "compaction" } })
 })
 
+test("forbidding tools on the last step keeps the prefix (OpenAI does not cache on tool_choice)", () => {
+  assertPrefixStable(buildRequest(first), buildRequest(second, { finalStep: true }))
+})
+
+test("a revert may drop messages, but must keep the tools and instructions", () => {
+  const reverted: Turn[] = [first[0]!, { role: "assistant", text: "Let me start over." }]
+  assertPrefixStable(buildRequest(second), buildRequest(reverted), { allowBreak: "revert" })
+  const result = explainPrefixDiff(buildRequest(second), buildRequest(reverted, { mode: "plan" }), { allowBreak: "revert" })
+  expect(result.ok).toBe(false)
+  expect(result.message).toContain("a break was allowed (revert) only after block 4")
+})
+
 // The four common bugs. Each test shows the message prefixlens fails with;
 // in your own suite you would call assertPrefixStable and let it throw.
 describe("common bugs prefixlens catches", () => {

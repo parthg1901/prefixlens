@@ -40,16 +40,47 @@ export const STATUS_LABEL: Record<Status, string> = {
   uncached: "no cache",
 }
 
+/** A call that lost cached tokens and that the harness did not declare as an intentional break: an avoidable miss. */
 export function isMiss(turn: TurnResult): boolean {
-  return turn.status === "miss" || turn.status === "partial"
+  return (turn.status === "miss" || turn.status === "partial") && !turn.declared_break?.intentional
 }
 
-/** "turn 41: miss, tool list changed (+2 tools), ~$0.38" */
+/** A call that lost cached tokens because of a break the harness declared (SPEC 6.1). */
+export function isIntentional(turn: TurnResult): boolean {
+  return (turn.status === "miss" || turn.status === "partial") && Boolean(turn.declared_break?.intentional)
+}
+
+/** "intentional break (compaction)" */
+export function intentionalLabel(turn: TurnResult): string {
+  return `intentional break (${turn.declared_break!.reasons.join(", ")})`
+}
+
+/** "turn 41: miss, tool list changed (+2 tools), ~$0.38", or "turn 9: intentional break (revert), cost ~$0.05: history rewound …" */
 export function missLine(turn: TurnResult): string {
   const cost = turn.miss_cost === null ? "" : `, ~${money(turn.miss_cost)}`
+  if (isIntentional(turn)) return `turn ${turn.turn}: ${intentionalLabel(turn)}${cost}; ${turn.cause?.summary ?? "cause unknown"}`
   return `turn ${turn.turn}: ${STATUS_LABEL[turn.status]}, ${turn.cause?.summary ?? "cause unknown"}${cost}`
+}
+
+/** Facts under a miss line: tokens lost, baseline, lane, confidence, and for a declared break whether it was checked. */
+export function missFacts(turn: TurnResult, multiLane: boolean, lane: (name: string) => string = (name) => name): string[] {
+  const declared = turn.declared_break
+  return [
+    `lost ${exact(turn.lost_tokens)} of ${exact(turn.expected_cached_tokens)} cached tokens`,
+    turn.baseline_turn ? `vs turn ${turn.baseline_turn}` : "",
+    multiLane ? `lane ${lane(turn.lane)}` : "",
+    turn.cause?.confidence ?? "",
+    declared?.intentional
+      ? `declared by the harness${details(turn)}; ${declared.checked ? "the change is where the declaration allows" : "not checked (usage-only)"}`
+      : "",
+  ].filter(Boolean)
 }
 
 export function shortModel(model: string): string {
   return model.length <= 22 ? model : `${model.slice(0, 21)}…`
+}
+
+function details(turn: TurnResult): string {
+  const text = turn.declared_break!.declarations.flatMap((entry) => (entry.detail ? [entry.detail] : [])).join("; ")
+  return text ? ` (${text})` : ""
 }

@@ -78,9 +78,9 @@ describe("assertPrefixStable", () => {
   })
 
   test("ignoreParams leaves a parameter out", () => {
-    const last = responses(turn2.input, { tool_choice: "none" })
+    const last = responses(turn2.input, { reasoning: { effort: "high", summary: "auto" } })
     expect(explainPrefixDiff(turn2, last).ok).toBe(false)
-    expect(assertPrefixStable(turn2, last, { ignoreParams: ["tool_choice"] }).stable).toBe(true)
+    expect(assertPrefixStable(turn2, last, { ignoreParams: ["reasoning"] }).stable).toBe(true)
   })
 
   test("allowBreak: a compaction may replace history", () => {
@@ -94,7 +94,7 @@ describe("assertPrefixStable", () => {
   test("allowBreak.after: tools and instructions must survive a compaction", () => {
     const compactedWithNewTools = responses([say("user", "Summary.")], { tools: responsesTools.slice(0, 2) })
     const message = failure(turn2, compactedWithNewTools, { allowBreak: { after: "system", reason: "compaction" } })
-    expect(message).toContain("a break was allowed (compaction) only after block 4, and this one is earlier")
+    expect(message).toContain("a break was allowed (compaction) only after block 4 (the tools and system prompt must stay), and this one is earlier")
     expect(assertPrefixStable(turn2, compactedWithNewTools, { allowBreak: { reason: "compaction" } }).ok).toBe(true)
     expect(assertPrefixStable(turn2, responses([say("user", "Fix the synthetic bug."), reply("Rewound.")]), { allowBreak: { after: { message: 1 }, reason: "rewind" } }).ok).toBe(true)
     expect(explainPrefixDiff(turn2, responses([say("user", "Rewound early.")]), { allowBreak: { after: { message: 1 } } }).ok).toBe(false)

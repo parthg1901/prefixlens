@@ -20,6 +20,8 @@ export interface BuildOptions {
   tidyHistory?: boolean
   /** Bug: plan mode hides the write tools instead of refusing them. */
   mode?: "build" | "plan"
+  /** Not a bug: the last step of a run forbids tool calls with `tool_choice: "none"` and keeps the tool list. */
+  finalStep?: boolean
 }
 
 const TOOLS: Tool[] = [
@@ -39,6 +41,7 @@ export function buildRequest(history: Turn[], options: BuildOptions = {}) {
     store: false,
     stream: true,
     instructions: `You are a careful coding agent.${options.now ? ` The time is ${options.now.toISOString()}.` : ""}`,
+    tool_choice: options.finalStep ? "none" : "auto",
     tools: tools.map((tool) => ({ type: "function", name: tool.name, description: tool.description, parameters: { type: "object" }, strict: false })),
     input: history.map((turn, index) =>
       turn.role === "user"

@@ -1,6 +1,6 @@
 {
   "name": "prefixlens",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Explains prompt-cache hits and misses for LLM agent harnesses.",
   "type": "module",
   "bin": {

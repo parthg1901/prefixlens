@@ -1,6 +1,13 @@
-# prefixlens trace format, version 1
+# prefixlens trace format, version 1.1
 
 This document specifies the trace format that prefixlens reads. A harness in any language can write it directly; prefixlens's own log adapters write it too. The key words MUST, SHOULD and MAY are used as in RFC 2119.
+
+**Versions and compatibility.** Records carry the major version in `v`, which is `1` for every 1.x version of this document. A minor version only adds optional fields and hint kinds, so:
+
+- every 1.0 trace is a valid 1.1 trace and reads exactly as before;
+- a 1.0 reader reads a 1.1 trace, ignoring what it does not know (section 2, section 6). It will then report a declared intentional break (section 6.1) as an ordinary miss: the trace degrades to what it would have said without the declaration, never to something less safe.
+
+Version 1.1 adds the `prefix_break` hint (section 6.1), states the canonical form of every `cache_control` marker and of a non-string system prompt (section 4.3), and documents which request parameters each provider caches on (section 8.1).
 
 A trace records the model calls an agent made, one record per call, so that each call can be compared with the call before it. The comparison answers two questions: did the call read from the prompt cache what the previous call left there, and if not, which part of the request changed.
 
@@ -17,19 +24,19 @@ A trace records the model calls an agent made, one record per call, so that each
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `v` | integer | yes | Format version. Always `1` for this document. |
+| `v` | integer | yes | Major format version. Always `1` for this document (1.1); see "Versions and compatibility". |
 | `ts` | string | yes | When the request was sent, as an RFC 3339 timestamp with a time zone, e.g. `"2026-01-01T10:00:00.000Z"`. Use the request start, not the response end: cache lifetimes run from the start of the request that wrote or read the entry. |
 | `provider` | string | yes | Whose caching rules apply: `"anthropic"`, `"openai"` or `"gemini"`. Other values are allowed (e.g. a gateway id); readers then fall back to defaults. For a model reached through a gateway or cloud (Bedrock, Vertex, OpenRouter), use the provider that built the model. |
 | `model` | string | yes | Model id as sent in the request, e.g. `"claude-opus-5-5"`. |
 | `fidelity` | string | yes | `"full-request"` or `"usage-only"`. See section 5. |
 | `usage` | object | yes | Token counts from the response. See section 3. |
 | `request` | object | when `fidelity` is `"full-request"` | `{ "reuse"?: integer, "blocks": [Block, ...] }`: the request as ordered blocks (section 4), optionally starting with blocks reused from the previous full request in the same lane (section 4.6). MUST be absent or ignored for `"usage-only"`. |
-| `params` | object | no | Every request field that is not the model, tools, system prompt or messages, for example `{"max_tokens": 32000, "thinking": {"type": "adaptive"}, "tool_choice": {"type": "auto"}}`. Leave out transport-only fields (`stream`, `stream_options`). Never include credentials or headers. |
+| `params` | object | no | Every request field that is not the model, tools, system prompt or messages, for example `{"max_tokens": 32000, "thinking": {"type": "adaptive"}, "tool_choice": {"type": "auto"}}`. Leave out transport-only fields (`stream`, `stream_options`). Never include credentials or headers. Write parameters as sent, including ones the provider does not cache on: section 8.1 decides which ones matter, so a writer does not need to. A parameter whose value is not known MAY be left out. |
 | `id` | string | no | An identifier for the call, unique within the trace (a request id or response id). |
 | `session` | string | no | The conversation this call belongs to. |
 | `lane` | string | no | A sequence of calls within the session that build on each other, e.g. `"main"` or a subagent id. Default `"main"`. See section 7. |
 | `cache_ttl_seconds` | integer | no | Cache lifetime that applied to the prefix this call wrote, in seconds. For Anthropic, the TTL of the last `cache_control` breakpoint: `300` for the default 5 minutes, `3600` for `"ttl": "1h"`. Omit when unknown; readers use the provider default. |
-| `hints` | array | no | Facts the harness knows about what happened before this call. See section 6. |
+| `hints` | array | no | Facts the harness knows about what happened before this call, including intentional breaks it declares. See section 6. |
 | `headers` | object of strings | no | Request headers that route the request to a cache or change what is cached, lowercase names, e.g. `{"session-id": "…"}` (OpenAI's ChatGPT sign-in flow routes its prompt cache by `session-id`), `anthropic-beta`, `anthropic-version`, `openai-beta`. Writers MUST write only headers known not to be credentials: never `authorization`, `x-api-key`, cookies or account ids. prefixlens reports a miss with the prefix intact and a changed `session-id` as a routing change, not a provider-side miss. |
 | `source` | object | no | Free-form provenance, e.g. `{"adapter": "claude-code", "version": "2.1.322"}` or `{"harness": "myagent", "version": "0.3.0"}`. Readers do not interpret it. |
 
@@ -86,7 +93,7 @@ Within each group, blocks keep the order of the request:
 |---|---|---|---|
 | Anthropic | each element of `tools` | each element of `system` (a string `system` is one block) | each element of `messages` |
 | OpenAI Chat | each element of `tools` (and legacy `functions`) | each leading `messages` element whose role is `system` or `developer` | the other `messages` elements |
-| OpenAI Responses | each element of `tools` | `instructions` (one block), then each leading `input` item whose role is `system` or `developer` | the other `input` items |
+| OpenAI Responses | each element of `tools` | `instructions` (one block, absent when `instructions` is absent or `null`), then each leading `input` item whose role is `system` or `developer` | the other `input` items |
 | Gemini | each entry of `tools[].functionDeclarations`; other tool entries (e.g. `{"googleSearch": {}}`) whole | each part of `systemInstruction.parts` | each element of `contents` |
 
 "Leading" means before the first element with any other role; a system or developer message later in the conversation is a message block, so the order rule holds.
@@ -97,8 +104,9 @@ The tools-before-system order matches Anthropic's documented render order (tools
 
 `content` is the block as the provider received it, with two normalizations, so that harmless representation changes do not look like edits:
 
-1. **Remove cache markers.** Delete the `cache_control` key from the block object itself and from each element of its `content` array (message parts). Do not delete keys at other depths. Breakpoints move between calls without changing what is cached; record them in `breakpoint` instead.
+1. **Remove cache markers.** Delete the `cache_control` key from the block object itself and from each element of its message parts (the `content` array; for Gemini, the `parts` array). Do not delete keys at other depths. Breakpoints move between calls without changing what is cached; record them in `breakpoint` instead. This applies to every block of every provider: tools, system parts and messages alike. Only Anthropic defines `cache_control`, but OpenAI-compatible gateways accept the same marker in OpenAI-format bodies (on tools as well as messages) and forward it, and it moves between calls in the same way. A marker left in would make a moved breakpoint read as an edited tool or message.
 2. **Use the part form for text.** When a message's `content` is a string, replace it with a one-element array holding a text part: `[{"type": "text", "text": "<string>"}]` for Anthropic and OpenAI Chat; `{"type": "input_text", ...}` (or `"output_text"` for assistant messages) for OpenAI Responses. An Anthropic `system` string becomes one block with content `{"type": "text", "text": "<string>"}`; an OpenAI Responses `instructions` string becomes one block with the same content.
+3. **Keep undocumented system forms whole.** An Anthropic `system` or OpenAI Responses `instructions` that is `null` or absent gives no block. One that is neither a string nor (for Anthropic `system`) an array is not a documented form; it becomes one system block whose content is the value as sent. It is never dropped: the provider received it, so a change to it must show.
 
 Everything else is kept as sent, including key order (which does not affect the hash) and unknown fields.
 
@@ -158,9 +166,51 @@ Optional facts from the harness's own log, used to explain usage-only misses and
 | `compaction_call` | This call is the compaction (summarization) request itself. |
 | `tool_output_pruned` | Earlier tool outputs were cleared or shortened in history before this call. |
 | `agent_switch` | The agent or mode changed before this call (its tools and system prompt usually differ). `detail` like `"build → plan"`. |
-| `model_switch` | The user or harness changed models before this call. |
+| `model_switch` | The user or harness changed models before this call. Also declares an intentional break (section 6.1). |
+| `prefix_break` | The harness broke its own prefix on purpose before this call. Version 1.1; section 6.1. |
+
+A `compaction` hint also declares an intentional break (section 6.1). `agent_switch`, `tool_output_pruned` and `compaction_call` only name what happened: a mode switch that changes the tool list, or a pruned tool output, is the kind of change prefixlens exists to find, so it stays a miss unless the harness declares it with `prefix_break`.
 
 Readers MUST ignore hint kinds they do not know.
+
+### 6.1 Declaring an intentional break
+
+A harness sometimes breaks its prefix on purpose: it compacts history and rebuilds its instructions, the user reverts to an earlier point, a refused exchange is left out of history, the user picks another model or reasoning effort. The miss that follows is real and costs money, but it is not a bug. The harness declares it on the first call after the event with a `prefix_break` hint:
+
+```json
+{"kind": "prefix_break", "reason": "revert", "detail": "reverted to message 12"}
+```
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `kind` | string | yes | `"prefix_break"`. |
+| `reason` | string | yes | Why. One of the reasons below, or another short word. |
+| `after` | `"start"`, `"tools"`, `"system"`, `{"message": n}`, or an integer ≥ 0 | no | The last part of the previous request that the break leaves unchanged: nothing (`"start"`), the tools, the tools and system prompt, those plus messages 1..n, or the first n blocks. Default: set by `reason`, below. |
+| `detail` | string | no | Free text for people, e.g. `"high → low"`. |
+
+| `reason` | for | default `after` |
+|---|---|---|
+| `compaction` | history summarized or replaced (the harness may rebuild its instructions and tools with it) | `"start"` |
+| `revert` | the conversation was rewound to an earlier point | `"system"` |
+| `refusal` | a refused exchange was left out of history | `"system"` |
+| `model_switch` | the model changed | `"start"` |
+| `settings_change` | a request parameter changed on purpose, e.g. reasoning effort or thinking at the user's request | `"start"` |
+| any other value | | `"start"` |
+
+The older kinds keep working: a `compaction` hint declares `{"reason": "compaction", "after": "start"}` and a `model_switch` hint declares `{"reason": "model_switch", "after": "start"}`.
+
+**Reach.** A declaration applies to the call that carries it, and to nothing else:
+
+- It excuses that call's miss only when the first change, as section 8 finds it between this call and the previous one in its lane, starts at or after the part `after` keeps. The start of a model change is the first block; of a parameter change, the first block of the part section 8.1 says it invalidates; otherwise the first block that differs. A `revert` (after `"system"`) that also changed the tool list is not excused.
+- It does not excuse a miss with the prefix intact (an expiry or a provider-side miss): the break did not cause it.
+- It does not reach the next call. A second miss right after a declared break is compared with the call that carried the declaration, and is a miss.
+- When either of the two records is usage-only, where the prefix changed cannot be checked; the declaration is taken at its word and the report says it was not checked.
+
+**What a reader does with it.** An excused miss is still a miss of the cache: its status, lost tokens and cost are reported as for any other call. It is reported as an *intentional break* with its declared reason and the change found, and its cost is totalled separately from avoidable misses, so a declaration can move a cost from one total to the other but never hide it. A declaration that does not excuse the miss is reported with the miss, saying why.
+
+A malformed `prefix_break` hint (no `reason`, or an invalid `after`) MUST NOT excuse anything; prefixlens drops it with a warning.
+
+The same rules decide `assertPrefixStable`'s `allowBreak` option in `prefixlens/test`: `allowBreak: "revert"` allows exactly what a `{"kind": "prefix_break", "reason": "revert"}` hint excuses.
 
 ## 7. Lanes and comparison
 
@@ -175,14 +225,37 @@ For a call `c` with previous call `p` in the same lane:
 - **Expected cached tokens**: what `p` left in the cache. With explicit caching (`p.cache_write_tokens` not null): `p.cache_read_tokens + p.cache_write_tokens`. With implicit caching: `prompt(p)` rounded down to a multiple of 128 tokens (the step OpenAI caches in) if it is at least the provider's minimum cacheable size, else 0. The minimum cacheable size (default 1024 tokens) and the default TTL (300 seconds) are set per provider in the pricing table's `providers` section. Capped at `prompt(c)`.
 - **Lost tokens** = `max(0, expected − c.cache_read_tokens)`.
 - **Status**: `cold` (first in lane); `uncached` (expected below the minimum cacheable size and nothing read); `hit` (lost ≤ tolerance, default 128 tokens); `miss` (read ≤ tolerance); otherwise `partial`.
+- **Intentional breaks**: a miss or partial miss excused by a declaration (section 6.1) is reported as an intentional break, counted and costed apart from misses. The **miss** count and miss cost of a trace cover only the others.
 - **Cost** = Σ tokens × price from a user-editable pricing table (per million tokens, with separate 5-minute and 1-hour write prices). No price is built into the code.
 - **Miss cost** = lost tokens × (the average price this call paid per uncached input or cache-write token − the cache-read price).
 - **Cause** of a miss or partial miss, when both records are full-request: the first of these that applies:
   1. model changed;
   2. the first differing block is a tool (tools added or removed, same tools reordered, or a definition edited) or a system part (edited; or only a short timestamp/identifier-like span changed);
-  3. a cache-relevant param changed (all params except `max_tokens`, `max_output_tokens`, `max_completion_tokens`, `temperature`, `top_p`, `top_k`, `stop`, `stop_sequences`, `metadata`, `user`, `n`, `stream`, `stream_options`);
+  3. a cache-relevant param changed, by the rules of section 8.1 for the record's `provider`;
   4. the first differing block is a message: history truncated, compacted, rewound, a message removed, inserted, reordered, merged with its neighbour or split, a tool output rewritten (truncated or expanded), reasoning blocks changed, a dynamic value updated, or the message otherwise edited;
   5. nothing changed, or the first change comes after the last block of `p` marked `breakpoint` (the part `p` cached is intact): cache expired if the start-to-start gap exceeds the TTL (`p.cache_ttl_seconds`, else the provider default), otherwise a provider-side miss, which does not blame the harness. A request sent within a few seconds of the call that wrote the cache can miss this way: the new entry is not always readable yet.
+
+### 8.1 Which request parameters are part of the cached prefix
+
+A parameter is classified by its top-level request key, per provider. *Verified* means measured against the live API; *documented* means the provider's prompt-caching documentation says so; *assumed* means neither, with the reasoning given. A parameter not in the table is assumed cache-relevant from the start of the request, so that a change is never silently ignored; `assertPrefixStable` takes `ignoreParams` for one you have shown is not.
+
+| provider | parameter | in the cached prefix? | a change invalidates | evidence |
+|---|---|---|---|---|
+| all | `max_tokens`, `max_output_tokens`, `max_completion_tokens`, `temperature`, `top_p`, `top_k`, `stop`, `stop_sequences`, `n`, `seed`, `logprobs`, `top_logprobs`, `metadata`, `user` | no | | assumed: sampling and output limits apply after the prompt is read, and no provider lists them as affecting the cache |
+| anthropic | `tool_choice` | yes | messages only | documented ("What invalidates the cache": changes to `tool_choice` only affect message blocks) |
+| anthropic | `thinking` | yes | everything (messages always; tools and system on models that render it first) | documented |
+| anthropic | `output_config` (`effort`) | yes | everything, as `thinking` | documented for `effort`; assumed for the rest of `output_config` |
+| anthropic | `speed` | yes | system and messages | documented |
+| anthropic | `context_management`, `mcp_servers` | yes | everything | assumed: they change what the model reads (server-side context edits, extra tools) |
+| anthropic | `service_tier` | no | | assumed: billing and capacity only |
+| openai | `tool_choice` | **no** | | **verified on the Responses API**: a warm 5,159-token prefix read 4,992 cached tokens with `"auto"`, again with `"none"` and the tool list unchanged, and again after switching back. Assumed the same on Chat Completions, consistent with OpenAI's advice to set `tool_choice: "none"` rather than remove tools |
+| openai | `parallel_tool_calls`, `reasoning` (`effort`), `text` (`verbosity`, `format`), `context_management` | yes | everything (they change hidden instructions ahead of the prompt) | documented ("Which settings affect the cached prefix?") |
+| openai | `reasoning_effort`, `verbosity`, `response_format` | yes | everything | assumed: the Chat Completions names of the documented Responses settings |
+| openai | `prompt_cache_key` | yes | everything | documented: keys route requests to a cache |
+| openai | `store`, `include`, `service_tier`, `safety_identifier`, `background` | no | | assumed: storage, response fields, billing or delivery only |
+| gemini | everything but the common rows (`generationConfig`, `toolConfig`, `cachedContent`, ...) | yes | everything | assumed |
+
+Classifications are by provider, not by API: OpenAI's Chat Completions and Responses APIs use different names for most settings, and where they share one (`tool_choice`), the Responses measurement is applied to both, as stated. A provider not listed (a gateway id) gets the common rows and the default.
 
 ## 9. Example
 
@@ -211,4 +284,5 @@ A usage-only record needs only the required fields:
 5. Write each block's content once per file and hash-only afterwards, or hash-only throughout if you must redact. For long sessions, also set `request.reuse` (section 4.6) instead of repeating the unchanged prefix.
 6. Fill `usage` from the final usage of the response (section 3), with `cache_write_tokens: null` for implicit-caching providers.
 7. Give concurrent or independent conversations (subagents) their own `lane`.
-8. Never write credentials. If a header routes your requests to a cache (`session-id`), record it in `headers`.
+8. When you break your own prefix on purpose (compaction, revert, refused exchange left out, model or setting changed at the user's request), add a `prefix_break` hint with its `reason` to the next call (section 6.1). Do not declare anything else: a declaration excuses only the call it is on, and only a change where its reason allows.
+9. Never write credentials. If a header routes your requests to a cache (`session-id`), record it in `headers`.

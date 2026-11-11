@@ -2,7 +2,7 @@
 // of inline script for filtering. No external requests.
 
 import type { Analysis, TurnResult } from "../analyze.ts"
-import { clock, exact, spansDays, isMiss, missLine, money, percent, STATUS_LABEL, tokens } from "./format.ts"
+import { clock, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, spansDays, STATUS_LABEL, tokens } from "./format.ts"
 
 export interface HtmlOptions {
   title?: string
@@ -13,6 +13,7 @@ export interface HtmlOptions {
 export function renderHtml(analysis: Analysis, options: HtmlOptions = {}): string {
   const summary = analysis.summary
   const misses = analysis.turns.filter(isMiss)
+  const intentional = analysis.turns.filter(isIntentional)
   const title = options.title ? `prefixlens: ${options.title}` : "prefixlens report"
   const multiLane = summary.lanes.length > 1
   return `<!doctype html>
@@ -34,8 +35,9 @@ export function renderHtml(analysis: Analysis, options: HtmlOptions = {}): strin
 <section class="cards">
   ${card("Cache hit rate", percent(summary.hit_rate), `${tokens(summary.tokens.cache_read)} of ${tokens(summary.tokens.prompt)} prompt tokens read from cache`)}
   ${card("Total cost", summary.cost ? money(summary.cost.total) : "n/a", summary.cost ? `${money(summary.cost.uncached)} on uncached input and cache writes` : "some models are not in the pricing table")}
-  ${card("Lost to misses", summary.cost ? money(summary.cost.misses) : "n/a", `${summary.misses} ${summary.misses === 1 ? "call" : "calls"} missed cached tokens`)}
-  ${card("Calls", exact(summary.turns), `${summary.status.cold} cold · ${summary.status.hit} hit · ${summary.status.partial} partial · ${summary.status.miss} miss`)}
+  ${card("Lost to misses", summary.cost ? money(summary.cost.misses) : "n/a", `${summary.misses} ${summary.misses === 1 ? "call" : "calls"} missed cached tokens unexpectedly`)}
+  ${summary.intentional.breaks > 0 ? card("Intentional breaks", summary.cost ? money(summary.cost.intentional) : "n/a", `${summary.intentional.breaks} declared by the harness: ${summary.intentional.by_reason.map((reason) => `${reason.breaks} ${reason.reason}`).join(", ")}`, "intentional") : ""}
+  ${card("Calls", exact(summary.turns), `${summary.status.cold} cold · ${summary.status.hit} hit · ${summary.misses} missed${summary.intentional.breaks > 0 ? ` · ${summary.intentional.breaks} intentional` : ""}`)}
   ${summary.reported_cost !== undefined ? card("Harness-reported cost", money(summary.reported_cost), "as recorded in the session log") : ""}
 </section>
 
@@ -44,7 +46,7 @@ ${summary.notes.length + (options.pricingNote ? 1 : 0) > 0 ? `<section class="no
 <section>
   <h2>Prompt tokens per call</h2>
   ${chart(analysis.turns)}
-  <p class="legend"><span class="sw read"></span>read from cache <span class="sw write"></span>written to cache <span class="sw input"></span>uncached input <span class="sw missmark"></span>miss</p>
+  <p class="legend"><span class="sw read"></span>read from cache <span class="sw write"></span>written to cache <span class="sw input"></span>uncached input <span class="sw missmark"></span>miss <span class="sw intentmark"></span>intentional break</p>
 </section>
 
 ${summary.by_group.length > 0 ? `<section>
@@ -59,9 +61,18 @@ ${misses.length > 0 ? `<section>
   ${misses.map((turn) => missDetail(turn, multiLane)).join("\n")}
 </section>` : ""}
 
+${intentional.length > 0 ? `<section>
+  <h2>Intentional breaks</h2>
+  <p class="legend">Declared by the harness (a compaction, a revert, a model or setting change). Their cost is shown here and not counted as misses.</p>
+  ${summary.intentional.by_reason.length > 0 ? `<table class="groups"><thead><tr><th>reason</th><th class="n">breaks</th><th class="n">cost</th></tr></thead><tbody>
+  ${summary.intentional.by_reason.map((reason) => `<tr><td>${escape(reason.reason)}</td><td class="n">${reason.breaks}</td><td class="n">${summary.cost ? money(reason.cost) : "-"}</td></tr>`).join("")}
+  </tbody></table>` : ""}
+  ${intentional.map((turn) => missDetail(turn, multiLane)).join("\n")}
+</section>` : ""}
+
 <section>
   <h2>All calls</h2>
-  <label class="filter"><input type="checkbox" id="only-misses"> show only misses and cold starts</label>
+  <label class="filter"><input type="checkbox" id="only-misses"> show only misses, intentional breaks and cold starts</label>
   <div class="scroll">
   <table class="turns" id="turns">
     <thead><tr><th class="n">turn</th><th>time (UTC)</th>${multiLane ? "<th>lane</th>" : ""}<th>model</th><th class="n">prompt</th><th class="n">read</th><th class="n">write</th><th class="n">uncached</th><th class="n">out</th><th class="n">hit</th><th class="n">cost</th><th>status</th></tr></thead>
@@ -86,21 +97,19 @@ document.getElementById("only-misses").addEventListener("change", function (even
 `
 }
 
-function card(label: string, value: string, note: string): string {
-  return `<div class="card"><div class="label">${escape(label)}</div><div class="value">${escape(value)}</div><div class="note">${escape(note)}</div></div>`
+function card(label: string, value: string, note: string, kind = ""): string {
+  return `<div class="card${kind ? ` ${kind}` : ""}"><div class="label">${escape(label)}</div><div class="value">${escape(value)}</div><div class="note">${escape(note)}</div></div>`
 }
 
 function missDetail(turn: TurnResult, multiLane: boolean): string {
   const facts = [
-    `lost ${exact(turn.lost_tokens)} of ${exact(turn.expected_cached_tokens)} cached tokens`,
-    turn.baseline_turn ? `compared with turn ${turn.baseline_turn}` : "",
-    multiLane ? `lane ${turn.lane}` : "",
-    turn.cause ? `${turn.cause.confidence}` : "",
+    ...missFacts(turn, multiLane),
     turn.cause?.block_index !== undefined ? `first changed block: #${turn.cause.block_index + 1} of the request (${turn.cause.region})` : "",
   ].filter(Boolean)
-  return `<details class="miss ${turn.status}" id="turn-${turn.turn}"${turn.cause?.diff ? " open" : ""}>
+  const note = turn.declared_break?.note && !turn.declared_break.intentional ? `<p class="facts warn">not excused: ${escape(turn.declared_break.note)}</p>` : ""
+  return `<details class="miss ${isIntentional(turn) ? "intentional" : turn.status}" id="turn-${turn.turn}"${turn.cause?.diff && !isIntentional(turn) ? " open" : ""}>
   <summary>${escape(missLine(turn))}</summary>
-  <p class="facts">${escape(facts.join(" · "))}</p>
+  <p class="facts">${escape(facts.join(" · "))}</p>${note}
   ${turn.cause?.diff ? `<pre class="diff">${turn.cause.diff.split("\n").map(diffLine).join("")}</pre>` : ""}
 </details>`
 }
@@ -111,10 +120,11 @@ function diffLine(line: string): string {
 }
 
 function row(turn: TurnResult, multiLane: boolean, withDate: boolean): string {
-  const status = isMiss(turn) ? `${STATUS_LABEL[turn.status]}: ${turn.cause?.summary ?? ""}` : STATUS_LABEL[turn.status]
+  const intentional = isIntentional(turn)
+  const status = intentional ? `${intentionalLabel(turn)}: ${turn.cause?.summary ?? ""}` : isMiss(turn) ? `${STATUS_LABEL[turn.status]}: ${turn.cause?.summary ?? ""}` : STATUS_LABEL[turn.status]
   const cost = turn.cost ? money(turn.cost.total) : turn.usage.reported_cost !== undefined ? `${money(turn.usage.reported_cost)}*` : "-"
-  const statusCell = isMiss(turn) ? `<a href="#turn-${turn.turn}">${escape(status)}</a>` : escape(status)
-  return `<tr class="${turn.status}" data-status="${turn.status}"><td class="n">${turn.turn}</td><td>${clock(turn.ts, withDate)}</td>${multiLane ? `<td>${escape(turn.lane)}</td>` : ""}<td>${escape(turn.model)}</td><td class="n">${exact(turn.prompt_tokens)}</td><td class="n">${exact(turn.usage.cache_read_tokens)}</td><td class="n">${turn.usage.cache_write_tokens === null ? "-" : exact(turn.usage.cache_write_tokens)}</td><td class="n">${exact(turn.usage.input_tokens)}</td><td class="n">${exact(turn.usage.output_tokens)}</td><td class="n">${percent(turn.hit_rate)}</td><td class="n">${cost}</td><td>${statusCell}</td></tr>`
+  const statusCell = isMiss(turn) || intentional ? `<a href="#turn-${turn.turn}">${escape(status)}</a>` : escape(status)
+  return `<tr class="${intentional ? "intentional" : turn.status}" data-status="${turn.status}"><td class="n">${turn.turn}</td><td>${clock(turn.ts, withDate)}</td>${multiLane ? `<td>${escape(turn.lane)}</td>` : ""}<td>${escape(turn.model)}</td><td class="n">${exact(turn.prompt_tokens)}</td><td class="n">${exact(turn.usage.cache_read_tokens)}</td><td class="n">${turn.usage.cache_write_tokens === null ? "-" : exact(turn.usage.cache_write_tokens)}</td><td class="n">${exact(turn.usage.input_tokens)}</td><td class="n">${exact(turn.usage.output_tokens)}</td><td class="n">${percent(turn.hit_rate)}</td><td class="n">${cost}</td><td>${statusCell}</td></tr>`
 }
 
 /** Stacked bars of read / write / uncached tokens; long traces are bucketed so the chart stays readable. */
@@ -130,6 +140,7 @@ function chart(turns: TurnResult[]): string {
     input: Math.max(...bucket.map((turn) => turn.usage.input_tokens)),
     prompt: Math.max(...bucket.map((turn) => turn.prompt_tokens)),
     miss: bucket.some(isMiss),
+    intentional: bucket.some(isIntentional),
     first: bucket[0]!.turn,
     last: bucket.at(-1)!.turn,
   }))
@@ -151,7 +162,11 @@ function chart(turns: TurnResult[]): string {
         `<rect class="read" x="${x}" y="${(height - read).toFixed(2)}" width="${bar.toFixed(2)}" height="${read.toFixed(2)}"/>` +
         `<rect class="write" x="${x}" y="${(height - read - write).toFixed(2)}" width="${bar.toFixed(2)}" height="${write.toFixed(2)}"/>` +
         `<rect class="input" x="${x}" y="${(height - h).toFixed(2)}" width="${bar.toFixed(2)}" height="${Math.max(0, input).toFixed(2)}"/>` +
-        (value.miss ? `<rect class="missmark" x="${x}" y="0" width="${bar.toFixed(2)}" height="6"/>` : "") +
+        (value.miss
+          ? `<rect class="missmark" x="${x}" y="0" width="${bar.toFixed(2)}" height="6"/>`
+          : value.intentional
+            ? `<rect class="intentmark" x="${x}" y="0" width="${bar.toFixed(2)}" height="6"/>`
+            : "") +
         `</g>`
     })
     .join("")
@@ -165,12 +180,12 @@ function escape(text: string): string {
 
 const CSS = `
 :root { --bg: #ffffff; --fg: #1d2023; --muted: #5d6670; --line: #dde1e5; --card: #f5f7f9;
-  --read: #3f8f5f; --write: #d08a2e; --input: #8a95a1; --miss: #c8433b; --partial: #b7791f; --cold: #3a78b5;
+  --read: #3f8f5f; --write: #d08a2e; --input: #8a95a1; --miss: #c8433b; --partial: #b7791f; --cold: #3a78b5; --intent: #6b5bd2;
   --add-bg: #e6f4ea; --del-bg: #fbe9e7; color-scheme: light dark; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #15181b; --fg: #e6e8ea; --muted: #9aa3ad; --line: #2c3238; --card: #1d2125;
-  --read: #5bb37f; --write: #e0a04a; --input: #7c8792; --miss: #ef6b62; --partial: #d9a441; --cold: #6aa6df; --add-bg: #1d3325; --del-bg: #3a2220; } }
+  --read: #5bb37f; --write: #e0a04a; --input: #7c8792; --miss: #ef6b62; --partial: #d9a441; --cold: #6aa6df; --intent: #9d8ff0; --add-bg: #1d3325; --del-bg: #3a2220; } }
 :root[data-theme="dark"] { --bg: #15181b; --fg: #e6e8ea; --muted: #9aa3ad; --line: #2c3238; --card: #1d2125;
-  --read: #5bb37f; --write: #e0a04a; --input: #7c8792; --miss: #ef6b62; --partial: #d9a441; --cold: #6aa6df; --add-bg: #1d3325; --del-bg: #3a2220; }
+  --read: #5bb37f; --write: #e0a04a; --input: #7c8792; --miss: #ef6b62; --partial: #d9a441; --cold: #6aa6df; --intent: #9d8ff0; --add-bg: #1d3325; --del-bg: #3a2220; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
 main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
@@ -189,6 +204,8 @@ h2 { font-size: 16px; margin: 28px 0 10px; }
 .chart .write, .sw.write { fill: var(--write); background: var(--write); }
 .chart .input, .sw.input { fill: var(--input); background: var(--input); }
 .chart .missmark, .sw.missmark { fill: var(--miss); background: var(--miss); }
+.chart .intentmark, .sw.intentmark { fill: var(--intent); background: var(--intent); }
+.card.intentional { border-left: 4px solid var(--intent); }
 .sw { display: inline-block; width: 10px; height: 10px; margin: 0 4px 0 12px; border-radius: 2px; vertical-align: -1px; }
 .sw:first-child { margin-left: 0; }
 table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
@@ -204,6 +221,9 @@ tr.partial td:last-child, tr.partial td:last-child a { color: var(--partial); fo
 tr.cold td:last-child { color: var(--cold); }
 details.miss { border: 1px solid var(--line); border-left: 4px solid var(--miss); border-radius: 6px; padding: 8px 12px; margin: 8px 0; background: var(--card); }
 details.miss.partial { border-left-color: var(--partial); }
+details.miss.intentional { border-left-color: var(--intent); }
+tr.intentional td:last-child, tr.intentional td:last-child a { color: var(--intent); }
+.facts.warn { color: var(--partial); }
 details.miss summary { cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
 .facts { margin: 6px 0; font-size: 13px; }
 pre.diff { margin: 8px 0 0; padding: 8px; overflow-x: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }

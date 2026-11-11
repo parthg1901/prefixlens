@@ -1,7 +1,7 @@
 // Plain-text report for the terminal.
 
 import type { Analysis, TurnResult } from "../analyze.ts"
-import { clock, exact, spansDays, isMiss, missLine, money, percent, shortModel, STATUS_LABEL, tokens } from "./format.ts"
+import { clock, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, shortModel, spansDays, STATUS_LABEL, tokens } from "./format.ts"
 
 export interface TerminalOptions {
   color?: boolean
@@ -51,26 +51,31 @@ export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}
   if (rows.some((turn) => !turn.cost && turn.usage.reported_cost !== undefined)) out.push(paint.dim("* cost reported by the harness; model not in the pricing table"))
   out.push("")
 
+  const detail = (turn: TurnResult, color: (text: string) => string) => {
+    out.push(`  ${color(missLine(turn))}`)
+    out.push(paint.dim(`    ${missFacts(turn, multiLane, laneLabel).join(" · ")}`))
+    if (turn.declared_break?.note && !turn.declared_break.intentional) out.push(paint.yellow(`    not excused: ${turn.declared_break.note}`))
+    if (turn.cause?.diff) {
+      const lines = turn.cause.diff.split("\n")
+      for (const line of lines.slice(0, DIFF_LINES)) out.push(`    ${colorDiff(paint, line)}`)
+      if (lines.length > DIFF_LINES) out.push(paint.dim(`    ... (${lines.length - DIFF_LINES} more lines in --json / --html)`))
+    }
+  }
   const misses = analysis.turns.filter(isMiss)
   if (misses.length > 0) {
     out.push(paint.bold("Misses"))
     const shown = options.all ? misses : misses.toSorted((a, b) => (b.miss_cost ?? 0) - (a.miss_cost ?? 0)).slice(0, MISS_LIMIT).toSorted((a, b) => a.turn - b.turn)
-    for (const turn of shown) {
-      out.push(`  ${paint[turn.status === "miss" ? "red" : "yellow"](missLine(turn))}`)
-      const facts = [
-        `lost ${exact(turn.lost_tokens)} of ${exact(turn.expected_cached_tokens)} cached tokens`,
-        turn.baseline_turn ? `vs turn ${turn.baseline_turn}` : "",
-        multiLane ? `lane ${laneLabel(turn.lane)}` : "",
-        turn.cause?.confidence ?? "",
-      ].filter(Boolean)
-      out.push(paint.dim(`    ${facts.join(" · ")}`))
-      if (turn.cause?.diff) {
-        const lines = turn.cause.diff.split("\n")
-        for (const line of lines.slice(0, DIFF_LINES)) out.push(`    ${colorDiff(paint, line)}`)
-        if (lines.length > DIFF_LINES) out.push(paint.dim(`    ... (${lines.length - DIFF_LINES} more lines in --json / --html)`))
-      }
-    }
+    for (const turn of shown) detail(turn, paint[turn.status === "miss" ? "red" : "yellow"])
     if (shown.length < misses.length) out.push(paint.dim(`  (${misses.length - shown.length} smaller misses not shown; --all shows every miss)`))
+    out.push("")
+  }
+
+  const intentional = analysis.turns.filter(isIntentional)
+  if (intentional.length > 0) {
+    out.push(`${paint.bold("Intentional breaks")} ${paint.dim("(declared by the harness; their cost is shown, not counted as misses)")}`)
+    const shown = options.all ? intentional : intentional.slice(0, MISS_LIMIT)
+    for (const turn of shown) detail(turn, paint.blue)
+    if (shown.length < intentional.length) out.push(paint.dim(`  (${intentional.length - shown.length} more not shown; --all shows every one)`))
     out.push("")
   }
 
@@ -80,14 +85,17 @@ export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}
   out.push(`  output tokens   ${exact(t.output)}`)
   out.push(`  cache hit rate  ${percent(summary.hit_rate)} of prompt tokens read from cache`)
   if (summary.cost)
-    out.push(`  cost            ${money(summary.cost.total)} total · ${money(summary.cost.uncached)} on uncached input and cache writes · ${money(summary.cost.misses)} lost to misses`)
+    out.push(
+      `  cost            ${money(summary.cost.total)} total · ${money(summary.cost.uncached)} on uncached input and cache writes · ${money(summary.cost.misses)} lost to misses${summary.intentional.breaks > 0 ? ` · ${money(summary.cost.intentional)} on intentional breaks` : ""}`,
+    )
   if (summary.reported_cost !== undefined) out.push(`  harness cost    ${money(summary.reported_cost)} as recorded by the harness`)
   out.push(
     `  calls           ${[
       `${summary.status.cold} cold`,
       `${summary.status.hit} hit`,
-      `${summary.status.partial} partial`,
-      `${summary.status.miss} miss`,
+      `${summary.status.partial - intentional.filter((turn) => turn.status === "partial").length} partial`,
+      `${summary.status.miss - intentional.filter((turn) => turn.status === "miss").length} miss`,
+      ...(intentional.length > 0 ? [`${intentional.length} intentional break${intentional.length === 1 ? "" : "s"}`] : []),
       ...(summary.status.uncached > 0 ? [`${summary.status.uncached} no cache`] : []),
     ].join(" · ")}`,
   )
@@ -95,6 +103,11 @@ export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}
     out.push("  misses by cause")
     for (const group of summary.by_group)
       out.push(`    ${group.group.padEnd(28)} ${String(group.misses).padStart(5)}  ${summary.cost ? money(group.cost) : ""}`)
+  }
+  if (summary.intentional.breaks > 0) {
+    out.push("  intentional breaks by reason")
+    for (const reason of summary.intentional.by_reason)
+      out.push(`    ${reason.reason.padEnd(28)} ${String(reason.breaks).padStart(5)}  ${summary.cost ? money(reason.cost) : ""}`)
   }
   out.push("")
   out.push(paint.bold(summary.headline))
@@ -104,6 +117,7 @@ export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}
 }
 
 function statusText(turn: TurnResult): string {
+  if (isIntentional(turn)) return `${intentionalLabel(turn)}: ${turn.cause?.summary ?? "cause unknown"}`
   if (!isMiss(turn)) return STATUS_LABEL[turn.status]
   return `${STATUS_LABEL[turn.status]}: ${turn.cause?.summary ?? "cause unknown"}`
 }
@@ -124,6 +138,7 @@ function table(header: string[], rows: string[][], freeColumn: number, paintRow:
 }
 
 function colorRow(paint: Painter, turn: TurnResult, row: string): string {
+  if (isIntentional(turn)) return paint.blue(row)
   if (turn.status === "miss") return paint.red(row)
   if (turn.status === "partial") return paint.yellow(row)
   if (turn.status === "cold") return paint.cyan(row)
@@ -136,9 +151,9 @@ function colorDiff(paint: Painter, line: string): string {
   return paint.dim(line)
 }
 
-type Painter = Record<"bold" | "dim" | "red" | "green" | "yellow" | "cyan", (text: string) => string>
+type Painter = Record<"bold" | "dim" | "red" | "green" | "yellow" | "cyan" | "blue", (text: string) => string>
 
 function painter(enabled: boolean): Painter {
   const wrap = (open: number, close: number) => (text: string) => (enabled ? `\x1b[${open}m${text}\x1b[${close}m` : text)
-  return { bold: wrap(1, 22), dim: wrap(2, 22), red: wrap(31, 39), green: wrap(32, 39), yellow: wrap(33, 39), cyan: wrap(36, 39) }
+  return { bold: wrap(1, 22), dim: wrap(2, 22), red: wrap(31, 39), green: wrap(32, 39), yellow: wrap(33, 39), cyan: wrap(36, 39), blue: wrap(34, 39) }
 }

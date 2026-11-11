@@ -4,9 +4,13 @@
 
 import { appendFileSync, existsSync, readFileSync } from "node:fs"
 import path from "node:path"
+import { isPosition, type Position } from "./breaks.ts"
 import { hashContent, isRecord } from "./canonical.ts"
 
+/** The `v` every record carries: the major version of the format. */
 export const TRACE_VERSION = 1
+/** The version of SPEC.md this reader implements. Minor versions only add optional fields, so every 1.x trace reads as `v: 1`. */
+export const TRACE_FORMAT_VERSION = "1.1"
 
 export type Fidelity = "full-request" | "usage-only"
 export type BlockKind = "tool" | "system" | "message"
@@ -45,10 +49,16 @@ export type HintKind =
   | "tool_output_pruned"
   | "agent_switch"
   | "model_switch"
+  | "prefix_break"
 
 export interface Hint {
-  kind: HintKind
+  /** One of HintKind; readers keep and ignore kinds they do not know. */
+  kind: HintKind | (string & {})
   detail?: string
+  /** `prefix_break` only: why the harness broke its prefix on purpose, e.g. "revert" (SPEC 6.1). */
+  reason?: string
+  /** `prefix_break` only: the last part that must stay unchanged; default depends on `reason` (SPEC 6.1). */
+  after?: Position
 }
 
 export interface TraceRecord {
@@ -209,7 +219,7 @@ function readRecord(value: unknown, problems: string[], warnings: string[], line
   const usage = readUsage(value.usage, problems)
   const lane = laneKey({ session: typeof value.session === "string" ? value.session : undefined, lane: typeof value.lane === "string" ? value.lane : undefined })
   const blocks = value.fidelity === "full-request" && problems.length === 0 ? readBlocks(value.request, problems, warnings, line, state, lane) : undefined
-  const hints = readHints(value.hints, problems)
+  const hints = readHints(value.hints, problems, warnings, line)
   if (problems.length > 0) return undefined
   return {
     ...(value as unknown as TraceRecord),
@@ -290,14 +300,26 @@ export function laneKey(record: { session?: string; lane?: string }): string {
   return `${record.session ?? ""}\u0000${record.lane ?? "main"}`
 }
 
-function readHints(value: unknown, problems: string[]): Hint[] | undefined {
+function readHints(value: unknown, problems: string[], warnings: string[], line: number): Hint[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
     problems.push("hints must be an array")
     return undefined
   }
   // Unknown hint kinds are kept: readers ignore what they do not understand.
-  return value.filter((hint): hint is Hint => isRecord(hint) && typeof hint.kind === "string")
+  return value.filter((hint, index): hint is Hint => {
+    if (!isRecord(hint) || typeof hint.kind !== "string") return false
+    if (hint.kind !== "prefix_break") return true
+    // A malformed declaration is dropped, so the miss it meant to excuse is reported as one rather than hidden.
+    const problem =
+      typeof hint.reason !== "string" || hint.reason === ""
+        ? "needs a non-empty string reason"
+        : hint.after !== undefined && !isPosition(hint.after)
+          ? 'has an invalid after (use "start", "tools", "system", a block count, or {"message": n})'
+          : undefined
+    if (problem) warnings.push(`line ${line}: hints[${index}] (prefix_break) ${problem}; ignored`)
+    return problem === undefined
+  })
 }
 
 function isCount(value: unknown): value is number {

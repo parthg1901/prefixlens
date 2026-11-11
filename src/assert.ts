@@ -5,6 +5,7 @@
 // say whether the second one keeps the first one's cached prefix, and if not,
 // which block changed and how.
 
+import { changeStart, declaredBreaks, defaultAfter, describePosition, keptBlocks, type DeclaredBreak, type Position } from "./breaks.ts"
 import { canonicalizeRequest, type CanonicalRequest, type Provider } from "./canonical.ts"
 import { comparePrefix, type Cause, type PrefixChange } from "./diff.ts"
 import { apiFromBody, PROVIDER_OF } from "./record/exchange.ts"
@@ -18,33 +19,28 @@ import type { Block, Hint, TraceRecord } from "./trace.ts"
  */
 export type RequestLike = Record<string, unknown> | TraceRecord | CanonicalRequest | Block[]
 
-/** Where an allowed break may start, as the last part that must stay unchanged. */
-export type Position =
-  /** Nothing has to stay: the whole request may change. */
-  | "start"
-  /** The tool list must stay. */
-  | "tools"
-  /** Tools and system prompt (instructions) must stay. */
-  | "system"
-  /** Tools, system prompt and messages 1..n must stay. */
-  | { message: number }
-  /** The first n blocks must stay (blocks are numbered from 1 in messages). */
-  | number
+export type { Position }
 
 export interface PrefixOptions {
   /** Request format, when it cannot be told from the body (always needed for Gemini). */
   provider?: Provider
   /**
-   * An intentional breakpoint. The prefix may change after `after` (default:
-   * anywhere) because of `reason`, e.g. `{ reason: "compaction" }` or
-   * `{ after: "system", reason: "compaction" }` (history may be replaced but
-   * the tools and instructions must survive). A plain string is a reason with
-   * no position.
+   * An intentional break, with the same meaning as a `prefix_break` hint in a
+   * trace (SPEC 6.1): the prefix may change after `after` because of
+   * `reason`. Without `after`, the reason decides how far the break may
+   * reach: "revert" and "refusal" must keep the tools and system prompt;
+   * "compaction", "model_switch", "settings_change" and any other reason may
+   * change anything. A plain string is a reason with its default reach.
    */
   allowBreak?: string | { after?: Position; reason?: string }
-  /** Request parameters to leave out of the comparison, e.g. `["tool_choice"]` when your provider does not cache on it. */
+  /** Request parameters to leave out of the comparison, e.g. `["truncation"]` once you have shown your provider does not cache on it (built-in rules: SPEC 8.1). */
   ignoreParams?: string[]
-  /** Facts about what happened between the requests (`[{ kind: "compaction" }]`), used to name the change. */
+  /**
+   * Trace hints about what happened between the requests, used to name the
+   * change. A `prefix_break` hint, or an older `compaction` or `model_switch`
+   * hint, also allows the break exactly as the report would: so do those on
+   * `next` when it is a trace record.
+   */
   hints?: Hint[]
 }
 
@@ -91,9 +87,14 @@ export class PrefixBreakError extends Error {
 export function explainPrefixDiff(prev: RequestLike, next: RequestLike, options: PrefixOptions = {}): PrefixExplanation {
   const before = comparable(prev, options)
   const after = comparable(next, options)
-  const allow = typeof options.allowBreak === "string" ? { reason: options.allowBreak } : options.allowBreak
+  const given = typeof options.allowBreak === "string" ? { reason: options.allowBreak } : options.allowBreak
+  const recordHints = isTraceRecord(next) ? (next.hints ?? []) : []
+  const allowances: DeclaredBreak[] = [
+    ...(given ? [{ reason: given.reason ?? "an intentional break", after: given.after ?? defaultAfter(given.reason ?? ""), kind: "allowBreak" }] : []),
+    ...declaredBreaks([...(options.hints ?? []), ...recordHints]),
+  ]
   // A break the caller says is a compaction is named as one, whatever it looks like.
-  const hints = [...(options.hints ?? []), ...(allow?.reason === "compaction" ? [{ kind: "compaction" as const }] : [])]
+  const hints = [...(options.hints ?? []), ...recordHints, ...(given?.reason === "compaction" ? [{ kind: "compaction" as const }] : [])]
   const change = comparePrefix(before, { ...after, ...(hints.length > 0 ? { hints } : {}) })
   if (!change) {
     const appended = after.blocks.length - before.blocks.length
@@ -106,13 +107,15 @@ export function explainPrefixDiff(prev: RequestLike, next: RequestLike, options:
       message: `prefix stable: all ${before.blocks.length} blocks of the previous request are unchanged${appended > 0 ? `, and ${appended} ${plural(appended, "block")} ${appended === 1 ? "was" : "were"} appended` : ""}`,
     }
   }
-  const unchanged = change.block_index ?? (change.region === "params" ? before.blocks.findIndex((block) => block.kind === "message") : 0)
-  const changedAt = change.region === "model" ? 0 : unchanged === -1 ? before.blocks.length : unchanged
-  const keep = allow ? keptBlocks(allow.after ?? "start", before.blocks) : undefined
-  const ok = keep !== undefined && changedAt >= keep
+  const changedAt = changeStart(change, before.blocks)
+  const covering = allowances.filter((entry) => changedAt >= keptBlocks(entry.after, before.blocks))
+  const ok = covering.length > 0
   const block = change.block_index === undefined ? undefined : describeBlock(before.blocks, after.blocks, change.block_index)
   const fix = FIXES[change.cause]
-  const reason = allow?.reason ?? "an intentional break"
+  // The allowance that reaches furthest, to say how far a break was allowed when none reaches far enough.
+  const widest = allowances.toSorted((a, b) => keptBlocks(a.after, before.blocks) - keptBlocks(b.after, before.blocks))[0]
+  const reason = ok ? [...new Set(covering.map((entry) => entry.reason))].join(", ") : (widest?.reason ?? "an intentional break")
+  const keep = widest ? keptBlocks(widest.after, before.blocks) : undefined
   return {
     stable: false,
     ok,
@@ -124,7 +127,7 @@ export function explainPrefixDiff(prev: RequestLike, next: RequestLike, options:
     ...(fix ? { fix } : {}),
     message: ok
       ? `prefix changed at block ${changedAt + 1}, allowed (${reason}): ${change.summary}`
-      : failureMessage(change, before.blocks, changedAt, block, fix, allow && keep !== undefined ? { reason, keep } : undefined),
+      : failureMessage(change, before.blocks, changedAt, block, fix, widest && keep !== undefined ? { reason, keep, after: widest.after } : undefined),
   }
 }
 
@@ -139,15 +142,16 @@ export function assertPrefixStable(prev: RequestLike, next: RequestLike, options
   return explanation
 }
 
-function failureMessage(change: PrefixChange, blocks: Block[], changedAt: number, block: ChangedBlock | undefined, fix: string | undefined, allowed: { reason: string; keep: number } | undefined): string {
+function failureMessage(change: PrefixChange, blocks: Block[], changedAt: number, block: ChangedBlock | undefined, fix: string | undefined, allowed: { reason: string; keep: number; after: Position } | undefined): string {
+  const evidence = change.detail.evidence as Record<string, string> | undefined
   const where =
     change.region === "model"
       ? "the model changed, so nothing in the cache applies"
       : change.region === "params"
-        ? `a cache-relevant request parameter changed (on Anthropic this invalidates every message: ${range(changedAt + 1, blocks.length)})`
+        ? `a cache-relevant request parameter changed (${Object.entries(evidence ?? {}).map(([key, value]) => `${key}: ${value}`).join(", ")}); it invalidates ${changedAt >= blocks.length ? "nothing already sent" : changedAt === 0 ? `the whole request (${range(1, blocks.length)})` : range(changedAt + 1, blocks.length)}`
         : `first changed block: ${block!.number} of ${blocks.length} (${block!.label}); ${changedAt === 0 ? "nothing before it matches, so the whole request is re-read" : `${range(1, changedAt)} still ${changedAt === 1 ? "matches" : "match"}, everything from block ${changedAt + 1} on is re-read`}`
   const lines = [`prefix not stable: ${change.summary}`, "", `  ${where}`]
-  if (allowed) lines.push(`  a break was allowed (${allowed.reason}) only after block ${allowed.keep}, and this one is earlier`)
+  if (allowed) lines.push(`  a break was allowed (${allowed.reason}) only after block ${allowed.keep} (${describePosition(allowed.after)} must stay), and this one is earlier`)
   if (change.diff) lines.push("", ...clip(change.diff.split("\n"), 16).map((line) => `    ${line}`))
   if (fix) lines.push("", `  fix: ${fix}`)
   if (!allowed) lines.push(`  if this change is intentional, pass { allowBreak: { reason: "..." } }`)
@@ -156,7 +160,7 @@ function failureMessage(change: PrefixChange, blocks: Block[], changedAt: number
 
 const FIXES: Partial<Record<Cause, string>> = {
   model_changed: "caches are per model; a model switch always starts cold, so switch only at a deliberate breakpoint.",
-  params_changed: "keep cache-relevant parameters fixed for the session, or list the parameter in ignoreParams if your provider does not cache on it.",
+  params_changed: "keep cache-relevant parameters fixed for the session, or declare the change ({ allowBreak: \"settings_change\" }) when the user asked for it; if your provider does not cache on the parameter, list it in ignoreParams and tell us how you verified it.",
   tools_changed: "keep one tool list for the whole session (refuse a disallowed tool when it is called rather than removing it), or change it only at a deliberate breakpoint such as a compaction.",
   tools_reordered: "build the tool list in a deterministic order (sort it once, e.g. by name) instead of connection or map order.",
   tool_definition_changed: "generate tool definitions deterministically: no counts, dates or unordered keys in descriptions and schemas.",
@@ -170,36 +174,32 @@ const FIXES: Partial<Record<Cause, string>> = {
   messages_split: "replay steps with the message boundaries they were sent with.",
   messages_reordered: "replay history in the order it was sent.",
   message_inserted: "append new messages at the end; inserting into history moves everything after it.",
-  message_removed: "do not drop sent messages; if this was a deliberate compaction or rewind, mark it with allowBreak.",
-  history_truncated: "if this was a deliberate compaction or rewind, mark it with allowBreak.",
-  history_rewound: "if this was a deliberate rewind, mark it with allowBreak.",
+  message_removed: "do not drop sent messages; if this was a deliberate compaction, revert or refused exchange, declare it with allowBreak (\"compaction\", \"revert\", \"refusal\").",
+  history_truncated: "if this was a deliberate compaction or revert, declare it with allowBreak (\"compaction\", \"revert\").",
+  history_rewound: "if this was a deliberate revert, declare it with { allowBreak: \"revert\" }.",
   compaction: "a compaction always breaks the prefix; mark it with { allowBreak: { reason: \"compaction\" } }.",
 }
 
 function comparable(value: RequestLike, options: PrefixOptions) {
   const ignore = (params: Record<string, unknown> | undefined) =>
     Object.fromEntries(Object.entries(params ?? {}).filter(([key]) => !options.ignoreParams?.includes(key)))
-  if (Array.isArray(value)) return { model: "", params: {}, blocks: value }
+  // Which provider's parameter rules apply: the option, else the trace record's provider, else the body's API.
+  const known = options.provider ? { provider: options.provider } : {}
+  if (Array.isArray(value)) return { ...known, model: "", params: {}, blocks: value }
   const body = value as Record<string, unknown>
-  if (Array.isArray(body.blocks)) return { model: String(body.model ?? ""), params: ignore(body.params as Record<string, unknown>), blocks: body.blocks as Block[] }
-  const record = value as Partial<TraceRecord>
-  if (record.v === 1 && typeof record.fidelity === "string") {
-    if (!record.request) throw new TypeError("prefixlens/test: a usage-only trace record has no request to compare")
-    return { model: record.model ?? "", params: ignore(record.params), blocks: record.request.blocks }
+  if (Array.isArray(body.blocks)) return { ...known, model: String(body.model ?? ""), params: ignore(body.params as Record<string, unknown>), blocks: body.blocks as Block[] }
+  if (isTraceRecord(value)) {
+    if (!value.request) throw new TypeError("prefixlens/test: a usage-only trace record has no request to compare")
+    return { provider: options.provider ?? value.provider, model: value.model ?? "", params: ignore(value.params), blocks: value.request.blocks }
   }
   const provider = options.provider ?? PROVIDER_OF[apiFromBody(body)]
   const canonical = canonicalizeRequest(provider, body)
-  return { model: canonical.model, params: ignore(canonical.params), blocks: canonical.blocks }
+  return { provider, model: canonical.model, params: ignore(canonical.params), blocks: canonical.blocks }
 }
 
-function keptBlocks(position: Position, blocks: Block[]): number {
-  if (position === "start") return 0
-  if (typeof position === "number") return position
-  const lastOf = (kinds: Block["kind"][]) => blocks.findLastIndex((block) => kinds.includes(block.kind)) + 1
-  if (position === "tools") return lastOf(["tool"])
-  if (position === "system") return lastOf(["tool", "system"])
-  const firstMessage = blocks.findIndex((block) => block.kind === "message")
-  return (firstMessage === -1 ? blocks.length : firstMessage) + position.message
+function isTraceRecord(value: RequestLike): value is TraceRecord {
+  const record = value as Partial<TraceRecord>
+  return !Array.isArray(value) && record.v === 1 && typeof record.fidelity === "string"
 }
 
 function describeBlock(prev: Block[], next: Block[], index: number): ChangedBlock {

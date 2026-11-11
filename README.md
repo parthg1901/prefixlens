@@ -8,6 +8,8 @@ prefixlens explains prompt-cache hits and misses for any LLM agent harness. It t
 turn 41: miss, tool list changed (+2 tools: 42 → 44), ~$0.38
 ```
 
+A harness that breaks its prefix on purpose (a compaction, a revert, a model change the user asked for) can say so in the trace. That call is then reported as an intentional break, with its cost shown and totalled apart from the misses that point at bugs.
+
 There are four ways in:
 
 - **import** a harness's existing session logs (Claude Code, opencode, Codex, OpenTelemetry GenAI spans);
@@ -191,13 +193,48 @@ Options:
 
 | option | meaning |
 |---|---|
-| `allowBreak: "compaction"` | An intentional breakpoint: the prefix may change anywhere because of the given reason. A `"compaction"` reason also names the change as one. |
+| `allowBreak: "revert"` | An intentional break, with the same meaning as a `prefix_break` hint in a trace ([below](#declaring-intentional-breaks)). The reason sets how far it may reach: `"revert"` and `"refusal"` must keep the tools and system prompt; `"compaction"`, `"model_switch"`, `"settings_change"` and any other reason may change anything. A `"compaction"` reason also names the change as one. |
 | `allowBreak: { after, reason }` | The prefix may change only after `after`: `"start"` (anywhere, model included), `"tools"`, `"system"` (tools and instructions must survive, e.g. a compaction that keeps them), `{ message: n }`, or a block count. |
-| `ignoreParams: ["tool_choice"]` | Parameters to leave out, for one your provider does not cache on. |
-| `hints` | Trace hints (`[{ kind: "compaction" }]`) to name the change. |
-| `provider` | Request format, when the body shape is ambiguous. |
+| `ignoreParams: ["truncation"]` | Parameters to leave out, for one you have shown your provider does not cache on. The built-in rules per provider are in [SPEC.md section 8.1](SPEC.md#81-which-request-parameters-are-part-of-the-cached-prefix). |
+| `hints` | Trace hints (`[{ kind: "compaction" }]`) to name the change. A `prefix_break`, `compaction` or `model_switch` hint also allows the break, exactly as the report would; so do the hints of `next` when it is a trace record. |
+| `provider` | Request format, when the body shape is ambiguous. Also picks the parameter rules. |
 
-[`examples/ci-prefix-test`](examples/ci-prefix-test) is a small project whose `bun test` suite catches the four common bugs: tools sorted differently each turn, a timestamp in the system prompt, an already-sent message rewritten, and the tool list changing on a mode switch.
+[`examples/ci-prefix-test`](examples/ci-prefix-test) is a small project whose `bun test` suite catches the four common bugs: tools sorted differently each turn, a timestamp in the system prompt, an already-sent message rewritten, and the tool list changing on a mode switch. It also shows two legitimate changes passing: `tool_choice: "none"` on the last step, and a declared revert.
+
+## Declaring intentional breaks
+
+Some prefix breaks are deliberate: the harness compacts history and rebuilds its instructions, the user reverts to an earlier point, a refused exchange is left out of history, the user picks another model or reasoning effort. Declare each one on the first call after it, as a hint in the trace record:
+
+```json
+"hints": [{ "kind": "prefix_break", "reason": "revert", "detail": "reverted to message 12" }]
+```
+
+| reason | for | may change |
+|---|---|---|
+| `compaction` | history summarized or replaced, instructions possibly rebuilt | anything |
+| `revert` | conversation rewound to an earlier point | messages only (tools and system prompt must stay) |
+| `refusal` | a refused exchange left out of history | messages only |
+| `model_switch` | another model | anything |
+| `settings_change` | a parameter changed on purpose, e.g. reasoning effort | anything |
+
+`after` overrides how far a break may reach (`"start"`, `"tools"`, `"system"`, `{"message": n}` or a block count). The older `compaction` and `model_switch` hints still declare a break; `agent_switch` and `tool_output_pruned` do not, since a mode switch that changes the tool list is exactly the kind of change prefixlens should catch.
+
+A declaration is not a way to make misses disappear:
+
+- it excuses the miss of the call it is on and nothing else; a second miss right after it is a miss;
+- it excuses only a change where its reason allows: a declared revert that also changed the tool list is reported as a miss, with the reason;
+- it never excuses a miss with the prefix intact (expiry, provider-side);
+- the report shows each intentional break with what changed and what it cost, and totals that cost separately (`summary.intentional`, `summary.cost.intentional` in `--json`); `summary.misses` and the miss cost count only the rest.
+
+```
+   4  10:01:20    gpt-4.1   2,000      0      -     2,000   40     0%  $0.0043  intentional break (compaction): system prompt changed (part 1 of 1 edited)
+   7  10:02:20    gpt-4.1   2,500      0      -     2,500   40     0%  $0.0053  intentional break (revert): conversation rewound at message #3: …
+   8  10:02:40    gpt-4.1   2,900      0      -     2,900   40     0%  $0.0061  miss: system prompt changed (part 1 of 1 edited)
+
+1 miss cost $0.0036; 1 from system-prompt changes. Also 2 intentional breaks declared by the harness cost $0.0067 (1 revert, 1 compaction).
+```
+
+`assertPrefixStable(prev, next, { allowBreak: "revert" })` allows exactly what a `revert` declaration excuses in the report. The rules are in [SPEC.md section 6.1](SPEC.md#61-declaring-an-intentional-break).
 
 ## What each adapter can and can't diagnose
 
@@ -222,7 +259,7 @@ Prompt caching is a prefix match. The provider caches the request up to a point,
 - **Steps were reshaped on replay.** Consecutive tool calls merged into one message, or one split into two.
 - **Instructions were refreshed mid-session.** The system prompt rebuilt with a new timestamp, a re-read instructions file, or a changed environment block.
 - **Compaction.** History replaced by a summary. Expected, but each one costs a full re-write.
-- **Model or parameter changes.** Caches are per model; on Anthropic, changing thinking settings or `tool_choice` invalidates cached messages.
+- **Model or parameter changes.** Caches are per model. Which parameters count depends on the provider: on Anthropic, changing thinking, effort or `tool_choice` invalidates cached messages (documented); on OpenAI, reasoning effort, verbosity, the output format and `parallel_tool_calls` count (documented), and `tool_choice` does not (measured on the Responses API).
 - **Provider-side or expiry misses.** The prefix is intact, but more time passed than the TTL (5 minutes by default, 1 hour if requested), or the provider evicted or routed elsewhere.
 
 prefixlens separates these: with full requests it proves which block changed, or that none did.
@@ -237,6 +274,18 @@ For each call it looks at the previous call in the same lane (subagents get thei
 - **cause**: the first changed block in prefix order, or, with the prefix intact, expiry versus a provider-side miss.
 
 The exact rules are in [SPEC.md](SPEC.md#8-how-prefixlens-analyzes-a-trace-informative).
+
+### Which request parameters count
+
+A parameter change explains a miss only if the provider caches on it. prefixlens keeps a table per provider ([SPEC.md section 8.1](SPEC.md#81-which-request-parameters-are-part-of-the-cached-prefix), `PARAM_RULES` in code), and says for each entry how it knows:
+
+| | verified (measured live) | documented (provider's caching docs) | assumed |
+|---|---|---|---|
+| Anthropic | | `tool_choice` (messages only), `thinking`, `output_config.effort`, `speed` | sampling and output limits don't count; `context_management`, `mcp_servers` do |
+| OpenAI | `tool_choice` does not count (Responses API) | `reasoning`, `text`, `parallel_tool_calls`, `context_management`, `prompt_cache_key` count | `tool_choice` on Chat Completions; the Chat names `reasoning_effort`, `verbosity`, `response_format`; sampling, limits, `store`, `include` don't count |
+| Gemini | | | everything but sampling and limits counts |
+
+Any parameter not in the table is assumed to count, so a change is never silently ignored.
 
 ## Pricing
 
@@ -257,6 +306,33 @@ import { canonicalizeRequest, comparePrefix, parseTrace, analyze, renderTerminal
 ```
 
 Beyond recording, the main export has the building blocks the CLI uses: canonicalize a provider request body into blocks, compare two requests, read and write traces (`parseTrace`, `serializeTrace`, `openTraceWriter`), analyze a trace and render reports. The package runs on Bun and has no runtime dependencies.
+
+To write traces from your own harness that are identical to what the proxy records, call the proxy's own record builder:
+
+```ts
+import { buildRecord, readResponse, serializeTrace } from "prefixlens"
+
+const record = buildRecord({
+  api: "openai-responses",                          // or "anthropic-messages", "openai-chat"
+  body,                                             // the request body as sent
+  response: readResponse("openai-responses", raw),  // raw: the JSON body, the SSE text, or the parsed events
+  startedAt,                                        // Date, epoch ms or ISO string: when the request was sent
+  headers,                                          // optional; only session-id, anthropic-beta, anthropic-version, openai-beta are kept
+  session, lane: "main", recorder: "proxy",         // optional; lane defaults to "main", recorder to "library"
+})
+if (typeof record === "string") console.warn(`not recorded: ${record}`)  // the response reported no usage
+else trace.push(record)  // add hints (e.g. a prefix_break) before writing; serializeTrace(trace) writes the lines
+```
+
+Its signature is stable from 0.3: inputs may gain optional fields, never lose or change one.
+
+## Changes in 0.3
+
+- Parameters are judged per provider (SPEC 8.1). On OpenAI, `tool_choice` is no longer a cache-relevant parameter.
+- Trace format 1.1 adds the `prefix_break` hint. Declared breaks are reported as intentional and costed apart; `summary.misses` and `summary.cost.misses` no longer include them. A `compaction` or `model_switch` hint now declares a break too.
+- `allowBreak` without `after` reaches as far as its reason does: `"revert"` and `"refusal"` now keep the tools and system prompt (they allowed any change before). Pass `{ after: "start", reason }` for the old behaviour.
+- `cache_control` is stripped from OpenAI and Gemini tools and system parts as well, and non-string `system`/`instructions` values become a block instead of being dropped.
+- `buildRecord` is a public export.
 
 ## Development
 

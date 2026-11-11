@@ -1,9 +1,10 @@
 // Turns a trace into per-call results: hit rate, cost, whether the call missed
 // a cache it should have hit, and why.
 
+import { coveringBreaks, declaredBreaks, describePosition, keptBlocks, type DeclaredBreak } from "./breaks.ts"
 import { CAUSE_GROUP, comparePrefix, type Cause, type CauseGroup, type PrefixChange, type Region } from "./diff.ts"
 import { costOf, findPrice, providerFacts, ratesFor, uncachedRate, type Cost, type PricingTable } from "./pricing.ts"
-import { laneKey, type Fidelity, type TraceRecord, type Usage } from "./trace.ts"
+import { laneKey, type Block, type Fidelity, type TraceRecord, type Usage } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
 
 export type Status = "cold" | "hit" | "partial" | "miss" | "uncached"
@@ -52,11 +53,31 @@ export interface TurnResult {
   cause?: CauseInfo
   /** Set when the prefix changed without losing tokens (the change came after the cached part). */
   prefix_change?: CauseInfo
+  /** On a miss or partial miss: the breaks the harness declared on this call (SPEC 6.1), and whether they excuse it. */
+  declared_break?: DeclaredBreakResult
+}
+
+export interface DeclaredBreakResult {
+  /** The declared reasons, e.g. ["compaction"]. */
+  reasons: string[]
+  declarations: DeclaredBreak[]
+  /** True when the miss is excused: reported as an intentional break, counted apart from misses. */
+  intentional: boolean
+  /** True when two full requests showed the change starts where a declaration allows it; false for usage-only comparisons. */
+  checked: boolean
+  /** Why the declaration does not excuse this miss, or what could not be checked. */
+  note?: string
 }
 
 export interface GroupTotal {
   group: CauseGroup
   misses: number
+  cost: number
+}
+
+export interface ReasonTotal {
+  reason: string
+  breaks: number
   cost: number
 }
 
@@ -66,12 +87,16 @@ export interface Summary {
   fidelity: { full_request: number; usage_only: number }
   tokens: { prompt: number; input: number; cache_read: number; cache_write: number; output: number }
   hit_rate: number
-  cost: { total: number; uncached: number; misses: number } | null
+  /** `misses`: what avoidable misses cost; `intentional`: what declared intentional breaks cost. */
+  cost: { total: number; uncached: number; misses: number; intentional: number } | null
   reported_cost?: number
   status: Record<Status, number>
-  /** Calls that lost cached tokens: misses plus partial misses. */
+  /** Calls that lost cached tokens (misses plus partial misses), not counting declared intentional breaks. */
   misses: number
+  /** Avoidable misses by cause group. */
   by_group: GroupTotal[]
+  /** Calls that lost cached tokens because of a break the harness declared (SPEC 6.1). Counted apart from `misses`. */
+  intentional: { breaks: number; by_reason: ReasonTotal[] }
   headline: string
   unpriced_models: string[]
   notes: string[]
@@ -160,8 +185,8 @@ function analyzeTurn(
   const full = record.fidelity === "full-request" && previous.fidelity === "full-request" && record.request && previous.request
   const change = full
     ? comparePrefix(
-        { model: previous.model, params: previous.params, blocks: previous.request!.blocks },
-        { model: record.model, params: record.params, blocks: record.request!.blocks, hints: record.hints },
+        { provider: previous.provider, model: previous.model, params: previous.params, blocks: previous.request!.blocks },
+        { provider: record.provider, model: record.model, params: record.params, blocks: record.request!.blocks, hints: record.hints },
       )
     : null
   const ttl = previous.cache_ttl_seconds ?? facts.cache_ttl_seconds
@@ -175,14 +200,22 @@ function analyzeTurn(
     gap_seconds: gap,
   }
   if (status === "miss" || status === "partial") {
-    if (!full) return { ...turn, cause: inferredCause(previous, record, gap, ttl) }
-    // The previous call cached only up to its last breakpoint, so a change after it cannot explain the loss.
-    const lastBreakpoint = previous.request!.blocks.findLastIndex((block) => block.breakpoint)
+    const declared = declaredBreaks(record.hints)
+    const withDeclared = (result: TurnResult, verdict: Omit<DeclaredBreakResult, "reasons" | "declarations"> | undefined): TurnResult =>
+      declared.length === 0 || !verdict ? result : { ...result, declared_break: { reasons: [...new Set(declared.map((entry) => entry.reason))], declarations: declared, ...verdict } }
+    if (!full)
+      return withDeclared(
+        { ...turn, cause: inferredCause(previous, record, gap, ttl, declared) },
+        { intentional: true, checked: false, note: "usage-only: where the prefix changed cannot be checked against the declaration" },
+      )
+    // With explicit caching the previous call cached only up to its last breakpoint, so a change after it cannot explain the loss.
+    const lastBreakpoint = previous.usage.cache_write_tokens === null ? -1 : previous.request!.blocks.findLastIndex((block) => block.breakpoint)
     const afterCached = change?.block_index !== undefined && lastBreakpoint !== -1 && change.block_index > lastBreakpoint
     const cause = confirmedCause(afterCached ? null : change, gap, ttl, previous.usage.cache_write_tokens ?? 0, [previous.headers?.["session-id"], record.headers?.["session-id"]])
-    if (!afterCached) return { ...turn, cause }
+    const verdict = judgeDeclared(declared, afterCached ? null : change, previous.request!.blocks)
+    if (!afterCached) return withDeclared({ ...turn, cause }, verdict)
     const where = `cached prefix unchanged (the first change, at block ${change!.block_index! + 1}, is after the previous call's last cache breakpoint)`
-    return { ...turn, cause: { ...cause, summary: cause.summary.replace(/^prefix unchanged/, where) }, prefix_change: fromChange(change!, "confirmed") }
+    return withDeclared({ ...turn, cause: { ...cause, summary: cause.summary.replace(/^prefix unchanged/, where) }, prefix_change: fromChange(change!, "confirmed") }, verdict)
   }
   return change ? { ...turn, prefix_change: fromChange(change, "confirmed") } : turn
 }
@@ -204,6 +237,25 @@ const IMPLICIT_STEP_TOKENS = 128
 // A request sent this soon after the call that wrote the cache can miss with
 // nothing changed: the new entry is not always readable yet.
 const FRESH_WRITE_SECONDS = 5
+
+/**
+ * Whether the breaks a call declares excuse its miss, given the first change
+ * two full requests show. A declaration excuses only a change that starts
+ * after the part it says must survive; with the prefix intact the miss was not
+ * caused by the break, so it is not excused either.
+ */
+function judgeDeclared(declared: DeclaredBreak[], change: PrefixChange | null, prev: Block[]): Omit<DeclaredBreakResult, "reasons" | "declarations"> | undefined {
+  if (declared.length === 0) return undefined
+  const named = declared.map((entry) => entry.reason).join(", ")
+  if (!change) return { intentional: false, checked: true, note: `a break was declared (${named}), but the cached prefix was intact, so the break does not explain this miss` }
+  if (coveringBreaks(declared, change, prev).length > 0) return { intentional: true, checked: true }
+  const widest = declared.toSorted((a, b) => keptBlocks(a.after, prev) - keptBlocks(b.after, prev))[0]!
+  return {
+    intentional: false,
+    checked: true,
+    note: `a break was declared (${named}) that must keep ${describePosition(widest.after)} unchanged, but the first change is earlier (${change.region === "params" || change.region === "model" ? `the ${change.region === "model" ? "model" : "request parameters"}` : `block ${change.block_index! + 1}, in the ${change.region}`})`,
+  }
+}
 
 function confirmedCause(change: PrefixChange | null, gap: number, ttl: number, previousWrite: number, sessionIds: (string | undefined)[]): CauseInfo {
   if (change) return fromChange(change, "confirmed")
@@ -240,7 +292,16 @@ function confirmedCause(change: PrefixChange | null, gap: number, ttl: number, p
 const USAGE_ONLY = "usage-only trace: root-cause diffs need full requests"
 const UNCONFIRMED = "unconfirmed (usage-only)"
 
-function inferredCause(previous: TraceRecord, record: TraceRecord, gap: number, ttl: number): CauseInfo {
+// The cause a declared reason stands for when only usage is known.
+const REASON_CAUSE: Record<string, Cause> = {
+  compaction: "compaction",
+  revert: "history_rewound",
+  refusal: "message_removed",
+  model_switch: "model_changed",
+  settings_change: "params_changed",
+}
+
+function inferredCause(previous: TraceRecord, record: TraceRecord, gap: number, ttl: number, declared: DeclaredBreak[]): CauseInfo {
   const inferred = (cause: Cause, summary: string, detail?: Record<string, unknown>): CauseInfo => ({
     cause,
     group: CAUSE_GROUP[cause],
@@ -254,6 +315,12 @@ function inferredCause(previous: TraceRecord, record: TraceRecord, gap: number, 
       to: record.model,
     })
   const hint = (kind: string) => record.hints?.find((candidate) => candidate.kind === kind)
+  const stated = declared.find((entry) => entry.kind === "prefix_break")
+  if (stated)
+    return inferred(
+      REASON_CAUSE[stated.reason] ?? "unknown",
+      `the harness declared an intentional break (${stated.reason}${stated.detail ? `: ${stated.detail}` : ""}); ${UNCONFIRMED}`,
+    )
   const compaction = hint("compaction")
   if (compaction)
     return inferred("compaction", `history compacted before this call (harness log${compaction.detail ? `: ${compaction.detail}` : ""}); ${UNCONFIRMED}`)
@@ -293,14 +360,17 @@ function summarize(turns: TurnResult[], records: TraceRecord[]): Summary {
     cache_write: sum((turn) => turn.usage.cache_write_tokens ?? 0),
     output: sum((turn) => turn.usage.output_tokens),
   }
+  const lostTokens = turns.filter((turn) => turn.status === "miss" || turn.status === "partial")
+  const intentional = lostTokens.filter((turn) => turn.declared_break?.intentional)
+  const missed = lostTokens.filter((turn) => !turn.declared_break?.intentional)
   const priced = turns.every((turn) => turn.cost !== null)
+  const total = (list: TurnResult[]) => list.reduce((value, turn) => value + (turn.miss_cost ?? 0), 0)
   const cost = priced
-    ? { total: sum((turn) => turn.cost!.total), uncached: sum((turn) => turn.uncached_cost ?? 0), misses: sum((turn) => turn.miss_cost ?? 0) }
+    ? { total: sum((turn) => turn.cost!.total), uncached: sum((turn) => turn.uncached_cost ?? 0), misses: total(missed), intentional: total(intentional) }
     : null
   const reported = records.some((record) => record.usage.reported_cost !== undefined)
     ? records.reduce((total, record) => total + (record.usage.reported_cost ?? 0), 0)
     : undefined
-  const missed = turns.filter((turn) => turn.status === "miss" || turn.status === "partial")
   const groups = new Map<CauseGroup, GroupTotal>()
   for (const turn of missed) {
     const group = turn.cause?.group ?? "unknown causes"
@@ -310,6 +380,15 @@ function summarize(turns: TurnResult[], records: TraceRecord[]): Summary {
     groups.set(group, entry)
   }
   const byGroup = [...groups.values()].sort((a, b) => b.misses - a.misses || b.cost - a.cost)
+  const reasons = new Map<string, ReasonTotal>()
+  for (const turn of intentional) {
+    const reason = turn.declared_break!.reasons.join(", ")
+    const entry = reasons.get(reason) ?? { reason, breaks: 0, cost: 0 }
+    entry.breaks++
+    entry.cost += turn.miss_cost ?? 0
+    reasons.set(reason, entry)
+  }
+  const byReason = [...reasons.values()].sort((a, b) => b.breaks - a.breaks || b.cost - a.cost)
   const status = { cold: 0, hit: 0, partial: 0, miss: 0, uncached: 0 }
   for (const turn of turns) status[turn.status]++
   const usageOnly = turns.filter((turn) => turn.fidelity === "usage-only").length
@@ -336,17 +415,24 @@ function summarize(turns: TurnResult[], records: TraceRecord[]): Summary {
     status,
     misses: missed.length,
     by_group: byGroup,
-    headline: headline(missed.length, cost?.misses ?? null, byGroup),
+    intentional: { breaks: intentional.length, by_reason: byReason },
+    headline: headline(missed.length, cost?.misses ?? null, byGroup, byReason, cost?.intentional ?? null),
     unpriced_models: unpriced,
     notes,
   }
 }
 
-function headline(misses: number, cost: number | null, groups: GroupTotal[]): string {
-  if (misses === 0) return "No cache misses after the first call in each lane."
+function headline(misses: number, cost: number | null, groups: GroupTotal[], reasons: ReasonTotal[], intentionalCost: number | null): string {
+  const breaks = reasons.reduce((count, reason) => count + reason.breaks, 0)
+  const declared =
+    breaks === 0
+      ? ""
+      : `${breaks} intentional ${breaks === 1 ? "break" : "breaks"} declared by the harness${intentionalCost === null ? "" : ` cost ${money(intentionalCost)}`} (${reasons.map((reason) => `${reason.breaks} ${reason.reason}`).join(", ")})`
+  if (misses === 0)
+    return breaks === 0 ? "No cache misses after the first call in each lane." : `No unexpected cache misses after the first call in each lane; ${declared}.`
   const costText = cost === null ? "" : ` cost ${money(cost)}`
   const parts = groups.map((group) => (group.group === "unknown causes" ? `${group.misses} with no known cause` : `${group.misses} from ${group.group}`))
-  return `${misses} ${misses === 1 ? "miss" : "misses"}${costText}; ${parts.join(", ")}`
+  return `${misses} ${misses === 1 ? "miss" : "misses"}${costText}; ${parts.join(", ")}${breaks === 0 ? "" : `. Also ${declared}.`}`
 }
 
 export function money(value: number): string {
