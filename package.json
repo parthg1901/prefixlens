@@ -1,0 +1,31 @@
+{
+  "name": "prefixlens",
+  "version": "0.1.0",
+  "description": "Explains prompt-cache hits and misses for LLM agent harnesses.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "prefixlens": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./pricing.json": "./pricing.json"
+  },
+  "files": [
+    "src",
+    "pricing.json",
+    "SPEC.md",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}
