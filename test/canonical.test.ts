@@ -123,6 +123,18 @@ describe("canonicalizeOpenAI", () => {
     expect(request.params).toEqual({ temperature: 0 })
   })
 
+  test("a system message later in the conversation stays a message block, keeping prefix order", () => {
+    const request = canonicalizeOpenAI({
+      model: "gpt-test",
+      messages: [
+        { role: "developer", content: "rules" },
+        { role: "user", content: "hi" },
+        { role: "system", content: "mode changed" },
+      ],
+    })
+    expect(request.blocks.map((block) => block.kind)).toEqual(["system", "message", "message"])
+  })
+
   test("responses api: instructions become the system block and input items become messages", () => {
     const request = canonicalizeOpenAI({
       model: "gpt-test",

@@ -112,26 +112,17 @@ export function canonicalizeOpenAI(body: Record<string, unknown>): CanonicalRequ
       typeof body.input === "string"
         ? [{ role: "user", content: [{ type: "input_text", text: body.input }] }]
         : asArray(body.input)
-    const items = input.map((item) => {
-      const normalized = normalizeMessage(item, (role) => (role === "assistant" ? "output_text" : "input_text")).value
-      const role = roleOf(normalized)
-      return makeBlock(role === "system" || role === "developer" ? "system" : "message", normalized, role ?? typeOf(normalized))
-    })
+    const items = leadingSystem(input.map((item) => normalizeMessage(item, (role) => (role === "assistant" ? "output_text" : "input_text")).value))
     return {
       model: String(body.model ?? ""),
       params: paramsWithout(body, ["model", "tools", "functions", "instructions", "input"]),
       blocks: [...tools, ...instructions, ...items],
     }
   }
-  const messages = asArray(body.messages).map((message) => {
-    const normalized = normalizeMessage(message).value
-    const role = roleOf(normalized)
-    return makeBlock(role === "system" || role === "developer" ? "system" : "message", normalized, role)
-  })
   return {
     model: String(body.model ?? ""),
     params: paramsWithout(body, ["model", "tools", "functions", "messages"]),
-    blocks: [...tools, ...messages],
+    blocks: [...tools, ...leadingSystem(asArray(body.messages).map((message) => normalizeMessage(message).value))],
   }
 }
 
@@ -177,6 +168,14 @@ function normalizeMessage(message: unknown, textType: (role: unknown) => string 
   if (!isRecord(stripped.value) || typeof stripped.value.content !== "string") return stripped
   const part = { type: textType(stripped.value.role), text: stripped.value.content }
   return { value: { ...stripped.value, content: [part] }, marked: stripped.marked }
+}
+
+// System and developer messages before the first other message are the system
+// prompt; later ones are part of the conversation and stay message blocks.
+function leadingSystem(messages: unknown[]): Block[] {
+  const firstOther = messages.findIndex((message) => !["system", "developer"].includes(roleOf(message) ?? ""))
+  const cut = firstOther === -1 ? messages.length : firstOther
+  return messages.map((message, index) => makeBlock(index < cut ? "system" : "message", message, roleOf(message) ?? typeOf(message)))
 }
 
 function toolName(tool: unknown): string | undefined {
