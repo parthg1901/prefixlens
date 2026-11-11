@@ -1,0 +1,28 @@
+{
+  "id": "msg_010",
+  "sessionID": "ses_main",
+  "role": "assistant",
+  "time": {
+    "created": 1767263301000,
+    "completed": 1767263304000
+  },
+  "parentID": "msg_001",
+  "modelID": "gpt-4.1",
+  "providerID": "openai",
+  "mode": "plan",
+  "agent": "plan",
+  "path": {
+    "cwd": "/work/demo",
+    "root": "/work/demo"
+  },
+  "cost": 0.006,
+  "tokens": {
+    "input": 3000,
+    "output": 40,
+    "reasoning": 0,
+    "cache": {
+      "read": 0,
+      "write": 0
+    }
+  }
+}

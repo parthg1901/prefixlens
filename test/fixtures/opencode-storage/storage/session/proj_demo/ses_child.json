@@ -1,0 +1,13 @@
+{
+  "id": "ses_child",
+  "slug": "child",
+  "projectID": "proj_demo",
+  "directory": "/work/demo",
+  "parentID": "ses_main",
+  "title": "Synthetic subagent",
+  "version": "1.0.0",
+  "time": {
+    "created": 1767261600000,
+    "updated": 1767261700000
+  }
+}

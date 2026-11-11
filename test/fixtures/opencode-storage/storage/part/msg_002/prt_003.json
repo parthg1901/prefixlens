@@ -1,0 +1,17 @@
+{
+  "id": "prt_003",
+  "sessionID": "ses_main",
+  "messageID": "msg_002",
+  "type": "step-finish",
+  "reason": "tool-calls",
+  "cost": 0.0156,
+  "tokens": {
+    "input": 10,
+    "output": 50,
+    "reasoning": 0,
+    "cache": {
+      "read": 0,
+      "write": 4000
+    }
+  }
+}

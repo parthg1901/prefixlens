@@ -1,0 +1,17 @@
+{
+  "id": "prt_006",
+  "sessionID": "ses_main",
+  "messageID": "msg_002",
+  "type": "step-finish",
+  "reason": "stop",
+  "cost": 0.0024,
+  "tokens": {
+    "input": 5,
+    "output": 20,
+    "reasoning": 0,
+    "cache": {
+      "read": 4000,
+      "write": 300
+    }
+  }
+}

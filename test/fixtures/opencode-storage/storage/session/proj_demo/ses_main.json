@@ -1,0 +1,12 @@
+{
+  "id": "ses_main",
+  "slug": "demo",
+  "projectID": "proj_demo",
+  "directory": "/work/demo",
+  "title": "Synthetic demo session",
+  "version": "1.0.0",
+  "time": {
+    "created": 1767261600000,
+    "updated": 1767263600000
+  }
+}

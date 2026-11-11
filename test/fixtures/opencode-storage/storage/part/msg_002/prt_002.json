@@ -1,0 +1,22 @@
+{
+  "id": "prt_002",
+  "sessionID": "ses_main",
+  "messageID": "msg_002",
+  "type": "tool",
+  "callID": "call_1",
+  "tool": "read",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "a.txt"
+    },
+    "output": "hello",
+    "title": "a.txt",
+    "metadata": {},
+    "time": {
+      "start": 1767261604000,
+      "end": 1767261605000,
+      "compacted": 1767263100000
+    }
+  }
+}

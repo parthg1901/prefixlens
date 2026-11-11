@@ -243,15 +243,16 @@ function v1Calls(
     // Each step-finish closes one model call. Its start time is the matching
     // step-start row's time when the database has one; otherwise the end of
     // the previous step's tools, which is when the next request went out.
-    let cursor = created
+    let start = created
+    let toolsDone = created
     for (const part of own) {
-      if (part.data.type === "step-start") cursor = part.time ?? cursor
+      if (part.data.type === "step-start") start = part.time ?? toolsDone
       if (part.data.type === "tool") {
         const state = isRecord(part.data.state) ? part.data.state : {}
         const end = num(isRecord(state.time) ? state.time.end : undefined)
-        if (end !== undefined && part.time === undefined) cursor = Math.max(cursor, end)
+        if (end !== undefined) toolsDone = Math.max(toolsDone, end)
       }
-      if (part.data.type === "step-finish") calls.push({ ...base, id: part.id, ts: cursor, tokens: part.data.tokens, cost: num(part.data.cost) })
+      if (part.data.type === "step-finish") calls.push({ ...base, id: part.id, ts: start, tokens: part.data.tokens, cost: num(part.data.cost) })
     }
   }
   return { calls, events }

@@ -1,0 +1,28 @@
+{
+  "id": "msg_002",
+  "sessionID": "ses_main",
+  "role": "assistant",
+  "time": {
+    "created": 1767261601000,
+    "completed": 1767261604000
+  },
+  "parentID": "msg_001",
+  "modelID": "claude-sonnet-4-5",
+  "providerID": "anthropic",
+  "mode": "build",
+  "agent": "build",
+  "path": {
+    "cwd": "/work/demo",
+    "root": "/work/demo"
+  },
+  "cost": 0.03,
+  "tokens": {
+    "input": 15,
+    "output": 70,
+    "reasoning": 0,
+    "cache": {
+      "read": 4000,
+      "write": 4300
+    }
+  }
+}
