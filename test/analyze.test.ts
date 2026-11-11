@@ -76,6 +76,22 @@ describe("analyze", () => {
     expect(analysis.summary.headline).toBe("1 miss cost $0.06; 1 from provider-side misses")
   })
 
+  test("a change after the previous call's last cache breakpoint is not blamed for a miss", () => {
+    // Only the prefix through message 1 was cached; message 3 is edited, which cannot cost that cache.
+    const marked = { role: "user", content: [{ type: "text", text: "task", cache_control: { type: "ephemeral" } }] }
+    const records = [
+      fullRecord(body([marked, assistant("a"), user("draft")]), usage(10, 0, 5000)),
+      fullRecord(body([marked, assistant("a"), user("draft, edited"), assistant("b"), user("more")]), usage(10, 0, 5300), {}, 30),
+    ]
+    const turn = run(records).turns[1]!
+    expect(turn.status).toBe("miss")
+    expect(turn.cause).toMatchObject({ cause: "provider_side", confidence: "confirmed" })
+    expect(turn.cause!.summary).toBe(
+      "cached prefix unchanged (the first change, at block 7, is after the previous call's last cache breakpoint) and within TTL (30s < 5m): provider-side miss, not caused by the harness",
+    )
+    expect(turn.prefix_change).toMatchObject({ cause: "message_edited", block_index: 6 })
+  })
+
   test("a follow-up seconds after a cold write that misses with nothing changed is provider-side", () => {
     // Seen live: a request about two seconds after the call that wrote the prefix can miss.
     const records = [fullRecord(body(m1), usage(10, 0, 5000)), fullRecord(body(m2), usage(10, 0, 5300), {}, 2)]

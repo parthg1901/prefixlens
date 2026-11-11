@@ -175,8 +175,14 @@ function analyzeTurn(
     gap_seconds: gap,
   }
   if (status === "miss" || status === "partial") {
-    const cause = full ? confirmedCause(change, gap, ttl, previous.usage.cache_write_tokens ?? 0) : inferredCause(previous, record, gap, ttl)
-    return { ...turn, cause }
+    if (!full) return { ...turn, cause: inferredCause(previous, record, gap, ttl) }
+    // The previous call cached only up to its last breakpoint, so a change after it cannot explain the loss.
+    const lastBreakpoint = previous.request!.blocks.findLastIndex((block) => block.breakpoint)
+    const afterCached = change?.block_index !== undefined && lastBreakpoint !== -1 && change.block_index > lastBreakpoint
+    const cause = confirmedCause(afterCached ? null : change, gap, ttl, previous.usage.cache_write_tokens ?? 0)
+    if (!afterCached) return { ...turn, cause }
+    const where = `cached prefix unchanged (the first change, at block ${change!.block_index! + 1}, is after the previous call's last cache breakpoint)`
+    return { ...turn, cause: { ...cause, summary: cause.summary.replace(/^prefix unchanged/, where) }, prefix_change: fromChange(change!, "confirmed") }
   }
   return change ? { ...turn, prefix_change: fromChange(change, "confirmed") } : turn
 }
