@@ -1,6 +1,6 @@
 {
   "name": "prefixlens",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Explains prompt-cache hits and misses for LLM agent harnesses.",
   "type": "module",
   "bin": {
@@ -8,6 +8,7 @@
   },
   "exports": {
     ".": "./src/index.ts",
+    "./test": "./src/assert.ts",
     "./pricing.json": "./pricing.json"
   },
   "files": [
@@ -24,7 +25,9 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
     "@types/bun": "^1.4.4",
+    "openai": "^7.55.0",
     "typescript": "^7.0.2"
   }
 }
