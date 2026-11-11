@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "Explains prompt-cache hits and misses for LLM agent harnesses.",
   "type": "module",
-  "license": "MIT",
   "bin": {
     "prefixlens": "./src/cli.ts"
   },

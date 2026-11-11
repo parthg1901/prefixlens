@@ -85,8 +85,10 @@ Within each group, blocks keep the order of the request:
 |---|---|---|---|
 | Anthropic | each element of `tools` | each element of `system` (a string `system` is one block) | each element of `messages` |
 | OpenAI Chat | each element of `tools` (and legacy `functions`) | each leading `messages` element whose role is `system` or `developer` | the other `messages` elements |
-| OpenAI Responses | each element of `tools` | `instructions` (one block), and `input` items whose role is `system` or `developer` | the other `input` items |
+| OpenAI Responses | each element of `tools` | `instructions` (one block), then each leading `input` item whose role is `system` or `developer` | the other `input` items |
 | Gemini | each entry of `tools[].functionDeclarations`; other tool entries (e.g. `{"googleSearch": {}}`) whole | each part of `systemInstruction.parts` | each element of `contents` |
+
+"Leading" means before the first element with any other role; a system or developer message later in the conversation is a message block, so the order rule holds.
 
 The tools-before-system order matches Anthropic's documented render order (tools, then system, then messages). For OpenAI and Gemini the provider's internal order is not documented; the order above is a convention, and since a change anywhere in the prefix invalidates what follows it, the first changed block still identifies the cause.
 
