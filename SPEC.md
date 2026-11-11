@@ -30,6 +30,7 @@ A trace records the model calls an agent made, one record per call, so that each
 | `lane` | string | no | A sequence of calls within the session that build on each other, e.g. `"main"` or a subagent id. Default `"main"`. See section 7. |
 | `cache_ttl_seconds` | integer | no | Cache lifetime that applied to the prefix this call wrote, in seconds. For Anthropic, the TTL of the last `cache_control` breakpoint: `300` for the default 5 minutes, `3600` for `"ttl": "1h"`. Omit when unknown; readers use the provider default. |
 | `hints` | array | no | Facts the harness knows about what happened before this call. See section 6. |
+| `headers` | object of strings | no | Request headers that route the request to a cache or change what is cached, lowercase names, e.g. `{"session-id": "…"}` (OpenAI's ChatGPT sign-in flow routes its prompt cache by `session-id`), `anthropic-beta`, `anthropic-version`, `openai-beta`. Writers MUST write only headers known not to be credentials: never `authorization`, `x-api-key`, cookies or account ids. prefixlens reports a miss with the prefix intact and a changed `session-id` as a routing change, not a provider-side miss. |
 | `source` | object | no | Free-form provenance, e.g. `{"adapter": "claude-code", "version": "2.1.322"}` or `{"harness": "myagent", "version": "0.3.0"}`. Readers do not interpret it. |
 
 Readers MUST ignore fields they do not know. Writers MUST NOT put API keys, auth headers or other credentials in any field.
@@ -171,7 +172,7 @@ For a call `c` with previous call `p` in the same lane:
 
 - `prompt(x) = input_tokens + cache_read_tokens + (cache_write_tokens ?? 0)`.
 - **Hit rate** of `c` = `cache_read_tokens / prompt(c)`. Trace hit rate = Σ reads / Σ prompts.
-- **Expected cached tokens**: what `p` left in the cache. With explicit caching (`p.cache_write_tokens` not null): `p.cache_read_tokens + p.cache_write_tokens`. With implicit caching: `prompt(p)` if it is at least the provider's minimum cacheable size, else 0. The minimum cacheable size (default 1024 tokens) and the default TTL (300 seconds) are set per provider in the pricing table's `providers` section. Capped at `prompt(c)`.
+- **Expected cached tokens**: what `p` left in the cache. With explicit caching (`p.cache_write_tokens` not null): `p.cache_read_tokens + p.cache_write_tokens`. With implicit caching: `prompt(p)` rounded down to a multiple of 128 tokens (the step OpenAI caches in) if it is at least the provider's minimum cacheable size, else 0. The minimum cacheable size (default 1024 tokens) and the default TTL (300 seconds) are set per provider in the pricing table's `providers` section. Capped at `prompt(c)`.
 - **Lost tokens** = `max(0, expected − c.cache_read_tokens)`.
 - **Status**: `cold` (first in lane); `uncached` (expected below the minimum cacheable size and nothing read); `hit` (lost ≤ tolerance, default 128 tokens); `miss` (read ≤ tolerance); otherwise `partial`.
 - **Cost** = Σ tokens × price from a user-editable pricing table (per million tokens, with separate 5-minute and 1-hour write prices). No price is built into the code.
@@ -210,4 +211,4 @@ A usage-only record needs only the required fields:
 5. Write each block's content once per file and hash-only afterwards, or hash-only throughout if you must redact. For long sessions, also set `request.reuse` (section 4.6) instead of repeating the unchanged prefix.
 6. Fill `usage` from the final usage of the response (section 3), with `cache_write_tokens: null` for implicit-caching providers.
 7. Give concurrent or independent conversations (subagents) their own `lane`.
-8. Never write credentials.
+8. Never write credentials. If a header routes your requests to a cache (`session-id`), record it in `headers`.
