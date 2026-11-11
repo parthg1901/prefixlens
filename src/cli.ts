@@ -113,7 +113,9 @@ async function runImport(args: string[], flags: Flags): Promise<number> {
   if (typeof flags.out === "string") {
     await Bun.write(flags.out, text)
     const full = result.records.filter((record) => record.fidelity === "full-request").length
-    console.error(`wrote ${result.records.length} records (${full} full-request, ${result.records.length - full} usage-only) to ${flags.out}`)
+    const verified = result.records.filter((record) => record.source?.request === "verified").length
+    const check = verified > 0 ? `; ${verified} checked against the request digest the harness logged` : ""
+    console.error(`wrote ${result.records.length} records (${full} full-request, ${result.records.length - full} usage-only${check}) to ${flags.out}`)
   } else process.stdout.write(text)
   return 0
 }

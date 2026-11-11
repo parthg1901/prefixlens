@@ -142,7 +142,7 @@ Even with content deduplicated, listing every block's hash on every line makes a
 
 ## 5. Fidelity
 
-- **`"full-request"`**: `request.blocks` lists every tool, system part and message the provider received, in order. With two consecutive full-request records in a lane, a reader can prove whether the earlier request is an unchanged prefix of the later one and name the first block that differs.
+- **`"full-request"`**: `request.blocks` lists every tool, system part and message the provider received, in order. With two consecutive full-request records in a lane, a reader can prove whether the earlier request is an unchanged prefix of the later one and name the first block that differs. A writer that rebuilds requests from a log, rather than recording the request it sent, SHOULD write `"full-request"` only when it can show the rebuild is exact (prefixlens's Claude Code importer matches the request digest Claude Code logs), and `"usage-only"` otherwise. Changes a provider makes after receiving the request, such as server-side context editing, are outside the trace.
 - **`"usage-only"`**: only the response usage is known (plus `model`, `ts` and optionally `params` and `hints`). Hit rates, lost tokens and costs are exact. The cause of a miss cannot be proven; readers may infer one from a model change, the time gap against the TTL, and hints, and MUST label such causes as inferred.
 
 A trace may mix both. A comparison between a full-request record and a usage-only record is treated as usage-only.

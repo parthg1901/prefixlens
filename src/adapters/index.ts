@@ -43,7 +43,7 @@ export const ADAPTERS: Adapter[] = [
     description: "Claude Code session logs (<session>.jsonl, plus its subagents/ directory).",
     defaultPath: "~/.claude/projects/<project>/<session-id>.jsonl",
     diagnoses:
-      "Full requests when the log has api-request records (recent Claude Code versions): every cause, with diffs. Older logs give usage only: hit rates, costs, expiry and compaction hints.",
+      "Full requests when the log has api-request records (recent Claude Code versions), each checked against the request digest Claude Code logged: every cause, with diffs; not server-side context edits, nor calls Claude Code does not log one by one. Older logs give usage only: hit rates, costs, expiry and compaction hints; tool, system-prompt and history changes cannot be seen, so those misses are 'cause unknown'.",
     import: importClaudeCode,
   },
   {
@@ -52,7 +52,7 @@ export const ADAPTERS: Adapter[] = [
     description: "opencode local storage: opencode.db (SQLite) or the legacy storage/ JSON directory.",
     defaultPath: "~/.local/share/opencode/opencode.db",
     diagnoses:
-      "Usage only: hit rates and costs per model call, with causes inferred from model changes, timing, compactions, agent switches and pruned tool outputs. opencode does not log the request it sent, so no block diffs.",
+      "Usage only: hit rates and costs per model call, with causes inferred from model changes, timing, compactions, agent switches and pruned tool outputs. opencode does not log the tool list, system prompt or history each call was sent with, so no block diffs; other misses are 'cause unknown'.",
     import: importOpencode,
     list: listOpencodeSessions,
   },
