@@ -139,21 +139,23 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
   const shapeBlocks = (hash: string, shape: Entry | undefined) => {
     const known = shapeMemo.get(hash)
     if (known) return known
-    const blocks = canonicalizeAnthropic({ tools: shape?.tools, system: shape?.system, messages: [] }).blocks
+    const blocks = canonicalizeAnthropic({ tools: shape?.tools, system: shape?.system, messages: [] }).blocks.map(withoutBreakpoint)
     shapeMemo.set(hash, blocks)
     return blocks
   }
   const messageMemo = new Map<string, Block>()
-  const messageBlock = (hash: string, message: unknown): Block => {
+  let unresolved = 0
+  const messageBlock = (hash: string): Block => {
     const known = messageMemo.get(hash)
     if (known) return known
+    const message = blobs.get(hash) ?? transcript.get(hash)
+    if (message === undefined) unresolved++
     // A message whose content is not in the log is still identified by its hash.
-    const block = message === undefined ? { kind: "message" as const, hash: `cc:${hash}` } : canonicalizeAnthropic({ messages: [message] }).blocks[0]!
+    const block = message === undefined ? { kind: "message" as const, hash: `cc:${hash}` } : withoutBreakpoint(canonicalizeAnthropic({ messages: [message] }).blocks[0]!)
     messageMemo.set(hash, block)
     return block
   }
   const sessionHints = hintsByTime(entries)
-  let unresolved = 0
   let missingShape = 0
   let noResponse = 0
   const records = requests.flatMap((request): TraceRecord[] => {
@@ -165,14 +167,8 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
     }
     const shape = shapes.get(request.shapeHash as string)
     if (!shape) missingShape++
-    const hashes = messageHashes(id)
-    const messages = hashes.map((hash) => blobs.get(hash) ?? transcript.get(hash))
-    unresolved += messages.filter((message) => message === undefined).length
     const params = isRecord(request.params) ? request.params : {}
-    const blocks = applyBreakpoints(
-      [...shapeBlocks(request.shapeHash as string, shape), ...hashes.map((hash, index) => messageBlock(hash, messages[index]))],
-      request.cacheControl,
-    )
+    const blocks = applyBreakpoints([...shapeBlocks(request.shapeHash as string, shape), ...messageHashes(id).map(messageBlock)], request.cacheControl)
     const message = response.message as Entry
     const ts = typeof request.timestamp === "string" ? request.timestamp : (response.timestamp as string)
     const hints = sessionHints(ts)
@@ -198,7 +194,7 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
   if (noResponse > 0) warnings.push(`${lane}: ${noResponse} logged requests had no response (errors or interruptions); skipped`)
   if (missingShape > 0) warnings.push(`${lane}: ${missingShape} requests referenced a tools/system shape that is not in the log`)
   if (unresolved > 0)
-    warnings.push(`${lane}: ${unresolved} message references could not be resolved to content; they are compared by hash only`)
+    warnings.push(`${lane}: ${unresolved} distinct messages could not be resolved to content; they are compared by hash only`)
   return records
 }
 
@@ -276,10 +272,15 @@ function applyBreakpoints(blocks: Block[], cacheControl: unknown): Block[] {
     if (area === "system") marked.add(toolCount + index)
     if (area === "messages") marked.add(headCount + index)
   }
-  return blocks.map((block, index) => {
-    const { breakpoint, ...rest } = block
-    return marked.has(index) ? { ...rest, breakpoint: true } : (rest as Block)
-  })
+  // Blocks are shared between requests, so only the marked ones are copied.
+  for (const index of marked) if (blocks[index]) blocks[index] = { ...blocks[index]!, breakpoint: true }
+  return blocks
+}
+
+function withoutBreakpoint(block: Block): Block {
+  if (block.breakpoint === undefined) return block
+  const { breakpoint, ...rest } = block
+  return rest
 }
 
 // The TTL that governs the conversation prefix is the one on the last breakpoint.

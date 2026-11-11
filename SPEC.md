@@ -23,7 +23,7 @@ A trace records the model calls an agent made, one record per call, so that each
 | `model` | string | yes | Model id as sent in the request, e.g. `"claude-opus-5-5"`. |
 | `fidelity` | string | yes | `"full-request"` or `"usage-only"`. See section 5. |
 | `usage` | object | yes | Token counts from the response. See section 3. |
-| `request` | object | when `fidelity` is `"full-request"` | `{ "blocks": [Block, ...] }`: the request as ordered blocks. See section 4. MUST be absent or ignored for `"usage-only"`. |
+| `request` | object | when `fidelity` is `"full-request"` | `{ "reuse"?: integer, "blocks": [Block, ...] }`: the request as ordered blocks (section 4), optionally starting with blocks reused from the previous full request in the same lane (section 4.6). MUST be absent or ignored for `"usage-only"`. |
 | `params` | object | no | Every request field that is not the model, tools, system prompt or messages, for example `{"max_tokens": 32000, "thinking": {"type": "adaptive"}, "tool_choice": {"type": "auto"}}`. Leave out transport-only fields (`stream`, `stream_options`). Never include credentials or headers. |
 | `id` | string | no | An identifier for the call, unique within the trace (a request id or response id). |
 | `session` | string | no | The conversation this call belongs to. |
@@ -130,6 +130,16 @@ Two blocks are the same if and only if their hashes are equal. When a block carr
 
 A hash-only block whose hash never appears with content is valid; it is treated as redacted.
 
+### 4.6 Reusing the previous request's prefix
+
+Even with content deduplicated, listing every block's hash on every line makes a long session's trace grow with the square of its length. A record MAY therefore set `request.reuse` to a non-negative integer N. Its full block list is then the first N blocks of the previous `"full-request"` record in the same lane (section 7), exactly as that record's blocks were resolved (including `key` and `breakpoint`), followed by the blocks in `request.blocks`.
+
+- "Previous" means the closest earlier line in the file with the same `session` and `lane` and `fidelity: "full-request"`; usage-only records in between are skipped.
+- N MUST NOT exceed that record's block count; if there is no such record, N MUST be 0. Readers MUST reject the record otherwise.
+- The block-order rule of section 4.2 applies to the resolved list.
+- A writer that reuses a block with a different `breakpoint` value than before must list that block instead, since reuse copies the flag. In practice: reuse the longest leading run of blocks whose `hash`, `kind`, `key` and `breakpoint` are all unchanged.
+- Omitting `reuse` (or writing 0) and listing every block is always valid.
+
 ## 5. Fidelity
 
 - **`"full-request"`**: `request.blocks` lists every tool, system part and message the provider received, in order. With two consecutive full-request records in a lane, a reader can prove whether the earlier request is an unchanged prefix of the later one and name the first block that differs.
@@ -197,7 +207,7 @@ A usage-only record needs only the required fields:
 2. Build blocks from the exact request body you sent, after all your own transformations, in the order of section 4.2.
 3. Strip `cache_control` (section 4.3), set `breakpoint` where it was, and normalize string message bodies to text parts.
 4. Hash with canonical JSON and SHA-256; check your implementation against the test vectors.
-5. Write each block's content once per file and hash-only afterwards, or hash-only throughout if you must redact.
+5. Write each block's content once per file and hash-only afterwards, or hash-only throughout if you must redact. For long sessions, also set `request.reuse` (section 4.6) instead of repeating the unchanged prefix.
 6. Fill `usage` from the final usage of the response (section 3), with `cache_write_tokens: null` for implicit-caching providers.
 7. Give concurrent or independent conversations (subagents) their own `lane`.
 8. Never write credentials.

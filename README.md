@@ -114,7 +114,7 @@ Prices live in [`pricing.json`](pricing.json), not in code. Each model entry has
 
 ## Trace format
 
-A trace is JSON Lines, one record per model call: provider, model, params, the canonical request as ordered blocks (tools, system, each message) with a SHA-256 hash per block, the response usage, a timestamp, and a fidelity flag (`full-request` or `usage-only`). Block content is written once per trace and referenced by hash afterwards, and can be left out entirely to redact it.
+A trace is JSON Lines, one record per model call: provider, model, params, the canonical request as ordered blocks (tools, system, each message) with a SHA-256 hash per block, the response usage, a timestamp, and a fidelity flag (`full-request` or `usage-only`). To keep long sessions small, block content is written once per trace and referenced by hash afterwards, and each call can reuse the unchanged leading blocks of the previous call instead of listing them again. Content can also be left out entirely to redact it.
 
 [SPEC.md](SPEC.md) defines it precisely enough to emit from any language, with hash test vectors.
 

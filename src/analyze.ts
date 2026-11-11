@@ -3,7 +3,7 @@
 
 import { CAUSE_GROUP, comparePrefix, type Cause, type CauseGroup, type PrefixChange, type Region } from "./diff.ts"
 import { costOf, findPrice, providerFacts, ratesFor, uncachedRate, type Cost, type PricingTable } from "./pricing.ts"
-import type { Fidelity, TraceRecord, Usage } from "./trace.ts"
+import { laneKey, type Fidelity, type TraceRecord, type Usage } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
 
 export type Status = "cold" | "hit" | "partial" | "miss" | "uncached"
@@ -95,16 +95,12 @@ export function analyze(records: TraceRecord[], options: AnalyzeOptions): Analys
   const warnings: string[] = []
   const last = new Map<string, number>()
   const turns = records.map((record, index): TurnResult => {
-    const lane = laneOf(record)
+    const lane = laneKey(record)
     const previousIndex = last.get(lane)
     last.set(lane, index)
     return analyzeTurn(records, index, previousIndex, options.pricing, tolerance, warnings)
   })
   return { version: 1, summary: summarize(turns, records), turns, warnings }
-}
-
-function laneOf(record: TraceRecord): string {
-  return [record.session ?? "", record.lane ?? ""].filter(Boolean).join("/") || "main"
 }
 
 function analyzeTurn(

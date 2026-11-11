@@ -126,7 +126,7 @@ async function runReport(args: string[], flags: Flags): Promise<number> {
   const parsed = parseTrace(text)
   for (const error of parsed.errors.slice(0, 20)) console.error(`error: ${error}`)
   if (parsed.errors.length > 20) console.error(`error: ... ${parsed.errors.length - 20} more`)
-  if (parsed.records.length === 0) return fail("no valid trace records")
+  if (parsed.records.length === 0) return fail(parsed.errors.length > 0 ? "no valid trace records" : "the trace has no records (the import found no model calls with usage)")
   const pricingPath = typeof flags.pricing === "string" ? flags.pricing : undefined
   const pricing = await loadPricing(pricingPath)
   const tolerance = typeof flags.tolerance === "string" ? Number(flags.tolerance) : undefined

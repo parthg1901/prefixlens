@@ -80,14 +80,19 @@ describe("claude-code adapter", () => {
     expect(causes).toEqual(["cold_start", undefined, "cold_start", "compaction", "cache_expired"])
   })
 
-  test("survives a trace round trip with content deduplicated", async () => {
+  test("survives a compact trace round trip", async () => {
     const { records } = await importClaudeCode(path.join(fixtures, "claude-code-session.jsonl"), { subagents: false })
     const text = serializeTrace(records)
     const lines = text.trim().split("\n").map((line) => JSON.parse(line))
-    // The system block is written once, then referenced by hash.
-    expect(lines[0].request.blocks[2].content).toBeDefined()
-    expect(lines[1].request.blocks[2].content).toBeUndefined()
+    // Call 2 reuses call 1's tools, system prompt and first message, then lists only its new messages.
+    expect(lines[1].request.reuse).toBe(4)
+    expect(lines[1].request.blocks.map((block: { key?: string }) => block.key)).toEqual(["assistant", "user"])
+    // Call 3 changed the tool list, so it reuses the first two tools only; the system block is written by hash.
+    expect(lines[2].request.reuse).toBe(2)
+    expect(lines[2].request.blocks[1]).toMatchObject({ kind: "system" })
+    expect(lines[2].request.blocks[1].content).toBeUndefined()
     expect(parseTrace(text).records).toEqual(records)
+    expect(parseTrace(serializeTrace(records, { compact: false })).records).toEqual(records)
   })
 })
 

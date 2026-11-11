@@ -53,6 +53,27 @@ describe("parseTrace", () => {
     expect(parseTrace(record({ fidelity: "full-request", request: { blocks } })).errors[0]).toContain("ordered tools, system, messages")
   })
 
+  test("request.reuse copies leading blocks from the previous full request in the same lane", () => {
+    const full = (lane: string, blocks: unknown[], reuse?: number) =>
+      record({ fidelity: "full-request", lane, request: { ...(reuse === undefined ? {} : { reuse }), blocks } })
+    const text = [
+      full("a", [{ kind: "tool", hash: "t" }, { kind: "message", hash: "m1" }]),
+      full("b", [{ kind: "message", hash: "other" }]),
+      full("a", [{ kind: "message", hash: "m2" }], 2),
+    ].join("\n")
+    const result = parseTrace(text)
+    expect(result.errors).toEqual([])
+    expect(result.records[2]!.request!.blocks.map((block) => block.hash)).toEqual(["t", "m1", "m2"])
+  })
+
+  test("request.reuse beyond the previous request is an error", () => {
+    const text = [
+      record({ fidelity: "full-request", request: { blocks: [{ kind: "tool", hash: "t" }] } }),
+      record({ fidelity: "full-request", request: { reuse: 2, blocks: [] } }),
+    ].join("\n")
+    expect(parseTrace(text).errors).toEqual(['line 2: request.reuse is 2 but the previous full request in lane "/main" has 1 blocks'])
+  })
+
   test("round-trips through serializeTrace", () => {
     const first = parseTrace(record({ hints: [{ kind: "compaction" }, { kind: "future_kind" }] }))
     const again = parseTrace(serializeTrace(first.records))
