@@ -175,7 +175,7 @@ function analyzeTurn(
     gap_seconds: gap,
   }
   if (status === "miss" || status === "partial") {
-    const cause = full ? confirmedCause(change, gap, ttl) : inferredCause(previous, record, gap, ttl)
+    const cause = full ? confirmedCause(change, gap, ttl, previous.usage.cache_write_tokens ?? 0) : inferredCause(previous, record, gap, ttl)
     return { ...turn, cause }
   }
   return change ? { ...turn, prefix_change: fromChange(change, "confirmed") } : turn
@@ -192,7 +192,11 @@ function expectedCached(previous: Usage, minimum: number): number {
   return prompt >= minimum ? prompt : 0
 }
 
-function confirmedCause(change: PrefixChange | null, gap: number, ttl: number): CauseInfo {
+// A request sent this soon after the call that wrote the cache can miss with
+// nothing changed: the new entry is not always readable yet.
+const FRESH_WRITE_SECONDS = 5
+
+function confirmedCause(change: PrefixChange | null, gap: number, ttl: number, previousWrite: number): CauseInfo {
   if (change) return fromChange(change, "confirmed")
   if (gap > ttl)
     return {
@@ -202,12 +206,15 @@ function confirmedCause(change: PrefixChange | null, gap: number, ttl: number): 
       confidence: "confirmed",
       detail: { gap_seconds: gap, ttl_seconds: ttl },
     }
+  const fresh = previousWrite > 0 && gap <= FRESH_WRITE_SECONDS
   return {
     cause: "provider_side",
     group: CAUSE_GROUP.provider_side,
-    summary: `prefix unchanged and within TTL (${duration(gap)} < ${duration(ttl)}): provider-side miss`,
+    summary: fresh
+      ? `prefix unchanged, provider-side miss: sent ${duration(gap)} after the call that wrote the cache, which may not have been readable yet; not caused by the harness`
+      : `prefix unchanged and within TTL (${duration(gap)} < ${duration(ttl)}): provider-side miss, not caused by the harness`,
     confidence: "confirmed",
-    detail: { gap_seconds: gap, ttl_seconds: ttl },
+    detail: { gap_seconds: gap, ttl_seconds: ttl, ...(fresh ? { fresh_write: true } : {}) },
   }
 }
 

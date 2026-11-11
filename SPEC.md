@@ -181,7 +181,7 @@ For a call `c` with previous call `p` in the same lane:
   2. the first differing block is a tool (tools added or removed, same tools reordered, or a definition edited) or a system part (edited; or only a short timestamp/identifier-like span changed);
   3. a cache-relevant param changed (all params except `max_tokens`, `max_output_tokens`, `max_completion_tokens`, `temperature`, `top_p`, `top_k`, `stop`, `stop_sequences`, `metadata`, `user`, `n`, `stream`, `stream_options`);
   4. the first differing block is a message: history truncated, compacted, rewound, a message removed, inserted, reordered, merged with its neighbour or split, a tool output rewritten (truncated or expanded), reasoning blocks changed, a dynamic value updated, or the message otherwise edited;
-  5. nothing changed: cache expired if the start-to-start gap exceeds the TTL (`p.cache_ttl_seconds`, else the provider default), otherwise a provider-side miss.
+  5. nothing changed: cache expired if the start-to-start gap exceeds the TTL (`p.cache_ttl_seconds`, else the provider default), otherwise a provider-side miss, which does not blame the harness. A request sent within a few seconds of the call that wrote the cache can miss this way: the new entry is not always readable yet.
 
 ## 9. Example
 

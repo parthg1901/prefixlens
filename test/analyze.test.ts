@@ -70,7 +70,21 @@ describe("analyze", () => {
 
   test("an unchanged prefix within the TTL is a provider-side miss", () => {
     const records = [fullRecord(body(m1), usage(10, 0, 5000)), fullRecord(body(m2), usage(10, 0, 5300), {}, 30)]
-    expect(run(records).turns[1]!.cause).toMatchObject({ cause: "provider_side", group: "provider-side misses" })
+    const analysis = run(records)
+    expect(analysis.turns[1]!.cause).toMatchObject({ cause: "provider_side", group: "provider-side misses", confidence: "confirmed" })
+    expect(analysis.turns[1]!.cause!.summary).toBe("prefix unchanged and within TTL (30s < 5m): provider-side miss, not caused by the harness")
+    expect(analysis.summary.headline).toBe("1 miss cost $0.06; 1 from provider-side misses")
+  })
+
+  test("a follow-up seconds after a cold write that misses with nothing changed is provider-side", () => {
+    // Seen live: a request about two seconds after the call that wrote the prefix can miss.
+    const records = [fullRecord(body(m1), usage(10, 0, 5000)), fullRecord(body(m2), usage(10, 0, 5300), {}, 2)]
+    const turn = run(records).turns[1]!
+    expect(turn.status).toBe("miss")
+    expect(turn.cause).toMatchObject({ cause: "provider_side", confidence: "confirmed", detail: { fresh_write: true } })
+    expect(turn.cause!.summary).toBe(
+      "prefix unchanged, provider-side miss: sent 2s after the call that wrote the cache, which may not have been readable yet; not caused by the harness",
+    )
   })
 
   test("a prefix change after the cached part is recorded but is not a miss", () => {
