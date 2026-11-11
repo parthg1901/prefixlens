@@ -77,20 +77,42 @@ export function parseTrace(text: string): ParseResult {
   const records: TraceRecord[] = []
   const errors: string[] = []
   const warnings: string[] = []
+  const contents = new Map<string, unknown>()
   text.split("\n").forEach((line, index) => {
     if (line.trim() === "") return
     const parsed = parseJson(line)
     if (parsed === undefined) return errors.push(`line ${index + 1}: not valid JSON`)
     const problems: string[] = []
-    const record = readRecord(parsed, problems, warnings, index + 1)
+    const record = readRecord(parsed, problems, warnings, index + 1, contents)
     if (problems.length > 0) return errors.push(...problems.map((problem) => `line ${index + 1}: ${problem}`))
     records.push(record!)
   })
   return { records, errors, warnings }
 }
 
-export function serializeTrace(records: TraceRecord[]): string {
-  return records.map((record) => JSON.stringify(record)).join("\n") + (records.length > 0 ? "\n" : "")
+/**
+ * Writes records as JSONL. Block content is written only the first time its
+ * hash appears in the file; later blocks with the same hash carry the hash
+ * alone and readers restore the content from the earlier line. Without this a
+ * full-request trace grows with the square of the conversation length.
+ */
+export function serializeTrace(records: TraceRecord[], options: { dedupe?: boolean } = {}): string {
+  const dedupe = options.dedupe ?? true
+  const written = new Set<string>()
+  const lines = records.map((record) => {
+    if (!dedupe || !record.request) return JSON.stringify(record)
+    const blocks = record.request.blocks.map((block) => {
+      if (block.content === undefined) return block
+      if (written.has(block.hash)) {
+        const { content, ...rest } = block
+        return rest
+      }
+      written.add(block.hash)
+      return block
+    })
+    return JSON.stringify({ ...record, request: { ...record.request, blocks } })
+  })
+  return lines.join("\n") + (lines.length > 0 ? "\n" : "")
 }
 
 function parseJson(line: string): unknown {
@@ -101,7 +123,7 @@ function parseJson(line: string): unknown {
   }
 }
 
-function readRecord(value: unknown, problems: string[], warnings: string[], line: number): TraceRecord | undefined {
+function readRecord(value: unknown, problems: string[], warnings: string[], line: number, contents: Map<string, unknown>): TraceRecord | undefined {
   if (!isRecord(value)) {
     problems.push("record must be a JSON object")
     return undefined
@@ -119,7 +141,7 @@ function readRecord(value: unknown, problems: string[], warnings: string[], line
   if (value.cache_ttl_seconds !== undefined && !isCount(value.cache_ttl_seconds))
     problems.push("cache_ttl_seconds must be a non-negative integer")
   const usage = readUsage(value.usage, problems)
-  const blocks = value.fidelity === "full-request" ? readBlocks(value.request, problems, warnings, line) : undefined
+  const blocks = value.fidelity === "full-request" ? readBlocks(value.request, problems, warnings, line, contents) : undefined
   const hints = readHints(value.hints, problems)
   if (problems.length > 0) return undefined
   return {
@@ -146,7 +168,7 @@ function readUsage(value: unknown, problems: string[]): Usage | undefined {
   return value as unknown as Usage
 }
 
-function readBlocks(value: unknown, problems: string[], warnings: string[], line: number): Block[] | undefined {
+function readBlocks(value: unknown, problems: string[], warnings: string[], line: number, contents: Map<string, unknown>): Block[] | undefined {
   if (!isRecord(value) || !Array.isArray(value.blocks)) {
     problems.push("request.blocks must be an array when fidelity is full-request")
     return undefined
@@ -172,7 +194,13 @@ function readBlocks(value: unknown, problems: string[], warnings: string[], line
     const hash = block.hash ?? hashContent(block.content)
     if (block.hash !== undefined && block.content !== undefined && hashContent(block.content) !== block.hash)
       warnings.push(`line ${line}: request.blocks[${index}].hash does not match its content; using the given hash`)
-    return [{ ...(block as unknown as Block), hash }]
+    if (block.content !== undefined) {
+      if (!contents.has(hash)) contents.set(hash, block.content)
+      return [{ ...(block as unknown as Block), hash }]
+    }
+    // Content omitted: restore it from an earlier line with the same hash, if any.
+    const known = contents.get(hash)
+    return [{ ...(block as unknown as Block), hash, ...(known === undefined ? {} : { content: known }) }]
   })
 }
 

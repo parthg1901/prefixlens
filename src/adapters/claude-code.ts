@@ -1,0 +1,316 @@
+// Claude Code session logs: ~/.claude/projects/<project>/<session>.jsonl, with
+// subagent logs in <session>/subagents/agent-*.jsonl.
+//
+// Recent Claude Code versions log the request side of every API call:
+//   api-request-shape  { shapeHash, shape: { system, tools } }
+//   api-request-blob   { hash, message }            one wire message, by hash
+//   api-request        { id, base?, keep, tail[], shapeHash, params, cacheControl[], timestamp, querySource }
+// A request's messages are the first `keep` messages of its `base` request
+// followed by the messages named in `tail`. Blobs are only written for wire
+// messages that differ from the transcript; the rest are found by hashing
+// messages rebuilt from transcript records (sha256 of key-sorted JSON).
+// Responses are the transcript's `assistant` records, linked by `requestRef`.
+//
+// Older logs have no api-request records; for them the adapter falls back to
+// usage-only records, one per assistant message id.
+
+import { createHash } from "node:crypto"
+import { readdir, stat } from "node:fs/promises"
+import path from "node:path"
+import { canonicalizeAnthropic, isRecord } from "../canonical.ts"
+import type { Block, Hint, TraceRecord } from "../trace.ts"
+import { normalizeUsage } from "../usage.ts"
+import type { ImportOptions, ImportResult } from "./index.ts"
+
+type Entry = Record<string, unknown>
+
+export async function importClaudeCode(input: string, options: ImportOptions): Promise<ImportResult> {
+  const files = await sessionFiles(input, options.subagents ?? true)
+  const warnings: string[] = []
+  const records = (
+    await Promise.all(
+      files.map(async (file) => {
+        const entries = parseLines(await Bun.file(file.path).text(), file.path, warnings)
+        const imported = entries.some((entry) => entry.type === "api-request")
+          ? fullRecords(entries, file.lane, warnings)
+          : usageRecords(entries, file.lane, warnings)
+        return imported
+      }),
+    )
+  ).flat()
+  records.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
+  return { records, warnings }
+}
+
+async function sessionFiles(input: string, subagents: boolean) {
+  const info = await stat(input)
+  if (info.isDirectory()) {
+    const names = (await readdir(input)).filter((name) => name.endsWith(".jsonl")).sort()
+    if (names.length === 0) throw new Error(`no .jsonl files in ${input}`)
+    return names.map((name) => ({ path: path.join(input, name), lane: laneName(name) }))
+  }
+  const main = { path: input, lane: "main" }
+  if (!subagents) return [main]
+  const dir = path.join(path.dirname(input), path.basename(input, ".jsonl"), "subagents")
+  const names = await readdir(dir).catch(() => [] as string[])
+  return [
+    main,
+    ...names
+      .filter((name) => name.endsWith(".jsonl"))
+      .sort()
+      .map((name) => ({ path: path.join(dir, name), lane: laneName(name) })),
+  ]
+}
+
+function laneName(file: string): string {
+  return path.basename(file, ".jsonl")
+}
+
+function parseLines(text: string, file: string, warnings: string[]): Entry[] {
+  let bad = 0
+  const entries = text.split("\n").flatMap((line) => {
+    if (line.trim() === "") return []
+    try {
+      const value = JSON.parse(line)
+      return isRecord(value) ? [value] : []
+    } catch {
+      bad++
+      return []
+    }
+  })
+  if (bad > 0) warnings.push(`${path.basename(file)}: skipped ${bad} unreadable lines`)
+  return entries
+}
+
+function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceRecord[] {
+  const shapes = new Map<string, Entry>()
+  const blobs = new Map<string, unknown>()
+  const requests: Entry[] = []
+  for (const entry of entries) {
+    if (entry.type === "api-request-shape" && typeof entry.shapeHash === "string" && isRecord(entry.shape)) shapes.set(entry.shapeHash, entry.shape)
+    if (entry.type === "api-request-blob" && typeof entry.hash === "string") blobs.set(entry.hash, entry.message)
+    if (entry.type === "api-request" && typeof entry.id === "string") requests.push(entry)
+  }
+  const responses = responsesByRequest(entries)
+  const transcript = transcriptMessages(entries)
+  const byId = new Map(requests.map((request) => [request.id as string, request]))
+  const memo = new Map<string, string[]>()
+  const messageHashes = (id: string, seen = new Set<string>()): string[] => {
+    const cached = memo.get(id)
+    if (cached) return cached
+    const request = byId.get(id)
+    if (!request || seen.has(id)) return []
+    seen.add(id)
+    const keep = typeof request.keep === "number" ? request.keep : 0
+    const base = typeof request.base === "string" ? request.base : undefined
+    const inherited = base ? messageHashes(base, seen) : []
+    // A base that is not in this file still fixes the first `keep` positions; give
+    // them stable placeholder identities so later requests compare correctly.
+    const prefix = base && inherited.length < keep ? Array.from({ length: keep }, (_, index) => inherited[index] ?? `missing:${base}:${index}`) : inherited.slice(0, keep)
+    const hashes = [...prefix, ...(Array.isArray(request.tail) ? request.tail.filter((hash): hash is string => typeof hash === "string") : [])]
+    memo.set(id, hashes)
+    return hashes
+  }
+  // Requests share almost all of their blocks, so each shape and message is canonicalized once.
+  const shapeMemo = new Map<string, Block[]>()
+  const shapeBlocks = (hash: string, shape: Entry | undefined) => {
+    const known = shapeMemo.get(hash)
+    if (known) return known
+    const blocks = canonicalizeAnthropic({ tools: shape?.tools, system: shape?.system, messages: [] }).blocks
+    shapeMemo.set(hash, blocks)
+    return blocks
+  }
+  const messageMemo = new Map<string, Block>()
+  const messageBlock = (hash: string, message: unknown): Block => {
+    const known = messageMemo.get(hash)
+    if (known) return known
+    // A message whose content is not in the log is still identified by its hash.
+    const block = message === undefined ? { kind: "message" as const, hash: `cc:${hash}` } : canonicalizeAnthropic({ messages: [message] }).blocks[0]!
+    messageMemo.set(hash, block)
+    return block
+  }
+  const sessionHints = hintsByTime(entries)
+  let unresolved = 0
+  let missingShape = 0
+  let noResponse = 0
+  const records = requests.flatMap((request): TraceRecord[] => {
+    const id = request.id as string
+    const response = responses.get(id)
+    if (!response) {
+      noResponse++
+      return []
+    }
+    const shape = shapes.get(request.shapeHash as string)
+    if (!shape) missingShape++
+    const hashes = messageHashes(id)
+    const messages = hashes.map((hash) => blobs.get(hash) ?? transcript.get(hash))
+    unresolved += messages.filter((message) => message === undefined).length
+    const params = isRecord(request.params) ? request.params : {}
+    const blocks = applyBreakpoints(
+      [...shapeBlocks(request.shapeHash as string, shape), ...hashes.map((hash, index) => messageBlock(hash, messages[index]))],
+      request.cacheControl,
+    )
+    const message = response.message as Entry
+    const ts = typeof request.timestamp === "string" ? request.timestamp : (response.timestamp as string)
+    const hints = sessionHints(ts)
+    return [
+      {
+        v: 1,
+        id,
+        ...(typeof request.sessionId === "string" ? { session: request.sessionId } : {}),
+        lane: lane === "main" && typeof request.querySource === "string" && request.querySource !== "sdk" && request.querySource !== "repl_main_thread" ? request.querySource : lane,
+        ts,
+        provider: "anthropic",
+        model: typeof message.model === "string" ? message.model : String(params.model ?? ""),
+        params: canonicalizeAnthropic({ ...params, messages: [] }).params,
+        fidelity: "full-request",
+        request: { blocks },
+        usage: normalizeUsage("anthropic", message.usage),
+        cache_ttl_seconds: ttlOf(request.cacheControl),
+        ...(hints.length > 0 ? { hints } : {}),
+        source: { adapter: "claude-code", ...(typeof request.version === "string" ? { version: request.version } : {}) },
+      },
+    ]
+  })
+  if (noResponse > 0) warnings.push(`${lane}: ${noResponse} logged requests had no response (errors or interruptions); skipped`)
+  if (missingShape > 0) warnings.push(`${lane}: ${missingShape} requests referenced a tools/system shape that is not in the log`)
+  if (unresolved > 0)
+    warnings.push(`${lane}: ${unresolved} message references could not be resolved to content; they are compared by hash only`)
+  return records
+}
+
+/** One response per API call: the last transcript record carrying its usage. */
+function responsesByRequest(entries: Entry[]): Map<string, Entry> {
+  const out = new Map<string, Entry>()
+  for (const entry of entries) {
+    if (entry.type !== "assistant" || typeof entry.requestRef !== "string") continue
+    if (!isRecord(entry.message) || !isRecord(entry.message.usage) || entry.message.model === "<synthetic>") continue
+    out.set(entry.requestRef, entry)
+  }
+  return out
+}
+
+/**
+ * Messages rebuilt from the transcript, keyed by Claude Code's message hash.
+ * Covers the forms the wire messages take: an assistant turn split across
+ * several records, a user string body sent as a text part, and consecutive
+ * user records sent as one message.
+ */
+function transcriptMessages(entries: Entry[]): Map<string, unknown> {
+  const out = new Map<string, unknown>()
+  const add = (message: unknown) => out.set(ccHash(message), message)
+  const parts = (content: unknown) => (typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [])
+  const turns = new Map<string, Entry[]>()
+  let run: Entry[] = []
+  const flush = () => {
+    if (run.length > 1) add({ role: "user", content: run.flatMap((entry) => parts((entry.message as Entry).content)) })
+    run = []
+  }
+  for (const entry of entries) {
+    if (!isRecord(entry.message)) continue
+    if (entry.type === "assistant") {
+      flush()
+      const key = typeof entry.requestRef === "string" ? entry.requestRef : String(entry.message.id ?? entry.uuid)
+      turns.set(key, [...(turns.get(key) ?? []), entry])
+      add({ role: "assistant", content: entry.message.content })
+    }
+    if (entry.type === "user") {
+      run.push(entry)
+      add(entry.message)
+      add({ role: entry.message.role, content: entry.message.content })
+      add({ role: entry.message.role, content: parts(entry.message.content) })
+    }
+  }
+  flush()
+  for (const group of turns.values()) add({ role: "assistant", content: group.flatMap((entry) => parts((entry.message as Entry).content)) })
+  return out
+}
+
+/** Claude Code's message hash: SHA-256 of JSON with keys sorted at every depth. */
+function ccHash(message: unknown): string {
+  return createHash("sha256").update(JSON.stringify(sortKeys(message))).digest("hex")
+}
+
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeys)
+  if (!isRecord(value)) return value
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortKeys(value[key])]),
+  )
+}
+
+/** Applies the logged cache_control positions (paths into the request) as breakpoints. */
+function applyBreakpoints(blocks: Block[], cacheControl: unknown): Block[] {
+  const toolCount = blocks.filter((block) => block.kind === "tool").length
+  const headCount = blocks.filter((block) => block.kind !== "message").length
+  const marked = new Set<number>()
+  for (const mark of Array.isArray(cacheControl) ? cacheControl : []) {
+    if (!isRecord(mark) || !Array.isArray(mark.path) || typeof mark.path[1] !== "number") continue
+    const [area, index] = mark.path as [unknown, number]
+    if (area === "tools") marked.add(index)
+    if (area === "system") marked.add(toolCount + index)
+    if (area === "messages") marked.add(headCount + index)
+  }
+  return blocks.map((block, index) => {
+    const { breakpoint, ...rest } = block
+    return marked.has(index) ? { ...rest, breakpoint: true } : (rest as Block)
+  })
+}
+
+// The TTL that governs the conversation prefix is the one on the last breakpoint.
+function ttlOf(cacheControl: unknown): number | undefined {
+  const marks = Array.isArray(cacheControl) ? cacheControl.filter(isRecord) : []
+  const last = marks.at(-1)
+  if (!last || !isRecord(last.value)) return undefined
+  return last.value.ttl === "1h" ? 3600 : 300
+}
+
+/** Compaction boundaries in the transcript, attached to the first call after each. */
+function hintsByTime(entries: Entry[]): (ts: string) => Hint[] {
+  const boundaries = entries
+    .filter((entry) => entry.type === "system" && entry.subtype === "compact_boundary" && typeof entry.timestamp === "string")
+    .map((entry) => Date.parse(entry.timestamp as string))
+    .sort((a, b) => a - b)
+  let previous = Number.NEGATIVE_INFINITY
+  return (ts) => {
+    const now = Date.parse(ts)
+    const hit = boundaries.some((time) => time > previous && time <= now)
+    previous = now
+    return hit ? [{ kind: "compaction", detail: "compact boundary in transcript" }] : []
+  }
+}
+
+/** Fallback for logs without request records: one usage-only record per assistant message. */
+function usageRecords(entries: Entry[], lane: string, warnings: string[]): TraceRecord[] {
+  const groups = new Map<string, Entry[]>()
+  for (const entry of entries) {
+    if (entry.type !== "assistant" || !isRecord(entry.message) || !isRecord(entry.message.usage)) continue
+    if (entry.message.model === "<synthetic>") continue
+    const key = String(entry.message.id ?? entry.requestId ?? entry.uuid)
+    groups.set(key, [...(groups.get(key) ?? []), entry])
+  }
+  const sessionHints = hintsByTime(entries)
+  if (groups.size === 0) warnings.push(`${lane}: no assistant responses with usage found`)
+  return [...groups.entries()].map(([id, group]): TraceRecord => {
+    const first = group[0]!
+    const last = group.at(-1)!
+    const message = last.message as Entry
+    const ts = String(first.timestamp)
+    const hints = sessionHints(ts)
+    return {
+      v: 1,
+      id,
+      ...(typeof first.sessionId === "string" ? { session: first.sessionId } : {}),
+      lane: first.isSidechain === true ? "sidechain" : lane,
+      ts,
+      provider: "anthropic",
+      model: String(message.model ?? ""),
+      fidelity: "usage-only",
+      usage: normalizeUsage("anthropic", message.usage),
+      ...(hints.length > 0 ? { hints } : {}),
+      source: { adapter: "claude-code", ...(typeof first.version === "string" ? { version: first.version } : {}) },
+    }
+  })
+}
