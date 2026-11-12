@@ -74,8 +74,12 @@ export async function importClaudeCode(input: string, options: ImportOptions): P
  * calls it copied.
  */
 function withoutCopies(perFile: TraceRecord[][], warnings: string[]): TraceRecord[] {
-  const span = (records: TraceRecord[]) => records.map((record) => Date.parse(record.ts)).reduce(([first, last], time) => [Math.min(first, time), Math.max(last, time)], [Infinity, -Infinity])
-  const ordered = perFile.map((records) => ({ records, span: span(records) })).sort((a, b) => a.span[0]! - b.span[0]! || a.span[1]! - b.span[1]!)
+  const ordered = perFile
+    .map((records) => {
+      const times = records.map((record) => Date.parse(record.ts))
+      return { records, first: times.reduce((least, time) => Math.min(least, time), Infinity), last: times.reduce((most, time) => Math.max(most, time), -Infinity) }
+    })
+    .sort((a, b) => a.first - b.first || a.last - b.last)
   const owner = new Map<string, number>()
   const copied = new Set<TraceRecord>()
   for (const [index, file] of ordered.entries())
