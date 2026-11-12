@@ -20,7 +20,12 @@
 // `additional_tools` item), older ones send the tool list outside the logged
 // items, and no version logs a request hash or the full parameters. So every
 // record is usage-only. Hints carry what the log does show: compactions (and
-// which call was the compaction), and collaboration-mode switches.
+// which call was the compaction), collaboration-mode switches, and tool-list
+// changes. Newer versions log a `world_state` line: a full snapshot of the
+// thread's settings first, then partial updates that carry only the top-level
+// keys that changed. Its `top_level_tools` maps each tool name to a hash of the
+// tool's definition, so a change to that map between two calls is a tool-list
+// change even though the request itself is not known.
 
 import { readdir, stat } from "node:fs/promises"
 import path from "node:path"
@@ -82,6 +87,7 @@ function readRollout(file: string, text: string, warnings: string[]) {
   let mode: string | undefined
   let pending: Hint[] = []
   let lastTotal: string | undefined
+  let tools: Record<string, string> | undefined
   for (const entry of entries) {
     const payload = isRecord(entry.payload) ? entry.payload : {}
     if (entry.type === "turn_context") {
@@ -89,6 +95,14 @@ function readRollout(file: string, text: string, warnings: string[]) {
       const next = isRecord(payload.collaboration_mode) ? str(payload.collaboration_mode.mode) : undefined
       if (mode && next && next !== mode) pending.push({ kind: "agent_switch", detail: `${mode} → ${next}` })
       mode = next ?? mode
+      continue
+    }
+    if (entry.type === "world_state" && isRecord(payload.state)) {
+      // A partial update carries a changed key whole; a full snapshot without the key does not know the tools.
+      const next = isToolMap(payload.state.top_level_tools) ? payload.state.top_level_tools : payload.full === true ? undefined : tools
+      const change = tools && next && records.length > 0 ? toolChange(tools, next) : undefined
+      if (change) pending = [...pending.filter((hint) => hint.kind !== "tools_changed"), { kind: "tools_changed", detail: change }]
+      tools = next
       continue
     }
     if (entry.type === "compacted" || (entry.type === "event_msg" && payload.type === "context_compacted")) {
@@ -123,6 +137,24 @@ function readRollout(file: string, text: string, warnings: string[]) {
     pending = []
   }
   return { id: session, thread, records }
+}
+
+function isToolMap(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((hash) => typeof hash === "string")
+}
+
+/** "+1 tool (web_search), 1 definition changed (shell)", or undefined when the maps are equal. */
+function toolChange(before: Record<string, string>, after: Record<string, string>): string | undefined {
+  const added = Object.keys(after).filter((name) => !(name in before))
+  const removed = Object.keys(before).filter((name) => !(name in after))
+  const changed = Object.keys(after).filter((name) => name in before && before[name] !== after[name])
+  const count = (list: string[], words: string) => `${list.length} ${words.replace("#", list.length === 1 ? "" : "s")} (${list.sort().join(", ")})`
+  const parts = [
+    ...(added.length > 0 ? [`+${count(added, "tool#")}`] : []),
+    ...(removed.length > 0 ? [`-${count(removed, "tool#")}`] : []),
+    ...(changed.length > 0 ? [count(changed, "definition# changed")] : []),
+  ]
+  return parts.length === 0 ? undefined : `${parts.join(", ")}; ${Object.keys(before).length} → ${Object.keys(after).length} tools`
 }
 
 function usageLine(entry: Json, payload: Json, recordsOnly: boolean): { usage: Json; total?: string } | undefined {

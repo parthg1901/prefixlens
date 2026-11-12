@@ -7,7 +7,7 @@ This document specifies the trace format that prefixlens reads. A harness in any
 - every 1.0 and 1.1 trace is a valid 1.2 trace and reads exactly as before;
 - an older reader reads a newer trace, ignoring what it does not know (section 2, section 6). A 1.0 reader will then report a declared intentional break (section 6.1) as an ordinary miss: the trace degrades to what it would have said without the declaration, never to something less safe.
 
-Version 1.2 adds the optional `interrupted` record field (section 2).
+Version 1.2 adds the optional `interrupted` record field (section 2) and the `tools_changed` hint (section 6).
 
 Version 1.1 adds the `prefix_break` hint (section 6.1), states the canonical form of every `cache_control` marker and of a non-string system prompt (section 4.3), and documents which request parameters each provider caches on (section 8.1).
 
@@ -171,8 +171,9 @@ Optional facts from the harness's own log, used to explain usage-only misses and
 | `agent_switch` | The agent or mode changed before this call (its tools and system prompt usually differ). `detail` like `"build → plan"`. |
 | `model_switch` | The user or harness changed models before this call. Also declares an intentional break (section 6.1). |
 | `prefix_break` | The harness broke its own prefix on purpose before this call. Version 1.1; section 6.1. |
+| `tools_changed` | The tool list sent with this call differs from the previous call's in its lane: tools added, removed, or a definition changed. `detail` names them, e.g. `"+1 tool (web_search); 2 → 3 tools"`. For usage-only writers that know the tool list by name and hash without knowing the request (the Codex importer). Version 1.2. |
 
-A `compaction` hint also declares an intentional break (section 6.1). `agent_switch`, `tool_output_pruned` and `compaction_call` only name what happened: a mode switch that changes the tool list, or a pruned tool output, is the kind of change prefixlens exists to find, so it stays a miss unless the harness declares it with `prefix_break`.
+A `compaction` hint also declares an intentional break (section 6.1). `agent_switch`, `tools_changed`, `tool_output_pruned` and `compaction_call` only name what happened: a mode switch that changes the tool list, or a pruned tool output, is the kind of change prefixlens exists to find, so it stays a miss unless the harness declares it with `prefix_break`.
 
 Readers MUST ignore hint kinds they do not know.
 

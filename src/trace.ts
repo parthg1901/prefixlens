@@ -50,6 +50,7 @@ export type HintKind =
   | "agent_switch"
   | "model_switch"
   | "prefix_break"
+  | "tools_changed"
 
 export interface Hint {
   /** One of HintKind; readers keep and ignore kinds they do not know. */
