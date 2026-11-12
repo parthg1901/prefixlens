@@ -31,33 +31,43 @@ export function recordingFetch(recorder: Recorder, inner: Fetch, name?: string):
   }
 }
 
-/** Passes a body through unbuffered and calls `onEnd` once with its text, whether it ended or was cancelled. */
-export function observeBody(body: ReadableStream<Uint8Array>, onEnd: (text: string) => void): ReadableStream<Uint8Array> {
+/**
+ * Passes a body through unbuffered and calls `onEnd` once with its text, whether it ended or was
+ * cancelled, only after the reader has every byte: recording never delays or reorders the response.
+ *
+ * In-process readers (`wrap`, `lens.fetch`) have a chunk as soon as their read resolves; `onEnd`
+ * waits for the next turn of the event loop so their own handling of the end runs first.
+ * `toSocket` is for a body Bun.serve sends to a client (the proxy): a chunk enqueued on an ordinary
+ * stream may still be waiting in Bun's buffers when the stream closes, so each chunk is written to a
+ * direct stream and flushed, the body is ended, and `onEnd` runs once every byte, the body's end
+ * included, has been handed to the socket.
+ */
+export function observeBody(body: ReadableStream<Uint8Array>, onEnd: (text: string) => unknown, options: { toSocket?: boolean } = {}): ReadableStream<Uint8Array> {
   const reader = body.getReader()
   const chunks: Uint8Array[] = []
   let ended = false
   const end = () => {
     if (ended) return
     ended = true
-    // Recording happens after the caller has its bytes, and a failure to record never reaches the caller.
-    queueMicrotask(() => {
-      try {
-        onEnd(Buffer.concat(chunks).toString("utf8"))
-      } catch (error) {
-        console.error(`prefixlens: could not record a call: ${error instanceof Error ? error.message : String(error)}`)
-      }
-    })
+    // A failure to record never reaches the caller.
+    const failed = (error: unknown) => console.error(`prefixlens: could not record a call: ${error instanceof Error ? error.message : String(error)}`)
+    try {
+      Promise.resolve(onEnd(Buffer.concat(chunks).toString("utf8"))).catch(failed)
+    } catch (error) {
+      failed(error)
+    }
   }
+  if (options.toSocket) return directBody(reader, chunks, end)
   return new ReadableStream<Uint8Array>(
     {
       async pull(controller) {
         const next = await reader.read().catch((error: unknown) => ({ error }))
         if ("error" in next) {
-          end()
+          setImmediate(end)
           return controller.error(next.error)
         }
         if (next.done) {
-          end()
+          setImmediate(end)
           return controller.close()
         }
         chunks.push(next.value)
@@ -70,6 +80,45 @@ export function observeBody(body: ReadableStream<Uint8Array>, onEnd: (text: stri
     },
     { highWaterMark: 0 },
   )
+}
+
+// Bun's direct streams: write() buffers, flush() hands the buffer to the socket, and end() flushes and
+// ends the body (the terminating chunk); each returns a promise when the socket pushes back.
+interface DirectController {
+  write(chunk: Uint8Array): number | Promise<number>
+  flush(): number | Promise<number>
+  end(): number | Promise<number>
+}
+
+interface ChunkReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>
+  cancel(reason?: unknown): Promise<void>
+}
+
+function directBody(reader: ChunkReader, chunks: Uint8Array[], end: () => void): ReadableStream<Uint8Array> {
+  const source = {
+    type: "direct",
+    async pull(controller: DirectController) {
+      try {
+        for (;;) {
+          const next = await reader.read()
+          if (next.done || !next.value) break
+          chunks.push(next.value)
+          await controller.write(next.value)
+          await controller.flush()
+        }
+        // The body's end is a byte too: a client reading to the end waits for it.
+        await controller.end()
+      } finally {
+        end()
+      }
+    },
+    cancel(reason: unknown) {
+      end()
+      return reader.cancel(reason)
+    },
+  }
+  return new ReadableStream<Uint8Array>(source as unknown as ConstructorParameters<typeof ReadableStream<Uint8Array>>[0])
 }
 
 /** The same response with another body. Content-Encoding and Content-Length are dropped: fetch has already decoded the body. */

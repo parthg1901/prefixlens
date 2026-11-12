@@ -65,9 +65,52 @@ export interface CanonicalRequest {
  * - gemini: generateContent body (`tools`, `systemInstruction`, `contents`).
  */
 export function canonicalizeRequest(provider: Provider, body: Record<string, unknown>): CanonicalRequest {
-  if (provider === "anthropic") return canonicalizeAnthropic(body)
-  if (provider === "openai") return canonicalizeOpenAI(body)
-  return canonicalizeGemini(body)
+  const plan = draftRequest(provider, body)
+  return { ...plan, blocks: plan.blocks.map(hashDraft) }
+}
+
+/**
+ * `canonicalizeRequest` for a recorder that shares the event loop with open
+ * streams: the same blocks, hashed one at a time with a turn of the event loop
+ * between blocks, so a long request never holds other work up for longer than
+ * one block takes.
+ */
+export async function canonicalizeRequestAsync(provider: Provider, body: Record<string, unknown>): Promise<CanonicalRequest> {
+  const plan = draftRequest(provider, body)
+  const blocks: Block[] = []
+  for (const planned of plan.blocks) {
+    blocks.push(hashDraft(planned))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+  return { ...plan, blocks }
+}
+
+function draftRequest(provider: Provider, body: Record<string, unknown>): Plan {
+  if (provider === "anthropic") return draftAnthropic(body)
+  if (provider === "openai") return draftOpenAI(body)
+  return draftGemini(body)
+}
+
+// A block before hashing: canonicalization is cheap, hashing is what costs on a long request.
+interface Draft {
+  kind: BlockKind
+  content: unknown
+  key?: string
+  breakpoint?: boolean
+}
+
+interface Plan {
+  model: string
+  params: Record<string, unknown>
+  blocks: Draft[]
+}
+
+function draft(kind: BlockKind, content: unknown, key?: string, breakpoint?: boolean): Draft {
+  return { kind, content, ...(key === undefined ? {} : { key }), ...(breakpoint ? { breakpoint } : {}) }
+}
+
+function hashDraft(planned: Draft): Block {
+  return makeBlock(planned.kind, planned.content, planned.key, planned.breakpoint)
 }
 
 // Request fields that never reach the model's prompt and so never affect caching.
@@ -80,17 +123,22 @@ function paramsWithout(body: Record<string, unknown>, used: string[]) {
 }
 
 export function canonicalizeAnthropic(body: Record<string, unknown>): CanonicalRequest {
+  const plan = draftAnthropic(body)
+  return { ...plan, blocks: plan.blocks.map(hashDraft) }
+}
+
+function draftAnthropic(body: Record<string, unknown>): Plan {
   const tools = asArray(body.tools).map((tool) => {
     const stripped = stripCacheControl(tool)
-    return makeBlock("tool", stripped.value, toolName(stripped.value), stripped.marked)
+    return draft("tool", stripped.value, toolName(stripped.value), stripped.marked)
   })
   const systemBlocks = systemParts(body.system, "system").map((part) => {
     const stripped = stripCacheControl(part)
-    return makeBlock("system", stripped.value, undefined, stripped.marked)
+    return draft("system", stripped.value, undefined, stripped.marked)
   })
   const messages = asArray(body.messages).map((message) => {
     const normalized = normalizeMessage(message)
-    return makeBlock("message", normalized.value, roleOf(normalized.value), normalized.marked)
+    return draft("message", normalized.value, roleOf(normalized.value), normalized.marked)
   })
   return {
     model: String(body.model ?? ""),
@@ -100,17 +148,22 @@ export function canonicalizeAnthropic(body: Record<string, unknown>): CanonicalR
 }
 
 export function canonicalizeOpenAI(body: Record<string, unknown>): CanonicalRequest {
+  const plan = draftOpenAI(body)
+  return { ...plan, blocks: plan.blocks.map(hashDraft) }
+}
+
+function draftOpenAI(body: Record<string, unknown>): Plan {
   // OpenAI defines no cache_control, but OpenAI-compatible gateways accept Anthropic-style markers in these bodies and
   // move them between calls; they are stripped here as everywhere else so a moved marker never reads as an edit.
   const tools = [...asArray(body.tools), ...asArray(body.functions)].map((tool) => {
     const stripped = stripCacheControl(tool)
-    return makeBlock("tool", stripped.value, toolName(stripped.value), stripped.marked)
+    return draft("tool", stripped.value, toolName(stripped.value), stripped.marked)
   })
   const isResponses = body.input !== undefined || body.instructions !== undefined
   if (isResponses) {
     const instructions = systemParts(body.instructions, "instructions").map((part) => {
       const stripped = stripCacheControl(part)
-      return makeBlock("system", stripped.value, undefined, stripped.marked)
+      return draft("system", stripped.value, undefined, stripped.marked)
     })
     const input =
       typeof body.input === "string"
@@ -131,6 +184,11 @@ export function canonicalizeOpenAI(body: Record<string, unknown>): CanonicalRequ
 }
 
 export function canonicalizeGemini(body: Record<string, unknown>): CanonicalRequest {
+  const plan = draftGemini(body)
+  return { ...plan, blocks: plan.blocks.map(hashDraft) }
+}
+
+function draftGemini(body: Record<string, unknown>): Plan {
   const tools = asArray(body.tools).flatMap((tool) => {
     const record = isRecord(tool) ? tool : {}
     const declarations = asArray(record.functionDeclarations ?? record.function_declarations)
@@ -229,8 +287,8 @@ export function stripCacheControl(value: unknown, partsKey: "content" | "parts" 
   }
 }
 
-function block(kind: BlockKind, stripped: { value: unknown; marked: boolean }, key?: string): Block {
-  return makeBlock(kind, stripped.value, key, stripped.marked)
+function block(kind: BlockKind, stripped: { value: unknown; marked: boolean }, key?: string): Draft {
+  return draft(kind, stripped.value, key, stripped.marked)
 }
 
 /**
@@ -260,7 +318,7 @@ function normalizeMessage(message: unknown, textType: (role: unknown) => string 
 
 // System and developer messages before the first other message are the system
 // prompt; later ones are part of the conversation and stay message blocks.
-function leadingSystem(messages: { value: unknown; marked: boolean }[]): Block[] {
+function leadingSystem(messages: { value: unknown; marked: boolean }[]): Draft[] {
   const firstOther = messages.findIndex((message) => !["system", "developer"].includes(roleOf(message.value) ?? ""))
   const cut = firstOther === -1 ? messages.length : firstOther
   return messages.map((message, index) => block(index < cut ? "system" : "message", message, roleOf(message.value) ?? typeOf(message.value)))

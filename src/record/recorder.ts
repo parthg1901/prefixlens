@@ -2,9 +2,9 @@
 // the response ends, and appends it to the trace file.
 
 import zlib from "node:zlib"
-import { canonicalizeRequest, isRecord } from "../canonical.ts"
+import { canonicalizeRequest, canonicalizeRequestAsync, isRecord, type CanonicalRequest } from "../canonical.ts"
 import { openTraceWriter, type Billing, type Block, type TraceRecord } from "../trace.ts"
-import { apiFromBody, apiFromPath, buildRecord, PROVIDER_OF, readResponse, type Api } from "./exchange.ts"
+import { apiFromBody, apiFromPath, noUsageReason, PROVIDER_OF, readResponse, recordFrom, type Api } from "./exchange.ts"
 
 export interface RecorderOptions {
   /** Trace file to append to; `false` keeps records in memory only (use `onRecord`). */
@@ -33,9 +33,21 @@ export const SESSION_HEADER = "x-prefixlens-session"
 
 export interface Pending {
   /** Ends the call: builds and writes its record from the response body (SSE text, JSON text or object). */
-  finish(response: unknown): TraceRecord | undefined
+  finish(response: unknown): Promise<TraceRecord | undefined>
   /** Ends the call without a response (upstream error, network failure). */
   abandon(reason: string): void
+}
+
+/** What `begin` and `record` take about a call. */
+export interface CallInput {
+  recorder?: string
+  path?: string
+  body: unknown
+  headers?: Headers
+  startedAt?: Date
+  api?: Api
+  lane?: string
+  session?: string
 }
 
 interface Lane {
@@ -44,7 +56,8 @@ interface Lane {
   /** The cache key of its latest call: the session-id header, else prompt_cache_key. */
   cacheKey?: string
   blocks: Block[]
-  inFlight: number
+  /** Calls in this lane that may still be in flight for a call beginning now: `began` and `ended` are call sequence numbers. */
+  calls: { began: number; ended?: number }[]
   used: number
 }
 
@@ -52,6 +65,9 @@ export class Recorder {
   private readonly writer
   private readonly lanes: Lane[] = []
   private clock = 0
+  private sequence = 0
+  // Calls are prepared one after another, so lanes are assigned in the order calls began.
+  private queue: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly options: RecorderOptions) {
     this.writer = options.trace === false || options.trace === undefined ? undefined : openTraceWriter(options.trace)
@@ -62,10 +78,54 @@ export class Recorder {
   }
 
   /**
-   * Starts recording a call. Returns undefined, and records nothing, when the
-   * body is not a JSON object or the call is not a model call.
+   * Starts recording a call whose response is still streaming. Returns
+   * undefined, and records nothing, when the body is not a JSON object or the
+   * call is not a model call.
+   *
+   * The request is canonicalized once, in the background, one block per turn
+   * of the event loop, so neither this request nor other open streams wait for
+   * it; lanes are still assigned in the order calls began.
    */
-  begin(input: { recorder?: string; path?: string; body: unknown; headers?: Headers; startedAt?: Date; api?: Api; lane?: string; session?: string }): Pending | undefined {
+  begin(input: CallInput): Pending | undefined {
+    const call = this.read(input)
+    if (!call) return undefined
+    // A call is in flight for another if it had not ended when that one began, whenever either is prepared.
+    const entry: { began: number; ended?: number } = { began: ++this.sequence }
+    const prepared = this.queue
+      .then(() => canonicalizeRequestAsync(PROVIDER_OF[call.api], call.body))
+      .then((canonical) => {
+        const lane = this.assignLane(canonical.blocks, call.session, call.forced, call.cacheKey, entry.began)
+        lane.calls.push(entry)
+        return { canonical, lane }
+      })
+    this.queue = prepared.catch(() => undefined)
+    const end = () => {
+      if (entry.ended !== undefined) return false
+      entry.ended = this.sequence
+      return true
+    }
+    return {
+      // The call ends when the response does, not when its preparation catches up.
+      finish: async (response) => {
+        if (!end()) return undefined
+        const { canonical, lane } = await prepared
+        return this.write(call, canonical, lane, response)
+      },
+      abandon: (reason) => {
+        if (end()) void prepared.then(() => this.options.onSkip?.(`not recorded: ${reason}`))
+      },
+    }
+  }
+
+  /** Records a call whose response is complete, at once (`lens.observe`). Returns undefined when it cannot be recorded. */
+  record(input: CallInput, response: unknown): TraceRecord | undefined {
+    const call = this.read(input)
+    if (!call) return undefined
+    const canonical = canonicalizeRequest(PROVIDER_OF[call.api], call.body)
+    return this.write(call, canonical, this.assignLane(canonical.blocks, call.session, call.forced, call.cacheKey, ++this.sequence), response)
+  }
+
+  private read(input: CallInput) {
     const pathApi = input.path === undefined ? undefined : apiFromPath(input.path)
     if (input.path !== undefined && !pathApi) return undefined
     const body = readBody(input.body, input.headers?.get("content-encoding") ?? undefined)
@@ -73,35 +133,41 @@ export class Recorder {
       if (pathApi) this.options.onSkip?.(`not recorded: the ${input.path} request body is not a JSON object`)
       return undefined
     }
-    const api = input.api ?? pathApi ?? apiFromBody(body)
-    const startedAt = input.startedAt ?? new Date()
-    const session = input.session ?? input.headers?.get(SESSION_HEADER) ?? this.options.session
-    const cacheKey = input.headers?.get("session-id") ?? (typeof body.prompt_cache_key === "string" ? body.prompt_cache_key : undefined)
-    const lane = this.assignLane(canonicalizeRequest(PROVIDER_OF[api], body).blocks, session, input.lane ?? input.headers?.get(LANE_HEADER) ?? this.options.lane, cacheKey)
-    lane.inFlight++
-    let done = false
-    const end = () => {
-      if (done) return false
-      done = true
-      lane.inFlight--
-      return true
-    }
     return {
-      finish: (response) => {
-        if (!end()) return undefined
-        const built = buildRecord({ api, body, response: readResponse(api, response), startedAt, ...(input.headers ? { headers: input.headers } : {}), ...(session ? { session } : {}), lane: lane.name, recorder: input.recorder ?? this.options.name, ...(this.options.keepIdentifiers ? { keepIdentifiers: true } : {}), ...(this.options.billing ? { billing: this.options.billing } : {}), ...(this.options.keepBinary ? { keepBinary: true } : {}) })
-        if (typeof built === "string") {
-          this.options.onSkip?.(`not recorded: ${built}`)
-          return undefined
-        }
-        this.writer?.append(built)
-        this.options.onRecord?.(built)
-        return built
-      },
-      abandon: (reason) => {
-        if (end()) this.options.onSkip?.(`not recorded: ${reason}`)
-      },
+      api: input.api ?? pathApi ?? apiFromBody(body),
+      body,
+      startedAt: input.startedAt ?? new Date(),
+      session: input.session ?? input.headers?.get(SESSION_HEADER) ?? this.options.session,
+      forced: input.lane ?? input.headers?.get(LANE_HEADER) ?? this.options.lane,
+      cacheKey: input.headers?.get("session-id") ?? (typeof body.prompt_cache_key === "string" ? body.prompt_cache_key : undefined),
+      headers: input.headers,
+      recorder: input.recorder ?? this.options.name,
     }
+  }
+
+  private write(call: NonNullable<ReturnType<Recorder["read"]>>, canonical: CanonicalRequest, lane: Lane, response: unknown): TraceRecord | undefined {
+    const input = {
+      api: call.api,
+      body: call.body,
+      response: readResponse(call.api, response),
+      startedAt: call.startedAt,
+      ...(call.headers ? { headers: call.headers } : {}),
+      ...(call.session ? { session: call.session } : {}),
+      lane: lane.name,
+      recorder: call.recorder,
+      ...(this.options.keepIdentifiers ? { keepIdentifiers: true } : {}),
+      ...(this.options.billing ? { billing: this.options.billing } : {}),
+      ...(this.options.keepBinary ? { keepBinary: true } : {}),
+    }
+    const unusable = noUsageReason(input)
+    if (unusable) {
+      this.options.onSkip?.(`not recorded: ${unusable}`)
+      return undefined
+    }
+    const built = recordFrom(input, canonical)
+    this.writer?.append(built)
+    this.options.onRecord?.(built)
+    return built
   }
 
   /**
@@ -115,9 +181,11 @@ export class Recorder {
    * Rules 2 and 3 skip a lane whose cache key differs: a harness that names its
    * conversations (Codex sends its thread id as session-id) started another one.
    */
-  private assignLane(blocks: Block[], session: string | undefined, forced: string | undefined, cacheKey: string | undefined): Lane {
+  private assignLane(blocks: Block[], session: string | undefined, forced: string | undefined, cacheKey: string | undefined, began: number): Lane {
     const candidates = this.lanes.filter((lane) => lane.session === session)
-    const chosen = forced !== undefined ? candidates.find((lane) => lane.name === forced) : pickLane(candidates, blocks, cacheKey)
+    // Calls that ended before this one began can never be in flight for a later call either.
+    for (const lane of candidates) lane.calls = lane.calls.filter((other) => other.ended === undefined || other.ended >= began)
+    const chosen = forced !== undefined ? candidates.find((lane) => lane.name === forced) : pickLane(candidates, blocks, cacheKey, began)
     const lane = chosen ?? this.newLane(forced, session)
     lane.blocks = blocks
     if (cacheKey === undefined) delete lane.cacheKey
@@ -128,13 +196,13 @@ export class Recorder {
 
   private newLane(name: string | undefined, session: string | undefined): Lane {
     const count = this.lanes.filter((lane) => lane.session === session).length
-    const lane = { name: name ?? (count === 0 ? "main" : `lane-${count + 1}`), ...(session ? { session } : {}), blocks: [], inFlight: 0, used: 0 }
+    const lane = { name: name ?? (count === 0 ? "main" : `lane-${count + 1}`), ...(session ? { session } : {}), blocks: [], calls: [], used: 0 }
     this.lanes.push(lane)
     return lane
   }
 }
 
-function pickLane(lanes: Lane[], blocks: Block[], cacheKey: string | undefined): Lane | undefined {
+function pickLane(lanes: Lane[], blocks: Block[], cacheKey: string | undefined, began: number): Lane | undefined {
   const hashes = (list: Block[], kind: Block["kind"]) => list.filter((block) => block.kind === kind).map((block) => block.hash).join()
   const scored = lanes.map((lane) => {
     const shared = sharedPrefix(lane.blocks, blocks)
@@ -144,7 +212,7 @@ function pickLane(lanes: Lane[], blocks: Block[], cacheKey: string | undefined):
     )
     const sameTools = hashes(lane.blocks, "tool") === hashes(blocks, "tool")
     const sameSystem = hashes(lane.blocks, "system") === hashes(blocks, "system")
-    const idle = lane.inFlight === 0
+    const idle = lane.calls.every((other) => other.ended !== undefined && other.ended < began)
     const sameKey = lane.cacheKey === undefined || cacheKey === undefined || lane.cacheKey === cacheKey
     // A call running alongside the lane's latest one is another conversation unless it shares the start of the request.
     const related = sameKey && (shared > 0 || (idle && (sameTools || sameSystem)))

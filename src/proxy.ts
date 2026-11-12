@@ -91,7 +91,7 @@ export function startProxy(options: ProxyOptions) {
         if (pending) pending.abandon(`upstream answered ${response.status}`)
         return copyResponse(response, response.body ?? new ReadableStream({ start: (controller) => controller.close() }))
       }
-      return copyResponse(response, observeBody(response.body, pending.finish))
+      return copyResponse(response, observeBody(response.body, pending.finish, { toSocket: true }))
     },
   })
   return {

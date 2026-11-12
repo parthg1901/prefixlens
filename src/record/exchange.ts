@@ -2,7 +2,7 @@
 // streamed or not) into a trace record. Shared by the recording proxy, the
 // recording fetch behind `wrap(client)`, and `lens.observe`.
 
-import { canonicalizeRequest, elideBinary, isRecord, type Provider } from "../canonical.ts"
+import { canonicalizeRequest, elideBinary, isRecord, type CanonicalRequest, type Provider } from "../canonical.ts"
 import type { Billing, TraceRecord } from "../trace.ts"
 import { withoutIdentifiers } from "../params.ts"
 import { normalizeUsage } from "../usage.ts"
@@ -176,14 +176,23 @@ export type ExchangeInput = RecordInput
  * Stable from 0.3: inputs may gain optional fields, never lose or change one.
  */
 export function buildRecord(input: RecordInput): TraceRecord | string {
+  const unusable = noUsageReason(input)
+  return unusable ?? recordFrom(input, canonicalizeRequest(PROVIDER_OF[input.api], input.body))
+}
+
+/** Why no record can be built from this call, if none can: its response reported no usage. */
+export function noUsageReason(input: RecordInput): string | undefined {
+  if (input.response.usage) return undefined
+  return input.api === "openai-chat" && input.body.stream === true
+    ? "the stream reported no usage (Chat Completions streams include usage only with stream_options.include_usage)"
+    : input.response.complete
+      ? "the response had no usage"
+      : "the response ended before it reported usage"
+}
+
+/** `buildRecord` from a request already canonicalized, so the recorder canonicalizes each request once. */
+export function recordFrom(input: RecordInput, canonical: CanonicalRequest): TraceRecord {
   const provider = PROVIDER_OF[input.api]
-  if (!input.response.usage)
-    return input.api === "openai-chat" && input.body.stream === true
-      ? "the stream reported no usage (Chat Completions streams include usage only with stream_options.include_usage)"
-      : input.response.complete
-        ? "the response had no usage"
-        : "the response ended before it reported usage"
-  const canonical = canonicalizeRequest(provider, input.body)
   const given = input.headers instanceof Headers ? input.headers : new Headers(input.headers)
   const headers = Object.fromEntries(RECORDED_HEADERS.flatMap((name) => (given.get(name) ? [[name, given.get(name)!]] : [])))
   const ttl = input.api === "anthropic-messages" ? anthropicTtl(input.body) : undefined
@@ -198,7 +207,7 @@ export function buildRecord(input: RecordInput): TraceRecord | string {
     params: withoutIdentifiers(canonical.params, input.keepIdentifiers),
     fidelity: "full-request",
     request: { blocks: input.keepBinary ? canonical.blocks : canonical.blocks.map(elideBinary) },
-    usage: normalizeUsage(provider, input.response.usage),
+    usage: normalizeUsage(provider, input.response.usage!),
     ...(ttl ? { cache_ttl_seconds: ttl } : {}),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
     // A stream cut off after it reported usage (Anthropic reports the input side in its first event).

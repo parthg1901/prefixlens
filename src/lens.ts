@@ -74,16 +74,15 @@ export function createLens(options: LensOptions = {}): Lens {
   return {
     trace: trace === false ? undefined : trace,
     observe(observation) {
-      const pending = recorder.begin({
+      if (!isRecord(observation.request)) throw new TypeError("lens.observe: request must be the request body object")
+      return recorder.record({
         body: observation.request,
         api: observation.api ?? apiFromBody(observation.request),
         startedAt: observation.startedAt === undefined ? new Date() : new Date(observation.startedAt),
         ...(observation.headers ? { headers: new Headers(observation.headers) } : {}),
         ...(observation.lane ? { lane: observation.lane } : {}),
         ...(observation.session ? { session: observation.session } : {}),
-      })
-      if (!pending) throw new TypeError("lens.observe: request must be the request body object")
-      return pending.finish(observation.response)
+      }, observation.response)
     },
     wrap(client) {
       const target = client as { fetch?: unknown }
