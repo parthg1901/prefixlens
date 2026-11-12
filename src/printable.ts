@@ -10,6 +10,15 @@ export function printable(text: string): string {
   return text.replace(CONTROL, (char) => `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}`)
 }
 
+/**
+ * JSON text with DEL and the C1 control characters written as `\u009b` escapes. JSON.stringify escapes
+ * the C0 characters and leaves these as they are; in its output they occur only inside strings, so the
+ * result parses to the same value.
+ */
+export function escapeJsonControls(json: string): string {
+  return json.replace(/[\u007f-\u009f]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)
+}
+
 /** A copy of `value` with `printable` applied to every string in it, keys included. */
 export function printableDeep<T>(value: T): T {
   if (typeof value === "string") return printable(value) as T

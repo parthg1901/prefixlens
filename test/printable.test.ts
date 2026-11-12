@@ -9,7 +9,8 @@ import path from "node:path"
 import { analyze } from "../src/analyze.ts"
 import { assertPrefixStable, PrefixBreakError } from "../src/assert.ts"
 import { parsePricing } from "../src/pricing.ts"
-import { printable, printableDeep } from "../src/printable.ts"
+import { escapeJsonControls, printable, printableDeep } from "../src/printable.ts"
+import { renderJson } from "../src/report/json.ts"
 import { renderTerminal } from "../src/report/terminal.ts"
 import { renderDiff } from "../src/textdiff.ts"
 import { serializeTrace } from "../src/trace.ts"
@@ -68,10 +69,18 @@ describe("control characters from a trace", () => {
     expect(coloured.replace(/\x1b\[(1|2|22|31|32|33|34|36|39)m/g, "")).not.toMatch(CONTROL)
   })
 
-  test("the analysis itself keeps the content as it was, for the JSON report", () => {
-    const analysis = analyze(trace(), { pricing: parsePricing(TEST_PRICING) })
+  test("the JSON report prints none and parses to the content as it was", () => {
+    const records = trace()
+    records[2] = { ...records[2]!, lane: "lane\x9b2K\x7f" }
+    const analysis = analyze(records, { pricing: parsePricing(TEST_PRICING) })
     renderTerminal(analysis)
-    expect(analysis.turns[0]!.model).toBe(MODEL)
+    const json = renderJson(analysis)
+    expect(json.replaceAll("\n", "")).not.toMatch(CONTROL)
+    const parsed = JSON.parse(json) as typeof analysis
+    expect(parsed.turns[0]!.model).toBe(MODEL)
+    expect(parsed.turns[2]!.lane).toBe("lane\x9b2K\x7f")
+    expect(parsed.turns).toEqual(JSON.parse(JSON.stringify(analysis.turns)))
+    expect(escapeJsonControls(JSON.stringify("a\x9bb"))).toBe('"a\\u009bb"')
   })
 
   test("a diff's lines carry none", () => {
