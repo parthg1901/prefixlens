@@ -141,6 +141,27 @@ describe("declared intentional breaks", () => {
     expect(result.summary.misses).toBe(1)
   })
 
+  test("a declared break after the cache lifetime is an expiry miss, not an intentional break", () => {
+    const declared: Hint[] = [{ kind: "prefix_break", reason: "compaction" }]
+    const compacted = [user("Summary of the work so far."), user("Go on.")]
+    const history = [user("Fix the bug."), assistant("Looking."), user("Go on."), assistant("Found it."), user("Ship it.")]
+    const pair = (gapSeconds: number) => run([fullRecord(body(history), usage(10, 0, 5000)), fullRecord(body(compacted), usage(10, 0, 3000), { hints: declared }, gapSeconds)])
+    expect(pair(60).turns[1]!.declared_break).toMatchObject({ intentional: true, checked: true })
+    const late = pair(6 * 60)
+    expect(late.turns[1]!.cause?.cause).toBe("cache_expired")
+    expect(late.turns[1]!.prefix_change?.cause).toBe("compaction")
+    expect(late.turns[1]!.declared_break).toMatchObject({
+      intentional: false,
+      checked: true,
+      note: "a break was declared (compaction), but the cache had expired before this call (6m since the previous call, TTL 5m), so the miss is counted as an expiry",
+    })
+    expect(late.summary).toMatchObject({ misses: 1, intentional: { breaks: 0 } })
+    // Usage-only records: the same, said with less certainty.
+    const usageOnly = run([usageRecord("claude-test-1", usage(10, 0, 5000)), usageRecord("claude-test-1", usage(10, 0, 3000), { hints: declared }, 6 * 60)]).turns[1]!
+    expect(usageOnly.cause?.summary).toBe("likely cache expiry: 6m since the previous call (TTL 5m); the harness also logged an intentional break (compaction) before this call; unconfirmed (usage-only)")
+    expect(usageOnly.declared_break).toMatchObject({ intentional: false, checked: false })
+  })
+
   test("usage-only: a declared break is intentional, unchecked, and names the reason", () => {
     const result = run([usageRecord("claude-test-1", usage(10, 0, 5000)), usageRecord("claude-test-1", usage(10, 0, 4000), { hints: [{ kind: "prefix_break", reason: "revert", detail: "to message 3" }] })])
     const turn = result.turns[1]!

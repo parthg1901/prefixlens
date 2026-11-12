@@ -54,7 +54,11 @@ export interface TurnResult {
   baseline_turn?: number
   gap_seconds?: number
   cause?: CauseInfo
-  /** Set when the prefix changed without losing tokens (the change came after the cached part). */
+  /**
+   * A prefix change that is not the cause of lost tokens: it came after the cached part, or the
+   * cache had already expired when the call was sent (the cause is then the expiry, and this is
+   * what else was found).
+   */
   prefix_change?: CauseInfo
   /** On a miss or partial miss: the breaks the harness declared on this call (SPEC 6.1), and whether they excuse it. */
   declared_break?: DeclaredBreakResult
@@ -227,16 +231,40 @@ function analyzeTurn(
     const declared = declaredBreaks(record.hints)
     const withDeclared = (result: TurnResult, verdict: Omit<DeclaredBreakResult, "reasons" | "declarations"> | undefined): TurnResult =>
       declared.length === 0 || !verdict ? result : { ...result, declared_break: { reasons: [...new Set(declared.map((entry) => entry.reason))], declarations: declared, ...verdict } }
-    if (!full)
+    const lapse = `${duration(gap)} since the previous call, TTL ${duration(ttl)}`
+    if (!full) {
+      const cause = inferredCause(previous, record, gap, ttl, declared, status === "miss")
+      // The cache was gone whatever the harness did, so a declared break does not make the miss an intentional one.
       return withDeclared(
-        { ...turn, cause: inferredCause(previous, record, gap, ttl, declared) },
-        { intentional: true, checked: false, note: "usage-only: where the prefix changed cannot be checked against the declaration" },
+        { ...turn, cause },
+        cause.cause === "cache_expired"
+          ? { intentional: false, checked: false, note: `a break was declared (${declared.map((entry) => entry.reason).join(", ")}), but the cache had probably expired by then (${lapse}), so the miss is counted as an expiry` }
+          : { intentional: true, checked: false, note: "usage-only: where the prefix changed cannot be checked against the declaration" },
       )
+    }
     // With explicit caching the previous call cached only up to its last breakpoint, so a change after it cannot explain the loss.
     const lastBreakpoint = explicitCaching(previous) ? before.findLastIndex((block) => block.breakpoint) : -1
     const afterCached = change?.block_index !== undefined && lastBreakpoint !== -1 && change.block_index > lastBreakpoint
-    const cause = confirmedCause(afterCached ? null : change, gap, ttl, previous.usage.cache_write_tokens ?? 0, [previous.headers?.["session-id"], record.headers?.["session-id"]])
-    const verdict = judgeDeclared(declared, afterCached ? null : change, before)
+    const found = afterCached ? null : change
+    // Past the cache lifetime a call that read nothing would have missed with the prefix untouched: expiry is the
+    // cause, and a change found as well is reported beside it. A partial miss read part of the cache, so the cache
+    // was still there and the change is what cost the rest. A model change stays first: the new model never had that cache.
+    const expired = status === "miss" && gap > ttl && found !== null && found.region !== "model"
+    const cause = confirmedCause(expired ? null : found, gap, ttl, previous.usage.cache_write_tokens ?? 0, [previous.headers?.["session-id"], record.headers?.["session-id"]])
+    if (expired)
+      return withDeclared(
+        {
+          ...turn,
+          cause: {
+            ...cause,
+            summary: `cache expired: ${lapse.replace(", TTL", " (TTL")}); the prefix had also changed (${found.summary}), so this call would have missed within the TTL too`,
+            detail: { ...cause.detail, also_changed: found.cause },
+          },
+          prefix_change: fromChange(found, "confirmed"),
+        },
+        { intentional: false, checked: true, note: `a break was declared (${declared.map((entry) => entry.reason).join(", ")}), but the cache had expired before this call (${lapse}), so the miss is counted as an expiry` },
+      )
+    const verdict = judgeDeclared(declared, found, before)
     if (!afterCached) return withDeclared({ ...turn, cause }, verdict)
     const where = `cached prefix unchanged (the first change, at block ${change!.block_index! + 1}, is after the previous call's last cache breakpoint)`
     return withDeclared({ ...turn, cause: { ...cause, summary: cause.summary.replace(/^prefix unchanged/, where) }, prefix_change: fromChange(change!, "confirmed") }, verdict)
@@ -303,6 +331,15 @@ function judgeDeclared(declared: DeclaredBreak[], change: PrefixChange | null, p
 
 function confirmedCause(change: PrefixChange | null, gap: number, ttl: number, previousWrite: number, sessionIds: (string | undefined)[]): CauseInfo {
   if (change) return fromChange(change, "confirmed")
+  // Past the cache lifetime nothing else needs to have happened for the call to miss.
+  if (gap > ttl)
+    return {
+      cause: "cache_expired",
+      group: CAUSE_GROUP.cache_expired,
+      summary: `prefix unchanged, cache expired: ${duration(gap)} since the previous call (TTL ${duration(ttl)})`,
+      confidence: "confirmed",
+      detail: { gap_seconds: gap, ttl_seconds: ttl },
+    }
   // OpenAI's ChatGPT sign-in flow routes requests to a cache by this header.
   const [before, after] = sessionIds
   if (before !== undefined && after !== undefined && before !== after)
@@ -312,14 +349,6 @@ function confirmedCause(change: PrefixChange | null, gap: number, ttl: number, p
       summary: `prefix unchanged, but the session-id header changed (${before} → ${after}); the provider routes requests to a cache by it`,
       confidence: "confirmed",
       detail: { header: "session-id", from: before, to: after },
-    }
-  if (gap > ttl)
-    return {
-      cause: "cache_expired",
-      group: CAUSE_GROUP.cache_expired,
-      summary: `prefix unchanged, cache expired: ${duration(gap)} since the previous call (TTL ${duration(ttl)})`,
-      confidence: "confirmed",
-      detail: { gap_seconds: gap, ttl_seconds: ttl },
     }
   const fresh = previousWrite > 0 && gap <= FRESH_WRITE_SECONDS
   return {
@@ -345,7 +374,7 @@ const REASON_CAUSE: Record<string, Cause> = {
   settings_change: "params_changed",
 }
 
-function inferredCause(previous: TraceRecord, record: TraceRecord, gap: number, ttl: number, declared: DeclaredBreak[]): CauseInfo {
+function inferredCause(previous: TraceRecord, record: TraceRecord, gap: number, ttl: number, declared: DeclaredBreak[], nothingRead: boolean): CauseInfo {
   const inferred = (cause: Cause, summary: string, detail?: Record<string, unknown>): CauseInfo => ({
     cause,
     group: CAUSE_GROUP[cause],
@@ -360,28 +389,40 @@ function inferredCause(previous: TraceRecord, record: TraceRecord, gap: number, 
     })
   const hint = (kind: string) => record.hints?.find((candidate) => candidate.kind === kind)
   const stated = declared.find((entry) => entry.kind === "prefix_break")
+  const compaction = hint("compaction")
+  const tools = hint("tools_changed")
+  const agent = hint("agent_switch")
+  const pruned = hint("tool_output_pruned")
+  const noted = (detail: string | undefined) => (detail ? ` (${detail})` : "")
+  const logged = [
+    ...(stated ? [`an intentional break${noted(stated.detail ? `${stated.reason}: ${stated.detail}` : stated.reason)}`] : []),
+    ...(compaction ? [`a compaction${noted(compaction.detail)}`] : []),
+    ...(tools ? [`a tool-list change${noted(tools.detail)}`] : []),
+    ...(agent ? [`an agent switch${noted(agent.detail)}`] : []),
+    ...(pruned ? [`pruned tool outputs${noted(pruned.detail)}`] : []),
+  ]
+  // Past the cache lifetime a call that read nothing would have missed whatever the harness did before it, so
+  // what the harness logged is named beside the expiry, not as the cause. A partial miss read part of the cache,
+  // so the cache was still there: what the harness logged explains it better than the clock.
+  if (gap > ttl && (nothingRead || logged.length === 0))
+    return inferred(
+      "cache_expired",
+      `likely cache expiry: ${duration(gap)} since the previous call (TTL ${duration(ttl)})${logged.length > 0 ? `; the harness also logged ${logged.join(" and ")} before this call` : ""}; ${UNCONFIRMED}`,
+      { gap_seconds: gap, ttl_seconds: ttl },
+    )
   if (stated)
     return inferred(
       REASON_CAUSE[stated.reason] ?? "unknown",
       `the harness declared an intentional break (${stated.reason}${stated.detail ? `: ${stated.detail}` : ""}); ${UNCONFIRMED}`,
     )
-  const compaction = hint("compaction")
   if (compaction)
     return inferred("compaction", `history compacted before this call (harness log${compaction.detail ? `: ${compaction.detail}` : ""}); ${UNCONFIRMED}`)
-  const tools = hint("tools_changed")
   if (tools)
     return inferred("tools_changed", `tool list changed before this call (harness log${tools.detail ? `: ${tools.detail}` : ""}); tools come first, so this invalidates the whole prefix; ${UNCONFIRMED}`)
-  const agent = hint("agent_switch")
   if (agent)
     return inferred("tools_changed", `agent switched (${agent.detail ?? "different agent"}); its tool list and system prompt usually differ; ${UNCONFIRMED}`)
-  const pruned = hint("tool_output_pruned")
   if (pruned)
     return inferred("tool_output_rewritten", `the harness pruned earlier tool outputs before this call${pruned.detail ? ` (${pruned.detail})` : ""}; ${UNCONFIRMED}`)
-  if (gap > ttl)
-    return inferred("cache_expired", `likely cache expiry: ${duration(gap)} since the previous call (TTL ${duration(ttl)}); ${UNCONFIRMED}`, {
-      gap_seconds: gap,
-      ttl_seconds: ttl,
-    })
   return { cause: "unknown", group: CAUSE_GROUP.unknown, summary: `cause unknown: ${USAGE_ONLY}`, confidence: "unknown" }
 }
 

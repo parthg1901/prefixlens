@@ -63,6 +63,39 @@ describe("analyze", () => {
     expect(turn.cause!.summary).toBe("prefix unchanged, cache expired: 6m since the previous call (TTL 5m)")
   })
 
+  test("a prefix change after the cache lifetime: expiry is the cause, and the change is reported beside it", () => {
+    const rewritten = [m2[0], m2[1], toolResult("t1", "cut"), assistant("done"), user("next")]
+    const pair = (gapSeconds: number, secondUsage = usage(10, 0, 5300)) => run([fullRecord(body(m2), usage(10, 0, 5000)), fullRecord(body(rewritten), secondUsage, {}, gapSeconds)])
+    const late = pair(6 * 60)
+    expect(late.turns[1]!.cause).toMatchObject({ cause: "cache_expired", group: "cache expiry", confidence: "confirmed", detail: { gap_seconds: 360, ttl_seconds: 300, also_changed: "tool_output_rewritten" } })
+    expect(late.turns[1]!.cause!.summary).toBe(
+      "cache expired: 6m since the previous call (TTL 5m); the prefix had also changed (tool output in message #3 truncated after it was sent (8 → 3 chars)), so this call would have missed within the TTL too",
+    )
+    expect(late.turns[1]!.prefix_change).toMatchObject({ cause: "tool_output_rewritten", confidence: "confirmed" })
+    expect(late.summary.by_group.map((group) => group.group)).toEqual(["cache expiry"])
+    // Within the lifetime the rewrite is the cause, as it is for a call that still read part of the cache after it:
+    // a partial read shows the cache had not expired.
+    expect(pair(60).turns[1]!.cause?.cause).toBe("tool_output_rewritten")
+    const partial = pair(6 * 60, usage(10, 3000, 2300)).turns[1]!
+    expect(partial.status).toBe("partial")
+    expect(partial.cause?.cause).toBe("tool_output_rewritten")
+  })
+
+  test("a model change is still the cause after the cache lifetime: the new model never had that cache", () => {
+    const records = [fullRecord(body(m1), usage(10, 0, 5000)), fullRecord(body(m2, { model: "claude-test-2" }), usage(10, 0, 5300), {}, 6 * 60)]
+    expect(run(records).turns[1]!.cause?.cause).toBe("model_changed")
+  })
+
+  test("usage-only: what the harness logged before a call sent after the cache lifetime is named beside the likely expiry", () => {
+    const pruned = { hints: [{ kind: "tool_output_pruned", detail: "1 output" }] }
+    const late = run([usageRecord("claude-test-1", usage(10, 0, 5000)), usageRecord("claude-test-1", usage(10, 0, 4200), pruned, 6 * 60)]).turns[1]!
+    expect(late.cause).toMatchObject({ cause: "cache_expired", confidence: "inferred" })
+    expect(late.cause!.summary).toBe("likely cache expiry: 6m since the previous call (TTL 5m); the harness also logged pruned tool outputs (1 output) before this call; unconfirmed (usage-only)")
+    // A call that still read part of the cache was not sent to an expired one: the logged pruning explains it.
+    const partial = run([usageRecord("claude-test-1", usage(10, 0, 5000)), usageRecord("claude-test-1", usage(10, 3000, 1200), pruned, 6 * 60)]).turns[1]!
+    expect(partial.cause?.cause).toBe("tool_output_rewritten")
+  })
+
   test("the record's own TTL overrides the provider default", () => {
     const records = [fullRecord(body(m1), usage(10, 0, 5000), { cache_ttl_seconds: 3600 }), fullRecord(body(m2), usage(10, 0, 5300), {}, 6 * 60)]
     expect(run(records).turns[1]!.cause?.cause).toBe("provider_side")
@@ -221,5 +254,11 @@ describe("analyze", () => {
     ])
     expect(result.turns[1]!.cause).toMatchObject({ cause: "params_changed", confidence: "confirmed" })
     expect(result.turns[1]!.cause!.summary).toBe("prefix unchanged, but the session-id header changed (a → b); the provider routes requests to a cache by it")
+    // After the cache lifetime the header is beside the point.
+    const late = run([
+      fullRecord(body(first), usage(5, 0, 2000), { headers: { "session-id": "a" } }),
+      fullRecord(body([...first, assistant("Hello.")]), usage(5, 0, 2100), { headers: { "session-id": "b" } }, 6 * 60),
+    ])
+    expect(late.turns[1]!.cause?.cause).toBe("cache_expired")
   })
 })

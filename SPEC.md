@@ -166,7 +166,7 @@ Even with content deduplicated, listing every block's hash on every line makes a
 ## 5. Fidelity
 
 - **`"full-request"`**: `request.blocks` lists every tool, system part and message the provider received, in order. With two consecutive full-request records in a lane, a reader can prove whether the earlier request is an unchanged prefix of the later one and name the first block that differs. A writer that rebuilds requests from a log, rather than recording the request it sent, SHOULD write `"full-request"` only when it can show the rebuild is exact, marking any block it knows was sent but cannot rebuild as `unknown` (section 4.1), and `"usage-only"` otherwise. prefixlens's Claude Code importer matches the digest Claude Code logs of each request as Claude Code built it, which proves the tools, the logged system parts, the messages, the parameters and the breakpoints; Claude Code's transport then adds a first system block it does not log (a billing-attribution line that differs per session), which the importer writes as an unknown block, and sends the logged `betas` parameter as the `anthropic-beta` header, which the importer writes in `headers`. Changes a provider makes after receiving the request, such as server-side context editing, are outside the trace.
-- **`"usage-only"`**: only the response usage is known (plus `model`, `ts` and optionally `params` and `hints`). Hit rates, lost tokens and costs are exact. The cause of a miss cannot be proven; readers may infer one from a model change, the time gap against the TTL, and hints, and MUST label such causes as inferred.
+- **`"usage-only"`**: only the response usage is known (plus `model`, `ts` and optionally `params` and `hints`). Hit rates, lost tokens and costs are exact. The cause of a miss cannot be proven; readers may infer one from a model change, the time gap against the TTL, and hints, and MUST label such causes as inferred. prefixlens infers, in this order: a model change; for a call that read nothing, sent later than the TTL after the previous call, a likely expiry (naming any hint beside it); a declared break or hint; a likely expiry for a partial miss with no hint; otherwise the cause is unknown.
 
 A trace may mix both. A comparison between a full-request record and a usage-only record is treated as usage-only.
 
@@ -217,7 +217,7 @@ The older kinds keep working: a `compaction` hint declares `{"reason": "compacti
 **Reach.** A declaration applies to the call that carries it, and to nothing else:
 
 - It excuses that call's miss only when the first change, as section 8 finds it between this call and the previous one in its lane, starts at or after the part `after` keeps. The start of a model change is the first block; of a parameter change, the first block of the part section 8.1 says it invalidates; otherwise the first block that differs. A `revert` (after `"system"`) that also changed the tool list is not excused.
-- It does not excuse a miss with the prefix intact (an expiry or a provider-side miss): the break did not cause it.
+- It does not excuse a miss with the prefix intact (an expiry or a provider-side miss): the break did not cause it. Nor does it excuse a call that read nothing and was sent later than the cache lifetime after the previous call: the cache had expired whatever the harness did, so the miss is an expiry (section 8), with the declared break named beside it. This holds for usage-only records too.
 - It does not reach the next call. A second miss right after a declared break is compared with the call that carried the declaration, and is a miss.
 - When either of the two records is usage-only, where the prefix changed cannot be checked; the declaration is taken at its word and the report says it was not checked.
 
@@ -244,6 +244,7 @@ For a call `c` with previous call `p` in the same lane:
 - **Cost** = Σ tokens × price from a user-editable pricing table (per million tokens, with separate 5-minute and 1-hour write prices). No price is built into the code.
 - **Miss cost** = lost tokens × (the average price this call paid per uncached input or cache-write token − the cache-read price).
 - **Cause** of a miss or partial miss, when both records are full-request: the first of these that applies:
+  0. a call that read nothing, sent later than the TTL after the previous call (item 5), with the model unchanged: the cache expired. Such a call would have missed with the prefix untouched, so a change that items 2 to 4 find as well is not the cause; it is named in the cause's summary and reported as the call's `prefix_change`. A call that read part of the cache shows the cache was still there, so for a partial miss the items below apply as usual;
   1. model changed;
   2. the first differing block is a tool (tools added or removed, same tools reordered, or a definition edited) or a system part (edited; or only a short timestamp/identifier-like span changed);
   3. a cache-relevant param changed, by the rules of section 8.1 for the record's `provider`;
