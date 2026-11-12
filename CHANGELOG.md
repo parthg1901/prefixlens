@@ -4,6 +4,12 @@ All notable changes to prefixlens are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-12
+
+### Changed
+
+- Releases are published from GitHub Actions through npm trusted publishing, with a provenance statement that links each version to the commit and workflow run that built it. The package contents are the same as 0.5.0.
+
 ## [0.5.0] - 2026-11-12
 
 First public release.
@@ -24,5 +30,6 @@ First public release.
 - **Privacy defaults.** Credentials and all but four request headers are never written. Identifying request fields and the bytes of images and documents are left out unless asked for. Trace and report files are created readable by their owner only. Control characters in trace content are written visibly on the terminal. No telemetry. See [SECURITY.md](SECURITY.md).
 - **Runtimes.** Node.js 22 or later and Bun, with type declarations and no runtime dependencies.
 
-[Unreleased]: https://github.com/parthg1901/prefixlens/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/parthg1901/prefixlens/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/parthg1901/prefixlens/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/parthg1901/prefixlens/releases/tag/v0.5.0
