@@ -5,6 +5,7 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
+import net from "node:net"
 import path from "node:path"
 import { gzipSync } from "node:zlib"
 import { test } from "node:test"
@@ -126,4 +127,27 @@ test("the proxy refuses a foreign Host and a browser Origin with 403", async (t)
   t.after(() => proxy.stop())
   assert.equal((await fetch(`${proxy.url}/v1/messages`, { method: "POST", headers: { origin: "https://attacker.example" }, body })).status, 403)
   assert.equal(upstream.seen.length, 0)
+})
+
+test("the proxy answers 403 to a request without a Host header and keeps serving", async (t) => {
+  const dir = tempDir(t, "no-host")
+  const upstream = await startFakeUpstream()
+  t.after(() => upstream.stop())
+  const skipped = []
+  const proxy = await startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace: path.join(dir, "no-host.trace.jsonl"), onSkip: (reason) => skipped.push(reason) })
+  t.after(() => proxy.stop())
+  // A raw HTTP/1.0 request: no client library sends one without Host.
+  const answer = await new Promise((resolve, reject) => {
+    let text = ""
+    const socket = net.connect(proxy.port, "127.0.0.1", () => {
+      socket.write(["POST /v1/messages HTTP/1.0", "content-type: application/json", `content-length: ${Buffer.byteLength(body)}`, "", body].join("\r\n"))
+    })
+    socket.on("data", (chunk) => (text += chunk))
+    socket.on("close", () => resolve(text))
+    socket.on("error", reject)
+  })
+  assert.equal(Number(answer.split(" ")[1]), 403)
+  assert.match(skipped.at(-1), /the Host header is missing/)
+  assert.equal(upstream.seen.length, 0)
+  assert.equal((await fetch(`${proxy.url}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body })).status, 200)
 })

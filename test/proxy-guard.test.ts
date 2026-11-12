@@ -17,9 +17,9 @@ afterAll(() => {
 
 const body = JSON.stringify({ model: "claude-test-1", max_tokens: 10, messages: [{ role: "user", content: "Synthetic." }] })
 
-// A raw HTTP/1.1 request, so the Host header is exactly what a client (or a rebinding page) sends.
-async function send(port: number, headers: Record<string, string>): Promise<number> {
-  const lines = ["POST /v1/messages HTTP/1.1", ...Object.entries(headers).map(([name, value]) => `${name}: ${value}`), "content-type: application/json", `content-length: ${Buffer.byteLength(body)}`, "connection: close", "", body]
+// A raw HTTP request, so the Host header is exactly what a client (or a rebinding page) sends.
+async function send(port: number, headers: Record<string, string>, version = "1.1"): Promise<number> {
+  const lines = [`POST /v1/messages HTTP/${version}`, ...Object.entries(headers).map(([name, value]) => `${name}: ${value}`), "content-type: application/json", `content-length: ${Buffer.byteLength(body)}`, "connection: close", "", body]
   let text = ""
   await new Promise<void>((resolve, reject) => {
     Bun.connect({
@@ -56,6 +56,15 @@ describe("the proxy's request guard", () => {
     expect([400, 403]).toContain(await send(port, {}))
     expect(upstream.seen.length).toBe(before)
     expect(skipped.some((reason) => reason.includes('Host header "attacker.example'))).toBe(true)
+  })
+
+  test("answers 403 to an HTTP/1.0 request without Host, which reaches the proxy with a URL that has no origin", async () => {
+    const before = upstream.seen.length
+    expect(await send(port, {}, "1.0")).toBe(403)
+    expect(upstream.seen.length).toBe(before)
+    expect(skipped.at(-1)).toContain("the Host header is missing")
+    // The proxy is still serving afterwards.
+    expect(await send(port, { host: `127.0.0.1:${port}` })).toBe(200)
   })
 
   test("refuses a request with an Origin header, from any page, preflight included", async () => {

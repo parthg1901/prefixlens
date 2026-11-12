@@ -66,7 +66,8 @@ function serveBun(runtime: typeof Bun, options: ServeOptions): Served {
     idleTimeout: 0,
     async fetch(request) {
       const body = request.body ? new Uint8Array(await request.arrayBuffer()) : undefined
-      return options.handle({ method: request.method, url: new URL(request.url), headers: request.headers, body, signal: request.signal })
+      // A request without a Host header (HTTP/1.0) has a path for a URL, so it needs a base, as on Node below.
+      return options.handle({ method: request.method, url: new URL(request.url, "http://localhost"), headers: request.headers, body, signal: request.signal })
     },
   })
   return { hostname: options.hostname, port: server.port ?? options.port, stop: async () => void (await server.stop(true)) }
