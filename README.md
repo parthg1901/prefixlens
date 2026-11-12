@@ -71,7 +71,7 @@ Bun has both.
 From a clone, with Bun (runs the TypeScript sources directly):
 
 ```sh
-git clone <repository URL> prefixlens && cd prefixlens
+git clone https://github.com/parthg1901/prefixlens.git prefixlens && cd prefixlens
 bun install              # dev dependencies only: TypeScript, Bun's types, and the two SDKs the tests wrap
 bun src/cli.ts --help    # the CLI, run from the checkout
 ```

@@ -4,7 +4,7 @@ prefixlens sits between an agent harness and its model provider, or inside the h
 
 ## Reporting a vulnerability
 
-Please report security problems privately: open a private security advisory on the project's repository (on GitHub: the repository's **Security** tab, then **Report a vulnerability**). Do not open a public issue for a vulnerability. Include the version (`prefixlens --version`), what you ran, and what was exposed.
+Please report security problems privately: [open a private security advisory](https://github.com/parthg1901/prefixlens/security/advisories/new) on the project's repository (the repository's **Security** tab, then **Report a vulnerability**). Do not open a public issue for a vulnerability. Include the version (`prefixlens --version`), what you ran, and what was exposed.
 
 prefixlens has not had a first release yet; until it does, only the latest commit is supported.
 

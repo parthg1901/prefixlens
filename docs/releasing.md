@@ -43,7 +43,7 @@ Steps:
 3. Run the local checks of "Releasing a version" step 3, with `v0.5.0`. Then `git tag v0.5.0`, and do not push the tag yet.
 4. Publish 0.5.0 by hand: `npm login`, then in a clean checkout of the tagged commit, `bun install --frozen-lockfile && npm publish --access public` (the `prepack` script builds `dist/`). Check the result with `npm view prefixlens`. This one version has no provenance statement, since it was not published from the workflow.
 5. `git push origin v0.5.0`. The Release workflow runs its checks and tests, finds 0.5.0 already on the registry, skips the publish, and creates the GitHub release from the changelog section. If the tag were pushed before step 4, the publish step would fail (no trusted publisher exists yet) and no GitHub release would be created; re-running the workflow after step 4 then creates it.
-6. On npmjs.com, open the package's settings, and under "Trusted publishing" add a GitHub Actions publisher: the owner and repository, workflow file name `release.yml`, no environment (unless you add one to the workflow's `publish` job). Or from the command line: `npm trust github prefixlens --file release.yml --repo <owner>/<repo> --allow-publish`.
+6. On npmjs.com, open the package's settings, and under "Trusted publishing" add a GitHub Actions publisher: the owner and repository, workflow file name `release.yml`, no environment (unless you add one to the workflow's `publish` job). Or from the command line: `npm trust github prefixlens --file release.yml --repo parthg1901/prefixlens --allow-publish`.
 7. Within 2 days, release 0.5.1 through the workflow ("Releasing a version" below), so the configuration is validated. Check that its page on npmjs.com shows the provenance.
 8. Then, as npm recommends, restrict token-based publishing in the package's settings ("Require two-factor authentication and disallow tokens"), so only the workflow can publish.
 9. On GitHub, protect the `v*` tags (a tag ruleset) so only maintainers can push them.
@@ -53,8 +53,8 @@ Steps:
 1. In `CHANGELOG.md`, move the entries under `## [Unreleased]` into a new `## [<version>] - <YYYY-MM-DD>` section below it, leaving `## [Unreleased]` empty. At the bottom, add the link for the version and point `[Unreleased]` at it:
 
    ```
-   [Unreleased]: https://github.com/<owner>/<repo>/compare/v<version>...HEAD
-   [<version>]: https://github.com/<owner>/<repo>/compare/v<previous version>...v<version>
+   [Unreleased]: https://github.com/parthg1901/prefixlens/compare/v<version>...HEAD
+   [<version>]: https://github.com/parthg1901/prefixlens/compare/v<previous version>...v<version>
    ```
 
    Only versions that have a tag get a link. The first tag is `v0.5.0`, so its link is to the release (`releases/tag/v0.5.0`), and the first compare link is 0.5.1's (`compare/v0.5.0...v0.5.1`). The stages under "Before the first release" (0.1.0 to 0.4.0) were never tagged and have no links.
@@ -71,11 +71,11 @@ Each line is something that is true or unfilled today, while there is no public 
 
 Addresses, once the repository address is known:
 
-- [ ] `package.json`: add `repository` (`{ "type": "git", "url": "git+https://github.com/<owner>/<repo>.git" }`), `homepage` and `bugs` (`{ "url": ".../issues" }`).
-- [ ] `CHANGELOG.md`: replace `<owner>/<repo>` in the two link definitions at the bottom (`[Unreleased]` and `[0.5.0]`).
-- [ ] `SECURITY.md`, "Reporting a vulnerability": add the link to the repository's private security advisory form (`https://github.com/<owner>/<repo>/security/advisories/new`).
-- [ ] `README.md`, "Install": replace the `<repository URL>` placeholder in the clone command.
-- [ ] `docs/releasing.md` (this file): replace `<owner>/<repo>` in the `npm trust` command and in the link examples.
+- [x] `package.json`: add `repository` (`{ "type": "git", "url": "git+https://github.com/<owner>/<repo>.git" }`), `homepage` and `bugs` (`{ "url": ".../issues" }`).
+- [x] `CHANGELOG.md`: replace `<owner>/<repo>` in the two link definitions at the bottom (`[Unreleased]` and `[0.5.0]`).
+- [x] `SECURITY.md`, "Reporting a vulnerability": add the link to the repository's private security advisory form (`https://github.com/<owner>/<repo>/security/advisories/new`).
+- [x] `README.md`, "Install": replace the `<repository URL>` placeholder in the clone command.
+- [x] `docs/releasing.md` (this file): replace `<owner>/<repo>` in the `npm trust` command and in the link examples.
 
 Sentences that stop being true:
 
@@ -89,7 +89,7 @@ Sentences that stop being true:
 
 Before the tag:
 
-- [ ] `.github/workflows/ci.yml` and `release.yml`: pin each action to a full commit hash instead of a major tag (`actions/checkout@v4`, `actions/setup-node@v4`, `oven-sh/setup-bun@v2`), with the version in a comment beside it. It matters most in the `publish` job of `release.yml`, which holds `id-token: write`. Look the hashes up on each action's releases page; do not copy them from anywhere else.
+- [x] `.github/workflows/ci.yml` and `release.yml`: pin each action to a full commit hash instead of a major tag (`actions/checkout@v4`, `actions/setup-node@v4`, `oven-sh/setup-bun@v2`), with the version in a comment beside it. It matters most in the `publish` job of `release.yml`, which holds `id-token: write`. Look the hashes up on each action's releases page; do not copy them from anywhere else.
 - [ ] Decide whether the author name and email in the commits are what you want public ("Pushing" above).
 - [ ] Check that nothing private ships: `node scripts/check-package.mjs` lists the tarball's size and file count and fails on tests, fixtures, traces, source maps or local paths in it.
 - [ ] `package.json`: remove `"private": true`. Do this last: it is the one thing that stops a tag from publishing.

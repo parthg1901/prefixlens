@@ -145,5 +145,5 @@ Checked against real traffic for the first time: Claude Code, Codex and opencode
 - Later system messages keep their place in prefix order.
 - Clear CLI errors for missing paths, empty input, non-trace files, unknown options and bad pricing tables.
 
-[Unreleased]: https://github.com/<owner>/<repo>/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/<owner>/<repo>/releases/tag/v0.5.0
+[Unreleased]: https://github.com/parthg1901/prefixlens/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/parthg1901/prefixlens/releases/tag/v0.5.0
