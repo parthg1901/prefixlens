@@ -35,6 +35,8 @@ export interface Pending {
 interface Lane {
   name: string
   session?: string
+  /** The cache key of its latest call: the session-id header, else prompt_cache_key. */
+  cacheKey?: string
   blocks: Block[]
   inFlight: number
   used: number
@@ -68,7 +70,8 @@ export class Recorder {
     const api = input.api ?? pathApi ?? apiFromBody(body)
     const startedAt = input.startedAt ?? new Date()
     const session = input.session ?? input.headers?.get(SESSION_HEADER) ?? this.options.session
-    const lane = this.assignLane(canonicalizeRequest(PROVIDER_OF[api], body).blocks, session, input.lane ?? input.headers?.get(LANE_HEADER) ?? this.options.lane)
+    const cacheKey = input.headers?.get("session-id") ?? (typeof body.prompt_cache_key === "string" ? body.prompt_cache_key : undefined)
+    const lane = this.assignLane(canonicalizeRequest(PROVIDER_OF[api], body).blocks, session, input.lane ?? input.headers?.get(LANE_HEADER) ?? this.options.lane, cacheKey)
     lane.inFlight++
     let done = false
     const end = () => {
@@ -103,12 +106,16 @@ export class Recorder {
    * 2. else the lane it shares the most leading messages with (an edit, a tool-list change);
    * 3. else an idle lane with the same tools and system prompt (compaction, rewind);
    * 4. else a new lane.
+   * Rules 2 and 3 skip a lane whose cache key differs: a harness that names its
+   * conversations (Codex sends its thread id as session-id) started another one.
    */
-  private assignLane(blocks: Block[], session: string | undefined, forced: string | undefined): Lane {
+  private assignLane(blocks: Block[], session: string | undefined, forced: string | undefined, cacheKey: string | undefined): Lane {
     const candidates = this.lanes.filter((lane) => lane.session === session)
-    const chosen = forced !== undefined ? candidates.find((lane) => lane.name === forced) : pickLane(candidates, blocks)
+    const chosen = forced !== undefined ? candidates.find((lane) => lane.name === forced) : pickLane(candidates, blocks, cacheKey)
     const lane = chosen ?? this.newLane(forced, session)
     lane.blocks = blocks
+    if (cacheKey === undefined) delete lane.cacheKey
+    else lane.cacheKey = cacheKey
     lane.used = ++this.clock
     return lane
   }
@@ -121,7 +128,7 @@ export class Recorder {
   }
 }
 
-function pickLane(lanes: Lane[], blocks: Block[]): Lane | undefined {
+function pickLane(lanes: Lane[], blocks: Block[], cacheKey: string | undefined): Lane | undefined {
   const hashes = (list: Block[], kind: Block["kind"]) => list.filter((block) => block.kind === kind).map((block) => block.hash).join()
   const scored = lanes.map((lane) => {
     const shared = sharedPrefix(lane.blocks, blocks)
@@ -132,10 +139,11 @@ function pickLane(lanes: Lane[], blocks: Block[]): Lane | undefined {
     const sameTools = hashes(lane.blocks, "tool") === hashes(blocks, "tool")
     const sameSystem = hashes(lane.blocks, "system") === hashes(blocks, "system")
     const idle = lane.inFlight === 0
+    const sameKey = lane.cacheKey === undefined || cacheKey === undefined || lane.cacheKey === cacheKey
     // A call running alongside the lane's latest one is another conversation unless it shares the start of the request.
-    const related = shared > 0 || (idle && (sameTools || sameSystem))
+    const related = sameKey && (shared > 0 || (idle && (sameTools || sameSystem)))
     const score =
-      shared === lane.blocks.length && shared > 0 ? 3e6 + shared : messages > 0 && related ? 2e6 + messages : idle && sameTools && sameSystem ? 1e6 : -1
+      shared === lane.blocks.length && shared > 0 ? 3e6 + shared : messages > 0 && related ? 2e6 + messages : sameKey && idle && sameTools && sameSystem ? 1e6 : -1
     return { lane, score }
   })
   const best = scored.filter((entry) => entry.score >= 0).sort((a, b) => b.score - a.score || b.lane.used - a.lane.used)[0]

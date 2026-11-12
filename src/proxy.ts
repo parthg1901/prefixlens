@@ -43,6 +43,12 @@ export function startProxy(options: ProxyOptions) {
     idleTimeout: 0,
     async fetch(request) {
       const url = new URL(request.url)
+      // The proxy relays HTTP only. Codex opens Responses over a WebSocket first and falls back to
+      // HTTP at once on 426; forwarded upstream, the handshake fails only after several retries.
+      if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        options.onSkip?.(`refused a WebSocket handshake to ${url.pathname} (426): the proxy records HTTP only`)
+        return new Response("prefixlens proxy: WebSockets are not relayed; use HTTP", { status: 426 })
+      }
       const body = request.body ? new Uint8Array(await request.arrayBuffer()) : undefined
       const headers = new Headers(request.headers)
       for (const name of DROPPED_REQUEST_HEADERS) headers.delete(name)

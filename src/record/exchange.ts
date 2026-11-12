@@ -181,7 +181,7 @@ export function buildRecord(input: RecordInput): TraceRecord | string {
     ts: new Date(input.startedAt).toISOString(),
     provider,
     model: canonical.model || input.response.model || "",
-    params: canonical.params,
+    params: Object.fromEntries(Object.entries(canonical.params).filter(([key]) => !UNRECORDED_PARAMS.has(key))),
     fidelity: "full-request",
     request: { blocks: canonical.blocks },
     usage: normalizeUsage(provider, input.response.usage),
@@ -190,6 +190,11 @@ export function buildRecord(input: RecordInput): TraceRecord | string {
     source: { recorder: input.recorder ?? "library", api: input.api, version: pkg.version, ...(input.response.complete ? {} : { complete: false }) },
   }
 }
+
+// Codex's client_metadata carries its x-codex-* header values (an installation id, per-turn ids, local
+// workspace paths) for its own backend. It is not model input, it changes on every call, and calls that
+// changed it still read the whole cache, so it is left out like the headers it copies.
+const UNRECORDED_PARAMS = new Set(["client_metadata"])
 
 // The TTL that applies to what a request wrote: that of its last cache_control
 // breakpoint, in prefix order (tools, system, messages, then the top-level one

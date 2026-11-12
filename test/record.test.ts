@@ -219,6 +219,68 @@ describe("recording proxy, OpenAI", () => {
   })
 })
 
+describe("recording proxy, Codex on the ChatGPT sign-in flow", () => {
+  // Shapes from Codex's Responses requests: tools arrive as an additional_tools input item whose id is
+  // new in each conversation, the conversation id is sent as session-id, and client_metadata repeats
+  // Codex's own header values.
+  const codexBody = (conversation: string, turn: string, input: unknown[]) => ({
+    model: "gpt-test-1",
+    stream: true,
+    store: false,
+    prompt_cache_key: conversation,
+    client_metadata: { session_id: conversation, turn_id: turn, "x-codex-installation-id": "synthetic-installation" },
+    input: [
+      { type: "additional_tools", id: `at_${conversation}`, role: "developer", tools: [{ type: "namespace", name: "functions", description: "", tools: [] }] },
+      { type: "message", role: "developer", content: [{ type: "input_text", text: "Synthetic developer instructions." }] },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Synthetic environment context." }] },
+      ...input,
+    ],
+  })
+  const say = (text: string) => ({ type: "message", role: "user", content: [{ type: "input_text", text }] })
+
+  test("a WebSocket handshake is answered 426 and never forwarded, so the client falls back to HTTP", async () => {
+    const before = upstream.seen.length
+    const proxy = startProxy({ provider: "openai", port: 0, upstream: upstream.url, trace: path.join(temp, "ws.trace.jsonl") })
+    const response = await fetch(`${proxy.url}/backend-api/codex/responses`, {
+      headers: { upgrade: "websocket", connection: "Upgrade", "sec-websocket-version": "13", "sec-websocket-key": "c3ludGhldGljLWtleS0wMDAwMA==", authorization: `Bearer ${SECRET}` },
+    })
+    expect(response.status).toBe(426)
+    await response.text()
+    proxy.stop()
+    expect(upstream.seen.length).toBe(before)
+  })
+
+  test("client_metadata is not recorded, and a new conversation opens its own lane instead of reading as a changed prefix", async () => {
+    const trace = path.join(temp, "codex.trace.jsonl")
+    const proxy = startProxy({ provider: "openai", port: 0, upstream: upstream.url, trace })
+    const send = async (conversation: string, turn: string, input: unknown[]) => {
+      const response = await fetch(`${proxy.url}/v1/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${SECRET}`, "session-id": conversation },
+        body: JSON.stringify(codexBody(conversation, turn, input)),
+      })
+      await response.text()
+      await Bun.sleep(20)
+    }
+    await send("conv-a", "turn-1", [say("First task.")])
+    await send("conv-a", "turn-2", [say("First task."), say("And then?")])
+    await send("conv-b", "turn-1", [say("Second task.")])
+    await send("conv-b", "turn-2", [say("Second task."), say("Go on.")])
+    proxy.stop()
+    const text = readFileSync(trace, "utf8")
+    expect(text).not.toContain("synthetic-installation")
+    expect(text).not.toContain(SECRET)
+    const { records } = parseTrace(text)
+    expect(records.map((record) => [record.headers?.["session-id"], record.lane])).toEqual([
+      ["conv-a", "main"],
+      ["conv-a", "main"],
+      ["conv-b", "lane-2"],
+      ["conv-b", "lane-2"],
+    ])
+    expect(records[0]!.params).toEqual({ store: false, prompt_cache_key: "conv-a" })
+  })
+})
+
 describe("compressed request bodies", () => {
   test("a zstd-encoded request is forwarded as is and recorded", async () => {
     const trace = path.join(temp, "zstd.trace.jsonl")
