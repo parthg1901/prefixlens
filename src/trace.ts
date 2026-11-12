@@ -237,11 +237,22 @@ export function openTraceWriter(file: string): TraceWriter {
   if (open) return open
   const existing = existsSync(file) ? parseTrace(readFileSync(file, "utf8")).records : []
   const encoder = createTraceEncoder({ after: existing })
+  // The latest full request of each lane, the least recently used lane first.
+  const lanes = new Map<string, TraceLane>()
+  const remember = (record: TraceRecord) => {
+    if (!record.request) return
+    const cacheKey = record.headers?.["session-id"] ?? (typeof record.params?.prompt_cache_key === "string" ? record.params.prompt_cache_key : undefined)
+    lanes.delete(laneKey(record))
+    lanes.set(laneKey(record), { name: record.lane ?? "main", ...(record.session ? { session: record.session } : {}), ...(cacheKey === undefined ? {} : { cacheKey }), blocks: record.request.blocks })
+  }
+  for (const record of existing) remember(record)
   const writer = {
     file,
     append(record: TraceRecord) {
       writePrivateFile(resolved, encoder.encode(record) + "\n", { append: true })
+      remember(record)
     },
+    lanes: () => [...lanes.values()],
   }
   writers.set(resolved, writer)
   return writer
@@ -269,6 +280,20 @@ export function readableByOthers(file: string): boolean {
 export interface TraceWriter {
   file: string
   append(record: TraceRecord): void
+  /**
+   * The lanes the file holds, each with its latest full request, the least recently used first:
+   * what a recorder opened on an existing trace needs to continue its conversations.
+   */
+  lanes(): TraceLane[]
+}
+
+/** A lane of a trace file as its latest full-request record left it. */
+export interface TraceLane {
+  name: string
+  session?: string
+  /** The cache key of that record: its `session-id` header, else `prompt_cache_key`. */
+  cacheKey?: string
+  blocks: Block[]
 }
 
 const writers = new Map<string, TraceWriter>()

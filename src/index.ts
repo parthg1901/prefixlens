@@ -15,7 +15,7 @@ export type { Api, ExchangeInput, RecordInput, ResponseSummary } from "./record/
 export { canonicalizeAnthropic, canonicalizeGemini, canonicalizeOpenAI, canonicalizeRequest, canonicalJson, hashContent, makeBlock, stripCacheControl } from "./canonical.ts"
 export type { CanonicalRequest, Provider } from "./canonical.ts"
 export { createTraceEncoder, openTraceWriter, parseTrace, serializeTrace, TRACE_FORMAT_VERSION, TRACE_VERSION } from "./trace.ts"
-export type { Block, BlockKind, Fidelity, Hint, HintKind, ParseResult, TraceEncoderOptions, TraceRecord, TraceWriter, Usage } from "./trace.ts"
+export type { Block, BlockKind, Fidelity, Hint, HintKind, ParseResult, TraceEncoderOptions, TraceLane, TraceRecord, TraceWriter, Usage } from "./trace.ts"
 export { normalizeUsage, promptTokens } from "./usage.ts"
 export { CAUSE_GROUP, comparePrefix, firstDivergence, PARAMS_IGNORED } from "./diff.ts"
 export { PARAM_RULES, paramRule, UNKNOWN_PARAM } from "./params.ts"

@@ -89,6 +89,14 @@ export class Recorder {
   constructor(options: RecorderOptions) {
     this.options = options
     this.writer = options.trace === false || options.trace === undefined ? undefined : openTraceWriter(options.trace)
+    // A trace that already has records (a proxy restarted on the same file) holds conversations this
+    // recorder may be asked to continue: without their lanes, its first call would open `main` again and
+    // be compared with whatever that lane held before, not with the call it follows.
+    for (const lane of this.writer?.lanes() ?? []) {
+      // The recorder names a subagent's lanes `subagent:<id>`, then `subagent:<id>:2` and so on.
+      const group = /^subagent:[^:]+/.exec(lane.name)?.[0]
+      this.lanes.push({ name: lane.name, ...(lane.session ? { session: lane.session } : {}), ...(group ? { group } : {}), ...(lane.cacheKey === undefined ? {} : { cacheKey: lane.cacheKey }), blocks: prefixBlocks(lane.blocks), calls: [], used: ++this.clock })
+    }
   }
 
   get file() {
