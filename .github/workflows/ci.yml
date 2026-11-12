@@ -1,7 +1,10 @@
 name: CI
 
+# Pushes to main and pull requests. A branch with an open pull request is tested once, by the
+# pull_request event, not a second time by its push.
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:

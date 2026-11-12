@@ -2,7 +2,8 @@ name: Release
 
 # Pushing a tag v<version> publishes that version to npm with trusted publishing (OIDC from this
 # workflow, no stored token) and provenance, then creates a GitHub release from its CHANGELOG.md
-# section. Nothing is published while package.json has "private": true: the first job fails, and
+# section. A version that is already on the registry (the first one, published by hand) is not
+# published again and only gets its GitHub release. Nothing is published while package.json has "private": true: the first job fails, and
 # every later job depends on it. One-time setup and the release checklist: docs/releasing.md.
 
 on:
@@ -108,8 +109,17 @@ jobs:
       # No NODE_AUTH_TOKEN: npm authenticates with the workflow's OIDC token through the trusted
       # publisher configured for this package on npmjs.com. --provenance makes the publish fail rather
       # than go out without a provenance statement (npm cannot make one from a private repository).
-      - name: Publish
-        run: npm publish --provenance --access public
+      # The first version is published by hand, before a trusted publisher can exist (docs/releasing.md),
+      # and npm refuses the same version twice. When this exact version is already on the registry the
+      # step does nothing, so the run goes on to create the GitHub release.
+      - name: Publish, unless this version is already on the registry
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ "$(npm view "prefixlens@$version" version 2>/dev/null)" = "$version" ]; then
+            echo "prefixlens@$version is already on the registry: not publishing again"
+          else
+            npm publish --provenance --access public
+          fi
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
