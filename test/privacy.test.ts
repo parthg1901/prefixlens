@@ -2,14 +2,14 @@
 // and the README's "Security and privacy" section, one test each.
 
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { buildRecord, createLens, readResponse, wrap } from "../src/index.ts"
 import { comparePrefix } from "../src/diff.ts"
 import { RECORDED_HEADERS } from "../src/record/exchange.ts"
 import { startProxy } from "../src/proxy.ts"
-import { parseTrace } from "../src/trace.ts"
+import { parseTrace, readableByOthers, writePrivateFile } from "../src/trace.ts"
 import { startFakeUpstream } from "./fake-upstream.ts"
 
 const temp = mkdtempSync(path.join(os.tmpdir(), "prefixlens-privacy-"))
@@ -209,5 +209,37 @@ describe("identifying request fields", () => {
     expect(comparePrefix(call({ user: "a" }), call({}))).toBeNull()
     expect(comparePrefix(call({ metadata: { a: 1 } }), call({ metadata: { a: 2 } }))).toBeNull()
     expect(comparePrefix(call({ user: "a" }), call({ user: "b" }))).toMatchObject({ cause: "params_changed", detail: { keys: ["user"] } })
+  })
+})
+
+describe("trace file permissions", () => {
+  const mode = (file: string) => statSync(file).mode & 0o777
+  const response = { id: "msg_mode", model: "claude-test-1", usage: { input_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 2 } }
+
+  test("a new trace and the directories made for it are private to the owner (proxy and library)", async () => {
+    const proxyTrace = path.join(temp, "private", "proxy", "run.trace.jsonl")
+    const proxy = startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace: proxyTrace })
+    await (await fetch(`${proxy.url}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).text()
+    await Bun.sleep(20)
+    proxy.stop()
+    const libraryTrace = path.join(temp, "private", "library", "run.trace.jsonl")
+    createLens({ trace: libraryTrace }).observe({ request: body, response })
+    for (const file of [proxyTrace, libraryTrace]) {
+      expect(mode(file)).toBe(0o600)
+      expect(mode(path.dirname(file))).toBe(0o700)
+    }
+    expect(mode(path.join(temp, "private"))).toBe(0o700)
+  })
+
+  test("a file that already exists keeps its mode, and readableByOthers says so", () => {
+    const file = path.join(temp, "shared.trace.jsonl")
+    writeFileSync(file, "")
+    chmodSync(file, 0o644)
+    createLens({ trace: file }).observe({ request: body, response })
+    expect(mode(file)).toBe(0o644)
+    expect(readableByOthers(file)).toBe(true)
+    writePrivateFile(path.join(temp, "own.trace.jsonl"), "")
+    expect(readableByOthers(path.join(temp, "own.trace.jsonl"))).toBe(false)
+    expect(readableByOthers(path.join(temp, "missing.trace.jsonl"))).toBe(false)
   })
 })

@@ -2,7 +2,7 @@
 // the normative description; this file is its TypeScript form plus a reader
 // that validates records once at the boundary.
 
-import { appendFileSync, existsSync, readFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { isPosition, type Position } from "./breaks.ts"
 import { hashContent, isRecord } from "./canonical.ts"
@@ -171,11 +171,30 @@ export function openTraceWriter(file: string): TraceWriter {
   const writer = {
     file,
     append(record: TraceRecord) {
-      appendFileSync(resolved, encoder.encode(record) + "\n")
+      writePrivateFile(resolved, encoder.encode(record) + "\n", { append: true })
     },
   }
   writers.set(resolved, writer)
   return writer
+}
+
+/**
+ * Writes (or appends) a file that holds trace data: prompts, code, tool
+ * outputs, often an email address. A new file is created readable and
+ * writable by its owner only (0600), and missing parent directories owner-only
+ * (0700). A file or directory that already exists keeps its mode: prefixlens
+ * never changes permissions you set (`readableByOthers` says when they are open).
+ */
+export function writePrivateFile(file: string, text: string, options: { append?: boolean } = {}) {
+  mkdirSync(path.dirname(path.resolve(file)), { recursive: true, mode: 0o700 })
+  if (options.append) appendFileSync(file, text, { mode: 0o600 })
+  else writeFileSync(file, text, { mode: 0o600 })
+}
+
+/** True when `file` exists and its group or other users may read it. */
+export function readableByOthers(file: string): boolean {
+  const info = statSync(file, { throwIfNoEntry: false })
+  return info !== undefined && (info.mode & 0o044) !== 0
 }
 
 export interface TraceWriter {
