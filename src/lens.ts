@@ -23,6 +23,8 @@ export interface LensOptions {
   session?: string
   /** Lane for every record. Default: assigned by shared prefix, so independent conversations get their own lanes. */
   lane?: string
+  /** Keep identifying request fields (`metadata`, `user`, `safety_identifier`, `client_metadata`) in `params`. Default false: they are left out. */
+  keepIdentifiers?: boolean
 }
 
 export interface Observation {
@@ -63,6 +65,7 @@ export function createLens(options: LensOptions = {}): Lens {
     ...(options.onSkip ? { onSkip: options.onSkip } : {}),
     ...(options.session ? { session: options.session } : {}),
     ...(options.lane ? { lane: options.lane } : {}),
+    ...(options.keepIdentifiers ? { keepIdentifiers: true } : {}),
   }
   const recorder = new Recorder({ ...shared, name: "observe" })
   return {

@@ -27,6 +27,23 @@ const SAMPLING_BASIS = "sampling and output limits apply after the prompt is rea
 // Sampling, output limits and bookkeeping: applied after the prompt is read, so they cannot change the cached prefix.
 const OUTPUT_ONLY = ["max_tokens", "max_output_tokens", "max_completion_tokens", "temperature", "top_p", "top_k", "stop", "stop_sequences", "n", "seed", "logprobs", "top_logprobs", "metadata", "user", "stream", "stream_options"]
 
+/**
+ * Request fields that identify a person, an account, a device or an
+ * installation, and are not model input: Anthropic's `metadata.user_id`
+ * (Claude Code puts its account id, a persistent device id and the session id
+ * there), OpenAI's `metadata`, `user` and `safety_identifier`, and Codex's
+ * `client_metadata`. Recorders leave them out of `params` unless asked to keep
+ * them. `prompt_cache_key` and the `session-id` header are not here: they are
+ * cache-routing keys the analysis needs (SPEC 2, 8.1).
+ */
+export const IDENTIFYING_PARAMS = ["metadata", "user", "safety_identifier", "client_metadata"]
+
+/** `params` without the identifying fields, unless `keep` is set. */
+export function withoutIdentifiers(params: Record<string, unknown>, keep = false): Record<string, unknown> {
+  if (keep) return params
+  return Object.fromEntries(Object.entries(params).filter(([key]) => !IDENTIFYING_PARAMS.includes(key)))
+}
+
 const none = (evidence: Evidence, basis: string): ParamRule => ({ effect: "none", evidence, basis })
 const prefix = (from: InvalidatesFrom, evidence: Evidence, basis: string): ParamRule => ({ effect: "prefix", from, evidence, basis })
 
@@ -57,6 +74,7 @@ export const PARAM_RULES: Record<string, Record<string, ParamRule>> = {
     response_format: prefix("start", "assumed", "Chat Completions name for the structured-output format the guide documents"),
     context_management: prefix("start", "documented", `${OPENAI_DOCS}: compaction replaces earlier conversation content`),
     prompt_cache_key: prefix("start", "documented", "OpenAI prompt-caching guide: keys influence routing to a cache"),
+    user: prefix("start", "documented", "OpenAI API reference: `user` is used to bucket similar requests for cache hits, and is deprecated in favour of prompt_cache_key"),
     store: none("assumed", "response storage only"),
     include: none("assumed", "selects response fields only"),
     service_tier: none("assumed", "billing and capacity only"),

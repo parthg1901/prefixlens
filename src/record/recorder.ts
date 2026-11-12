@@ -19,6 +19,8 @@ export interface RecorderOptions {
   lane?: string
   /** `source.recorder` of each record: "proxy", "wrap", "observe". */
   name: string
+  /** Keep identifying request fields (`metadata`, `user`, `safety_identifier`, `client_metadata`) in `params`. Default false. */
+  keepIdentifiers?: boolean
 }
 
 /** Header a harness may send to choose the lane (and session) of a call itself; the proxy strips it before forwarding. */
@@ -83,7 +85,7 @@ export class Recorder {
     return {
       finish: (response) => {
         if (!end()) return undefined
-        const built = buildRecord({ api, body, response: readResponse(api, response), startedAt, ...(input.headers ? { headers: input.headers } : {}), ...(session ? { session } : {}), lane: lane.name, recorder: input.recorder ?? this.options.name })
+        const built = buildRecord({ api, body, response: readResponse(api, response), startedAt, ...(input.headers ? { headers: input.headers } : {}), ...(session ? { session } : {}), lane: lane.name, recorder: input.recorder ?? this.options.name, ...(this.options.keepIdentifiers ? { keepIdentifiers: true } : {}) })
         if (typeof built === "string") {
           this.options.onSkip?.(`not recorded: ${built}`)
           return undefined

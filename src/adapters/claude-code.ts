@@ -19,6 +19,7 @@ import { readdir, stat } from "node:fs/promises"
 import path from "node:path"
 import { canonicalizeAnthropic, isRecord } from "../canonical.ts"
 import type { Block, Hint, TraceRecord } from "../trace.ts"
+import { withoutIdentifiers } from "../params.ts"
 import { normalizeUsage } from "../usage.ts"
 import type { ImportOptions, ImportResult } from "./index.ts"
 
@@ -193,7 +194,7 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
         ts,
         provider: "anthropic",
         model: typeof message.model === "string" ? message.model : String(params.model ?? ""),
-        params: canonicalizeAnthropic({ ...params, messages: [] }).params,
+        params: withoutIdentifiers(canonicalizeAnthropic({ ...params, messages: [] }).params),
         fidelity: "full-request",
         request: { blocks },
         usage: normalizeUsage("anthropic", message.usage),

@@ -22,6 +22,8 @@ export interface ProxyOptions {
   trace: string
   onRecord?: (record: TraceRecord) => void
   onSkip?: (reason: string) => void
+  /** Keep identifying request fields (`metadata`, `user`, `safety_identifier`, `client_metadata`) in `params`. Default false. */
+  keepIdentifiers?: boolean
 }
 
 // Hop-by-hop headers, and ours. Everything else, credentials included, goes upstream untouched (and is never written).
@@ -35,6 +37,7 @@ export function startProxy(options: ProxyOptions) {
     name: "proxy",
     ...(options.onRecord ? { onRecord: options.onRecord } : {}),
     ...(options.onSkip ? { onSkip: options.onSkip } : {}),
+    ...(options.keepIdentifiers ? { keepIdentifiers: true } : {}),
   })
   const server = Bun.serve({
     port: options.port ?? 8787,

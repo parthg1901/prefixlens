@@ -2,7 +2,7 @@
 // first block that changed, and names the change in plain words.
 
 import { canonicalJson, hashContent, isRecord } from "./canonical.ts"
-import { paramRule, type InvalidatesFrom } from "./params.ts"
+import { IDENTIFYING_PARAMS, paramRule, type InvalidatesFrom } from "./params.ts"
 import { changedSpan, flatten, renderDiff } from "./textdiff.ts"
 import type { Block, Hint } from "./trace.ts"
 
@@ -494,7 +494,9 @@ function spanAround(a: string, b: string) {
 
 function changedParams(prev: Record<string, unknown>, next: Record<string, unknown>, provider: string | undefined): string[] {
   const keys = [...new Set([...Object.keys(prev), ...Object.keys(next)])].filter((key) => paramRule(provider, key).effect === "prefix")
-  return keys.filter((key) => canonicalJson(prev[key] ?? null) !== canonicalJson(next[key] ?? null)).sort()
+  // Identifying fields are left out of records by default, so one missing on either side is unknown, not changed.
+  const known = keys.filter((key) => !IDENTIFYING_PARAMS.includes(key) || (key in prev && key in next))
+  return known.filter((key) => canonicalJson(prev[key] ?? null) !== canonicalJson(next[key] ?? null)).sort()
 }
 
 function pick(object: Record<string, unknown>, keys: string[]) {

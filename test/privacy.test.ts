@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { buildRecord, createLens, readResponse, wrap } from "../src/index.ts"
+import { comparePrefix } from "../src/diff.ts"
 import { RECORDED_HEADERS } from "../src/record/exchange.ts"
 import { startProxy } from "../src/proxy.ts"
 import { parseTrace } from "../src/trace.ts"
@@ -40,8 +41,10 @@ const KEPT = {
 const PROMPT = "Synthetic privacy prompt: refactor the private module."
 const SYSTEM = "Synthetic privacy system prompt."
 const TOOL = { name: "synthetic_privacy_tool", description: "Synthetic privacy tool description.", input_schema: { type: "object" } }
+// The shape Claude Code sends in metadata.user_id: an account id, a persistent device id and the session id.
+const USER_ID = JSON.stringify({ device_id: "synthetic-privacy-device-id", account_uuid: "synthetic-privacy-account-uuid", session_id: "synthetic-privacy-claude-session" })
 // Non-streamed so the fake upstream answers with its JSON body, whose text is "Synthetic answer.".
-const body = { model: "claude-test-1", max_tokens: 100, tools: [TOOL], system: SYSTEM, messages: [{ role: "user", content: PROMPT }] }
+const body = { model: "claude-test-1", max_tokens: 100, metadata: { user_id: USER_ID }, tools: [TOOL], system: SYSTEM, messages: [{ role: "user", content: PROMPT }] }
 const RESPONSE_TEXT = "Synthetic answer."
 
 function expectNothingSensitive(text: string) {
@@ -49,6 +52,7 @@ function expectNothingSensitive(text: string) {
     expect(text).not.toContain(value)
     expect(text.toLowerCase()).not.toContain(`"${name}"`)
   }
+  for (const value of ["synthetic-privacy-device-id", "synthetic-privacy-account-uuid", "synthetic-privacy-claude-session", '"metadata"']) expect(text).not.toContain(value)
 }
 
 describe("the recording proxy", () => {
@@ -152,5 +156,58 @@ describe("wrap, lens.fetch, lens.observe and buildRecord", () => {
       expect(text).toContain(PROMPT)
       expect(typeof record === "string" ? undefined : record.headers).toEqual(KEPT)
     }
+  })
+})
+
+describe("identifying request fields", () => {
+  const openai = {
+    model: "gpt-test-1",
+    user: "synthetic-privacy-user@example.invalid",
+    safety_identifier: "synthetic-privacy-safety-id",
+    metadata: { customer: "synthetic-privacy-customer" },
+    client_metadata: { "x-codex-installation-id": "synthetic-privacy-installation" },
+    prompt_cache_key: "synthetic-privacy-cache-key",
+    reasoning: { effort: "low" },
+    instructions: "Synthetic.",
+    input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Hi." }] }],
+  }
+  const response = readResponse("openai-responses", { type: "response.completed", response: { id: "resp_privacy", usage: { input_tokens: 2000, input_tokens_details: { cached_tokens: 0 }, output_tokens: 1 } } })
+  const build = (keepIdentifiers?: boolean) => {
+    const record = buildRecord({ api: "openai-responses", body: openai, response, startedAt: 0, ...(keepIdentifiers === undefined ? {} : { keepIdentifiers }) })
+    if (typeof record === "string") throw new Error(record)
+    return record
+  }
+
+  test("are left out by default; the cache key and other parameters are kept", () => {
+    const record = build()
+    expect(Object.keys(record.params!).sort()).toEqual(["prompt_cache_key", "reasoning"])
+    const text = JSON.stringify(record)
+    for (const value of ["synthetic-privacy-user", "synthetic-privacy-safety-id", "synthetic-privacy-customer", "synthetic-privacy-installation"]) expect(text).not.toContain(value)
+  })
+
+  test("are kept with keepIdentifiers, and leaving them out changes no block hash", () => {
+    const kept = build(true)
+    expect(Object.keys(kept.params!).sort()).toEqual(["client_metadata", "metadata", "prompt_cache_key", "reasoning", "safety_identifier", "user"])
+    expect(kept.request!.blocks).toEqual(build().request!.blocks)
+  })
+
+  test("the proxy, wrap and lens.observe leave out Anthropic metadata.user_id, and keep it when asked", async () => {
+    const response = { id: "msg_privacy", model: "claude-test-1", usage: { input_tokens: 5, cache_read_input_tokens: 10, cache_creation_input_tokens: 0, output_tokens: 2 } }
+    expect(createLens({ trace: false }).observe({ request: body, response })!.params).toEqual({ max_tokens: 100 })
+    expect(createLens({ trace: false, keepIdentifiers: true }).observe({ request: body, response })!.params).toEqual({ max_tokens: 100, metadata: { user_id: USER_ID } })
+    const trace = path.join(temp, "keep.trace.jsonl")
+    const proxy = startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace, keepIdentifiers: true })
+    await (await fetch(`${proxy.url}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).text()
+    await Bun.sleep(20)
+    proxy.stop()
+    expect(parseTrace(readFileSync(trace, "utf8")).records.at(-1)!.params).toEqual({ max_tokens: 100, metadata: { user_id: USER_ID } })
+  })
+
+  test("a field left out on one side is not read as a change; a recorded change of OpenAI's user is", () => {
+    const blocks = build().request!.blocks
+    const call = (params: Record<string, unknown>) => ({ provider: "openai", model: "gpt-test-1", params, blocks })
+    expect(comparePrefix(call({ user: "a" }), call({}))).toBeNull()
+    expect(comparePrefix(call({ metadata: { a: 1 } }), call({ metadata: { a: 2 } }))).toBeNull()
+    expect(comparePrefix(call({ user: "a" }), call({ user: "b" }))).toMatchObject({ cause: "params_changed", detail: { keys: ["user"] } })
   })
 })
