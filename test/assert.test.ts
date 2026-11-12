@@ -101,6 +101,19 @@ describe("assertPrefixStable", () => {
     expect(assertPrefixStable(turn2, responses(turn2.input.slice(0, 2)), { allowBreak: { after: 6 } }).ok).toBe(true)
   })
 
+  test("a sliding history window is named, with the fix for it, on Responses and Chat Completions bodies too", () => {
+    const question = (n: number) => say("user", `Synthetic question ${n}.`)
+    const window = failure(responses([question(1), reply("One."), question(2), reply("Two."), question(3)]), responses([question(2), reply("Two."), question(3), reply("Three."), question(4)]))
+    expect(window).toStartWith("prefix not stable: 2 oldest messages removed from the start of history (3 kept, 2 appended)")
+    expect(window).toContain("first changed block: 5 of 9 (message #1, user); blocks 1-4 still match, everything from block 5 on is re-read")
+    expect(window).toContain("fix: a window that slides on every call re-reads the whole history each time: drop history in chunks at a saved boundary (cut rarely, and replay from the same cut until the next one), or keep history append-only;")
+    const chat = (messages: unknown[]) => ({ model: "gpt-test-1", messages: [{ role: "system", content: "Synthetic." }, ...messages] })
+    const slid = explainPrefixDiff(chat([user("One?"), assistant("One."), user("Two?")]), chat([assistant("One."), user("Two?"), assistant("Two.")]))
+    expect(slid.change?.summary).toBe("1 oldest message removed from the start of history (2 kept, 1 appended)")
+    // A deliberate cut can be declared; it must leave the tools and instructions alone.
+    expect(assertPrefixStable(chat([user("One?"), assistant("One."), user("Two?")]), chat([assistant("One."), user("Two?")]), { allowBreak: { after: "system", reason: "history trimmed" } }).ok).toBe(true)
+  })
+
   test("a model change fails unless the break may start anywhere", () => {
     const other = responses(turn2.input, { model: "gpt-test-2" })
     expect(failure(turn2, other)).toContain("the model changed, so nothing in the cache applies")

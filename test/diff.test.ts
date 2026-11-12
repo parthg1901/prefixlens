@@ -212,6 +212,62 @@ describe("comparePrefix", () => {
     expect(change?.summary).toBe("history compacted (12 → 2 messages from message #1)")
   })
 
+  test("a compaction that keeps a tail of recent messages word for word is still a compaction", () => {
+    const long = Array.from({ length: 12 }, (_, index) => (index % 2 === 0 ? user(`u${index}`) : assistant(`a${index}`)))
+    // A summary exchange in front, the last 6 of 12 messages replayed unchanged, then new ones: half of the old history survives.
+    const compacted = [user("What did we do so far?"), assistant("Summary of the conversation so far"), ...long.slice(-6), user("continue")]
+    const change = comparePrefix(view(body(long)), view(body(compacted)))
+    expect(change?.cause).toBe("compaction")
+    expect(change?.summary).toBe("history compacted (12 → 9 messages from message #1)")
+    expect(change?.detail).toEqual({ message: 1, before: 12, after: 9, kept: 6 })
+    // From a later message on: the first two are kept in place, four are summarized, the tail survives.
+    const partial = comparePrefix(view(body(long)), view(body([...long.slice(0, 2), user("Summary of messages 3 to 6"), ...long.slice(6)])))
+    expect(partial?.summary).toBe("history compacted (12 → 9 messages from message #3)")
+    expect(partial?.detail).toMatchObject({ message: 3, kept: 6 })
+  })
+
+  test("one message replaced by one is an edit, and two merged into one a reshaped step, not a compaction", () => {
+    const long = Array.from({ length: 8 }, (_, index) => (index % 2 === 0 ? user(`u${index}`) : assistant(`a${index}`)))
+    expect(comparePrefix(view(body(long)), view(body([long[0], assistant("reworded"), ...long.slice(2)])))?.cause).toBe("message_edited")
+    const calls = [user("go"), toolUse("t1", "read_file"), toolUse("t2", "run_shell"), toolResult("t1", "one"), user("next")]
+    const merged = [user("go"), { role: "assistant", content: [...toolUse("t1", "read_file").content, ...toolUse("t2", "run_shell").content] }, ...calls.slice(3)]
+    expect(comparePrefix(view(body(calls)), view(body(merged)))?.cause).toBe("messages_merged")
+  })
+
+  describe("a sliding history window", () => {
+    const u = (n: number) => user(`question ${n}`)
+    const a = (n: number) => assistant(`answer ${n}`)
+
+    test("the oldest messages removed, everything after them replayed, is named with the count", () => {
+      const change = comparePrefix(view(body([u(1), a(1), u(2), a(2), u(3)])), view(body([u(2), a(2), u(3), a(3), u(4)])))
+      expect(change?.cause).toBe("oldest_messages_removed")
+      expect(CAUSE_GROUP[change!.cause]).toBe("history rewrites")
+      expect(change?.summary).toBe("2 oldest messages removed from the start of history (3 kept, 2 appended)")
+      expect(change?.detail).toEqual({ message: 1, removed: 2, kept: 3, before: 5, after: 5 })
+      expect(change?.block_index).toBe(TOOLS.length + 1)
+    })
+
+    test("however many go, and also when only the first one does", () => {
+      const long = Array.from({ length: 10 }, (_, index) => [u(index + 1), a(index + 1)]).flat()
+      const far = comparePrefix(view(body(long)), view(body([...long.slice(16), u(11)])))
+      expect(far?.summary).toBe("16 oldest messages removed from the start of history (4 kept, 1 appended)")
+      const one = comparePrefix(view(body(long)), view(body(long.slice(1))))
+      expect(one?.summary).toBe("1 oldest message removed from the start of history (19 kept, 0 appended)")
+    })
+
+    test("with something new put in front it is a compaction; with a later message changed too it is not a window", () => {
+      const prev = [u(1), a(1), u(2), a(2), u(3), a(3), u(4)]
+      expect(comparePrefix(view(body(prev)), view(body([user("Summary."), ...prev.slice(4), a(4)])))?.cause).toBe("compaction")
+      const changed = comparePrefix(view(body(prev)), view(body([...prev.slice(2, 6), user("question 4, reworded")])))
+      expect(changed?.cause).not.toBe("oldest_messages_removed")
+    })
+
+    test("a harness compaction hint still names it a compaction", () => {
+      const change = comparePrefix(view(body([u(1), a(1), u(2), a(2), u(3)])), view(body([u(2), a(2), u(3)]), { hints: [{ kind: "compaction" }] }))
+      expect(change?.cause).toBe("compaction")
+    })
+  })
+
   test("a conversation rewound to an earlier prompt", () => {
     const long = Array.from({ length: 12 }, (_, index) => (index % 2 === 0 ? user(`u${index}`) : assistant(`a${index}`)))
     const change = comparePrefix(view(body(long)), view(body([...long.slice(0, 8), user("edited prompt")])))

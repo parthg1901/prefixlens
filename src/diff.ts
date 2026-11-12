@@ -24,6 +24,7 @@ export type Cause =
   | "thinking_rewritten"
   | "message_inserted"
   | "message_removed"
+  | "oldest_messages_removed"
   | "messages_reordered"
   | "messages_merged"
   | "messages_split"
@@ -61,6 +62,7 @@ export const CAUSE_GROUP: Record<Cause, CauseGroup> = {
   thinking_rewritten: "history rewrites",
   message_inserted: "history rewrites",
   message_removed: "history rewrites",
+  oldest_messages_removed: "history rewrites",
   messages_reordered: "history rewrites",
   messages_merged: "reshaped steps",
   messages_split: "reshaped steps",
@@ -262,13 +264,29 @@ function explainMessages(prev: Comparable, next: Comparable, blockIndex: number)
       region: "messages",
       detail: { message: position, before: prevMessages.length, after: nextMessages.length },
     }
-  if (compactionHint || isCompaction(prevHashes, nextHashes, index))
+  const compacted = (kept?: number): PrefixChange => ({
+    cause: "compaction",
+    summary: `history compacted (${prevMessages.length} → ${nextMessages.length} messages from message #${position})`,
+    region: "messages",
+    detail: { message: position, before: prevMessages.length, after: nextMessages.length, ...(kept === undefined ? {} : { kept }) },
+  })
+  if (compactionHint) return compacted()
+  // A sliding window: nothing new in front, the oldest messages gone, everything after them replayed as it was.
+  const dropped = index === 0 ? droppedFromStart(prevHashes, nextHashes) : 0
+  if (dropped > 0) {
+    const kept = prevMessages.length - dropped
     return {
-      cause: "compaction",
-      summary: `history compacted (${prevMessages.length} → ${nextMessages.length} messages from message #${position})`,
+      cause: "oldest_messages_removed",
+      summary: `${dropped} oldest ${plural(dropped, "message")} removed from the start of history (${kept} kept, ${nextMessages.length - kept} appended)`,
       region: "messages",
-      detail: { message: position, before: prevMessages.length, after: nextMessages.length },
+      detail: { message: position, removed: dropped, kept, before: prevMessages.length, after: nextMessages.length },
     }
+  }
+  if (isCompaction(prevHashes, nextHashes, index)) return compacted()
+  // A compaction that keeps recent messages: new ones in front, then the old history from a later message on. Two
+  // messages merged into one have the same outline and are named below.
+  const tail = keptTail(prevHashes, nextHashes, index)
+  if (tail !== undefined && !reshape(prevMessages, nextMessages, index)) return compacted(tail)
   if (nextHashes[index] === prevHashes[index + 1] && aligned(prevHashes, index + 1, nextHashes, index))
     return {
       cause: "message_removed",
@@ -375,6 +393,36 @@ function replaced(prev: string[], next: string[], index: number): boolean {
 function isCompaction(prev: string[], next: string[], index: number): boolean {
   const lost = prev.length - index
   return next.length < prev.length - 1 && lost >= Math.max(4, prev.length / 2) && replaced(prev, next, index)
+}
+
+/**
+ * How many of the oldest messages were removed, when that is all that happened to the history that
+ * was sent: every message after them is replayed unchanged and in order, with nothing put in front
+ * (anything new comes after). 0 otherwise.
+ */
+function droppedFromStart(prev: string[], next: string[]): number {
+  for (let count = 1; count < prev.length; count++) {
+    if (prev.length - count > next.length) continue
+    if (prev.every((hash, position) => position < count || next[position - count] === hash)) return count
+  }
+  return 0
+}
+
+/**
+ * The number of old messages a compaction kept word for word, when `next` replaces the messages
+ * from `index` on with fewer new ones and then replays the rest of the old history unchanged and in
+ * order: a summary in front, the recent tail after it, however long that tail is. Undefined when
+ * the history does not have that outline.
+ */
+function keptTail(prev: string[], next: string[], index: number): number | undefined {
+  const old = new Set(prev)
+  for (let from = index + 2; from < prev.length; from++) {
+    const at = next.indexOf(prev[from]!, index + 1)
+    if (at === -1 || at - index >= from - index) continue
+    const replayed = prev.every((hash, position) => position < from || next[at + position - from] === hash)
+    if (replayed && next.slice(index, at).every((hash) => !old.has(hash))) return prev.length - from
+  }
+  return undefined
 }
 
 // A rewind keeps the early conversation and replaces a later stretch of several messages.
