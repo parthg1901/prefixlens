@@ -29,4 +29,3 @@ The checks on real traffic were made on Linux arm64, with Bun 1.4.0 and Node 24.
 - The `opencode` importer on a provider that caches and is priced, and on compactions.
 - The prices in `pricing.json`, against a second source.
 - Real traffic on macOS, on other Node versions, or on Bun before 1.4.0.
-- The release workflow's publish step. 0.5.0 is published by hand.

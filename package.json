@@ -31,7 +31,7 @@
   "type": "module",
   "sideEffects": false,
   "bin": {
-    "prefixlens": "./dist/cli.js"
+    "prefixlens": "dist/cli.js"
   },
   "types": "./dist/index.d.ts",
   "exports": {

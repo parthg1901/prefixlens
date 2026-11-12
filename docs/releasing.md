@@ -9,7 +9,7 @@ Releases are published by `.github/workflows/release.yml` when a tag `v<version>
 
 While `package.json` has `"private": true`, the first job fails with a message saying so, and nothing is published.
 
-The CI workflow runs on every push. The release workflow ran for 0.5.0, which had been published by hand: its checks and tests passed, it skipped the publish and created the GitHub release. Its publish step runs for the first time for 0.5.1.
+The CI workflow runs on every push. The release workflow published 0.5.1 through npm trusted publishing, with a provenance statement, and created its GitHub release; 0.5.0 had been published by hand.
 
 ## Pushing
 
@@ -82,7 +82,7 @@ Sentences that stop being true:
 - [x] `CHANGELOG.md`: set the date in `## [0.5.0] - 2026-11-12` to the day it is published.
 - [x] `docs/releasing.md` (this file): remove "Neither workflow has run yet" at the top once both have.
 - [x] `docs/verification.md`: after the first green CI run, add to its second paragraph: "The test suites run in CI on Linux and macOS, with Bun 1.4.0 and with Node 22.0.0 and 26." Do not write this before CI has passed on every one of those.
-- [ ] `docs/verification.md`: remove the last "Not checked" item ("The release workflow's publish step. 0.5.0 is published by hand.") once 0.5.1 has gone out through the workflow, and keep its first line ("As of …") at the version the checks were made on.
+- [x] `docs/verification.md`: remove the last "Not checked" item ("The release workflow's publish step. 0.5.0 is published by hand.") once 0.5.1 has gone out through the workflow, and keep its first line ("As of …") at the version the checks were made on.
 
 Before the tag:
 
