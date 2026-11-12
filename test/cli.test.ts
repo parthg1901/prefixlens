@@ -38,7 +38,7 @@ describe("cli", () => {
     const report = run(["report", trace])
     expect(report.code).toBe(0)
     expect(report.stdout).toContain("turn 5: miss, tool list changed (+1 tool: 2 → 3), ~$0.02")
-    expect(report.stdout).toContain("1 miss cost $0.02; 1 from tool-list changes")
+    expect(report.stdout).toContain("1 miss cost $0.02 at list prices; 1 from tool-list changes")
     expect(report.stdout).toContain("+ web_fetch")
     expect(report.stdout).not.toContain("\x1b[")
   })
@@ -82,7 +82,7 @@ describe("cli", () => {
     await Bun.write(pricing, JSON.stringify({ models: [{ match: "*", input: 0, output: 0, cache_read: 0, cache_write: 0 }] }))
     const trace = path.join(temp, "free.trace.jsonl")
     run(["import", "claude-code", path.join(fixtures, "claude-code-session.jsonl"), "-o", trace])
-    expect(run(["report", trace, "--pricing", pricing]).stdout).toContain("$0.00 total")
+    expect(run(["report", trace, "--pricing", pricing]).stdout).toContain("$0.00 at API list prices")
   })
 
   test("clear errors", async () => {

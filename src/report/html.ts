@@ -34,7 +34,7 @@ export function renderHtml(analysis: Analysis, options: HtmlOptions = {}): strin
 
 <section class="cards">
   ${card("Cache hit rate", percent(summary.hit_rate), `${tokens(summary.tokens.cache_read)} of ${tokens(summary.tokens.prompt)} prompt tokens read from cache`)}
-  ${card("Total cost", summary.cost ? money(summary.cost.total) : "n/a", summary.cost ? `${money(summary.cost.uncached)} on uncached input and cache writes` : "some models are not in the pricing table")}
+  ${card("Cost at list prices", summary.cost ? money(summary.cost.total) : "n/a", summary.cost ? `${money(summary.cost.uncached)} on uncached input and cache writes; API list prices, not what was paid` : "some models are not in the pricing table")}
   ${card("Lost to misses", summary.cost ? money(summary.cost.misses) : "n/a", `${summary.misses} ${summary.misses === 1 ? "call" : "calls"} missed cached tokens unexpectedly`)}
   ${summary.intentional.breaks > 0 ? card("Intentional breaks", summary.cost ? money(summary.cost.intentional) : "n/a", `${summary.intentional.breaks} declared by the harness: ${summary.intentional.by_reason.map((reason) => `${reason.breaks} ${reason.reason}`).join(", ")}`, "intentional") : ""}
   ${card("Calls", exact(summary.turns), `${summary.status.cold} cold · ${summary.status.hit} hit · ${summary.misses} missed${summary.intentional.breaks > 0 ? ` · ${summary.intentional.breaks} intentional` : ""}`)}

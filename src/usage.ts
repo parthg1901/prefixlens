@@ -2,9 +2,11 @@
 //
 // Anthropic reports uncached input, cache writes and cache reads separately and
 // caches only up to explicit `cache_control` breakpoints. OpenAI and Gemini
-// cache prefixes automatically (OpenAI above ~1024 tokens) and report only the
-// cached part of an input total that already includes it, so there is no
-// cache-write figure: cache_write_tokens is null for them.
+// cache prefixes automatically (OpenAI above ~1024 tokens) and report the
+// cached part of an input total that already includes it. Before GPT-5.6,
+// OpenAI reports no cache-write figure, and Gemini never does, so
+// cache_write_tokens is null for them. GPT-5.6 and later bill and report writes
+// (`cache_write_tokens` in the input details, also part of the input total).
 
 import { isRecord } from "./canonical.ts"
 import type { Usage } from "./trace.ts"
@@ -42,10 +44,11 @@ function fromOpenAI(raw: Record<string, unknown>): Usage {
     ? ((chat ? raw.completion_tokens_details : raw.output_tokens_details) as Record<string, unknown>)
     : {}
   const cached = Math.min(total, count(inputDetails.cached_tokens))
+  const writes = inputDetails.cache_write_tokens === undefined ? null : Math.min(total - cached, count(inputDetails.cache_write_tokens))
   return {
-    input_tokens: total - cached,
+    input_tokens: total - cached - (writes ?? 0),
     cache_read_tokens: cached,
-    cache_write_tokens: null,
+    cache_write_tokens: writes,
     output_tokens: count(chat ? raw.completion_tokens : raw.output_tokens),
     ...(outputDetails.reasoning_tokens !== undefined ? { reasoning_tokens: count(outputDetails.reasoning_tokens) } : {}),
   }

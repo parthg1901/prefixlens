@@ -73,7 +73,7 @@ describe("analyze", () => {
     const analysis = run(records)
     expect(analysis.turns[1]!.cause).toMatchObject({ cause: "provider_side", group: "provider-side misses", confidence: "confirmed" })
     expect(analysis.turns[1]!.cause!.summary).toBe("prefix unchanged and within TTL (30s < 5m): provider-side miss, not caused by the harness")
-    expect(analysis.summary.headline).toBe("1 miss cost $0.06; 1 from provider-side misses")
+    expect(analysis.summary.headline).toBe("1 miss cost $0.06 at list prices; 1 from provider-side misses")
   })
 
   test("a change after the previous call's last cache breakpoint is not blamed for a miss", () => {
@@ -185,7 +185,7 @@ describe("analyze", () => {
       ["tool-list changes", 2],
       ["cache expiry", 1],
     ])
-    expect(summary.headline).toMatch(/^3 misses cost \$0\.\d\d; 2 from tool-list changes, 1 from cache expiry$/)
+    expect(summary.headline).toMatch(/^3 misses cost \$0\.\d\d at list prices; 2 from tool-list changes, 1 from cache expiry$/)
   })
 
   test("unpriced models leave costs null and say so", () => {

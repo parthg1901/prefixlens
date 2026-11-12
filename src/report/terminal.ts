@@ -86,7 +86,7 @@ export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}
   out.push(`  cache hit rate  ${percent(summary.hit_rate)} of prompt tokens read from cache`)
   if (summary.cost)
     out.push(
-      `  cost            ${money(summary.cost.total)} total · ${money(summary.cost.uncached)} on uncached input and cache writes · ${money(summary.cost.misses)} lost to misses${summary.intentional.breaks > 0 ? ` · ${money(summary.cost.intentional)} on intentional breaks` : ""}`,
+      `  cost            ${money(summary.cost.total)} at API list prices · ${money(summary.cost.uncached)} on uncached input and cache writes · ${money(summary.cost.misses)} lost to misses${summary.intentional.breaks > 0 ? ` · ${money(summary.cost.intentional)} on intentional breaks` : ""}`,
     )
   if (summary.reported_cost !== undefined) out.push(`  harness cost    ${money(summary.reported_cost)} as recorded by the harness`)
   out.push(

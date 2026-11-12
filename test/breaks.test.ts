@@ -96,7 +96,7 @@ describe("declared intentional breaks", () => {
     expect(result.summary.intentional).toEqual({ breaks: 1, by_reason: [{ reason: "compaction", breaks: 1, cost: turn.miss_cost! }] })
     expect(result.summary.cost!.intentional).toBe(turn.miss_cost!)
     expect(result.summary.cost!.misses).toBe(0)
-    expect(result.summary.headline).toBe(`No unexpected cache misses after the first call in each lane; 1 intentional break declared by the harness cost $${turn.miss_cost!.toFixed(2)} (1 compaction).`)
+    expect(result.summary.headline).toBe(`No unexpected cache misses after the first call in each lane; 1 intentional break declared by the harness cost $${turn.miss_cost!.toFixed(2)} at list prices (1 compaction).`)
   })
 
   test("a declared revert excuses a history rewind", () => {

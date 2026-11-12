@@ -3,7 +3,7 @@
 
 import { coveringBreaks, declaredBreaks, describePosition, keptBlocks, type DeclaredBreak } from "./breaks.ts"
 import { CAUSE_GROUP, comparePrefix, type Cause, type CauseGroup, type PrefixChange, type Region } from "./diff.ts"
-import { costOf, findPrice, providerFacts, ratesFor, uncachedRate, type Cost, type PricingTable } from "./pricing.ts"
+import { costOf, DEFAULT_STALE_AFTER_DAYS, findPrice, pricedDays, pricingAge, providerFacts, ratesFor, uncachedRate, type Cost, type PricingTable } from "./pricing.ts"
 import { laneKey, type Block, type Fidelity, type TraceRecord, type Usage } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
 
@@ -113,6 +113,8 @@ export interface AnalyzeOptions {
   pricing: PricingTable
   /** Lost tokens at or below this count are treated as a hit. Default 128 (OpenAI caches in 128-token steps). */
   toleranceTokens?: number
+  /** The date the pricing table's age is measured against. Default: now. */
+  now?: Date
 }
 
 export function analyze(records: TraceRecord[], options: AnalyzeOptions): Analysis {
@@ -125,7 +127,7 @@ export function analyze(records: TraceRecord[], options: AnalyzeOptions): Analys
     last.set(lane, index)
     return analyzeTurn(records, index, previousIndex, options.pricing, tolerance, warnings)
   })
-  return { version: 1, summary: summarize(turns, records), turns, warnings }
+  return { version: 1, summary: summarize(turns, records, options.pricing, options.now ?? new Date()), turns, warnings }
 }
 
 function analyzeTurn(
@@ -139,8 +141,8 @@ function analyzeTurn(
   const record = records[index]!
   const previous = previousIndex === undefined ? undefined : records[previousIndex]
   const prompt = promptTokens(record.usage)
-  const facts = providerFacts(pricing, record.provider)
-  const price = findPrice(pricing, record.provider, record.model)
+  const price = findPrice(pricing, record.provider, record.model, { ts: record.ts, ...(record.params ? { params: record.params } : {}) })
+  const facts = providerFacts(pricing, record.provider, price)
   const rates = price ? ratesFor(price, prompt) : undefined
   const cost = rates ? costOf(record.usage, rates) : null
   const base = {
@@ -351,7 +353,7 @@ function fromChange(change: PrefixChange, confidence: Confidence): CauseInfo {
   }
 }
 
-function summarize(turns: TurnResult[], records: TraceRecord[]): Summary {
+function summarize(turns: TurnResult[], records: TraceRecord[], pricing: PricingTable, now: Date): Summary {
   const sum = (pick: (turn: TurnResult) => number) => turns.reduce((total, turn) => total + pick(turn), 0)
   const tokens = {
     prompt: sum((turn) => turn.prompt_tokens),
@@ -399,10 +401,11 @@ function summarize(turns: TurnResult[], records: TraceRecord[]): Summary {
           `${usageOnly} of ${turns.length} calls are usage-only: hit rates and costs are exact, but root-cause diffs need full requests (causes shown are inferred from timing and harness hints).`,
         ]
       : []),
-    ...(unpriced.length > 0 ? [`No price for ${unpriced.join(", ")}: add it to the pricing table to get costs.`] : []),
+    ...(unpriced.length > 0 ? [`No price for ${unpricedList(turns, pricing)}: add it to the pricing table to get costs.`] : []),
     ...(status.uncached > 0
       ? [`${status.uncached} calls had nothing cacheable from the call before (no cache writes, or a prefix below the minimum cacheable size).`]
       : []),
+    ...(turns.some((turn) => turn.cost !== null) ? pricingNotes(pricing, now) : []),
   ]
   return {
     turns: turns.length,
@@ -427,12 +430,41 @@ function headline(misses: number, cost: number | null, groups: GroupTotal[], rea
   const declared =
     breaks === 0
       ? ""
-      : `${breaks} intentional ${breaks === 1 ? "break" : "breaks"} declared by the harness${intentionalCost === null ? "" : ` cost ${money(intentionalCost)}`} (${reasons.map((reason) => `${reason.breaks} ${reason.reason}`).join(", ")})`
+      : `${breaks} intentional ${breaks === 1 ? "break" : "breaks"} declared by the harness${intentionalCost === null ? "" : ` cost ${money(intentionalCost)} at list prices`} (${reasons.map((reason) => `${reason.breaks} ${reason.reason}`).join(", ")})`
   if (misses === 0)
     return breaks === 0 ? "No cache misses after the first call in each lane." : `No unexpected cache misses after the first call in each lane; ${declared}.`
-  const costText = cost === null ? "" : ` cost ${money(cost)}`
+  const costText = cost === null ? "" : ` cost ${money(cost)} at list prices`
   const parts = groups.map((group) => (group.group === "unknown causes" ? `${group.misses} with no known cause` : `${group.misses} from ${group.group}`))
   return `${misses} ${misses === 1 ? "miss" : "misses"}${costText}; ${parts.join(", ")}${breaks === 0 ? "" : `. Also ${declared}.`}`
+}
+
+// "gpt-5.6-sol on 2026-12-03 (priced until 2026-11-30)" when the table prices the model, only not on the calls' days.
+function unpricedList(turns: TurnResult[], pricing: PricingTable): string {
+  const groups = new Map<string, TurnResult[]>()
+  for (const turn of turns.filter((turn) => turn.cost === null)) groups.set(turn.model, [...(groups.get(turn.model) ?? []), turn])
+  return [...groups.entries()]
+    .map(([model, list]) => {
+      const periods = pricedDays(pricing, list[0]!.provider, model)
+      if (periods.length === 0) return model
+      const days = [...new Set(list.map((turn) => turn.ts.slice(0, 10)))].sort()
+      const when = days.length === 1 ? days[0] : `${days[0]} to ${days.at(-1)}`
+      const priced = periods.map((period) => (period.from && period.until ? `${period.from} to ${period.until}` : period.from ? `from ${period.from}` : `until ${period.until}`))
+      return `${model} on ${when} (priced ${priced.join(" and ")})`
+    })
+    .join(", ")
+}
+
+function pricingNotes(pricing: PricingTable, now: Date): string[] {
+  const age = pricingAge(pricing, now)
+  const limit = pricing.stale_after_days ?? DEFAULT_STALE_AFTER_DAYS
+  return [
+    "Costs are at API list prices: what these calls would cost billed per token, not what was paid. Calls on a subscription (a Claude plan, ChatGPT sign-in, Codex) are not billed per token, and discounts, batch and priority tiers are not applied.",
+    ...(age === undefined
+      ? ["The pricing table has no as_of date, so how current its prices are is unknown."]
+      : age > limit
+        ? [`The pricing table is ${age} days old (as of ${pricing.as_of}) and prices change: update it or pass a current one with --pricing (see Pricing in the README).`]
+        : []),
+  ]
 }
 
 export function money(value: number): string {

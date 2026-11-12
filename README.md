@@ -83,7 +83,7 @@ Misses
     lost 2,100 of 2,100 cached tokens · vs turn 2 · lane main · confirmed
     + web_fetch
 
-1 miss cost $0.02; 1 from tool-list changes
+1 miss cost $0.02 at list prices; 1 from tool-list changes
 ```
 
 Long sessions hide the hit rows in the terminal (`--all` shows them); the HTML report always has every row, a chart of prompt tokens per call, and the diff for each miss.
@@ -246,7 +246,7 @@ A declaration is not a way to make misses disappear:
    7  10:02:20    gpt-4.1   2,500      0      -     2,500   40     0%  $0.0053  intentional break (revert): conversation rewound at message #3: …
    8  10:02:40    gpt-4.1   2,900      0      -     2,900   40     0%  $0.0061  miss: system prompt changed (part 1 of 1 edited)
 
-1 miss cost $0.0036; 1 from system-prompt changes. Also 2 intentional breaks declared by the harness cost $0.0067 (1 revert, 1 compaction).
+1 miss cost $0.0036 at list prices; 1 from system-prompt changes. Also 2 intentional breaks declared by the harness cost $0.0067 at list prices (1 revert, 1 compaction).
 ```
 
 `assertPrefixStable(prev, next, { allowBreak: "revert" })` allows exactly what a `revert` declaration excuses in the report. The rules are in [SPEC.md section 6.1](SPEC.md#61-declaring-an-intentional-break).
@@ -304,7 +304,47 @@ Any parameter not in the table is assumed to count, so a change is never silentl
 
 ## Pricing
 
-Prices live in [`pricing.json`](pricing.json), not in code. Each model entry has per-million-token rates for input, output, cache reads, 5-minute cache writes and 1-hour cache writes, matched by glob on the model id (with `provider/` prefixes stripped and `.` read as `-`), plus optional tiers by prompt size. Edit it, or pass your own with `--pricing` or `PREFIXLENS_PRICING`. Models missing from the table are reported with token counts and no cost. The Anthropic prices are list prices as of the table's `as_of` date; the OpenAI and Gemini rows are there as a starting point and should be checked.
+Prices live in [`pricing.json`](pricing.json), not in code. The bundled table has the pay-as-you-go API list prices of Anthropic, OpenAI and Gemini text models, standard tier, as published on the providers' own pricing pages and model pages on the table's `as_of` date. Its `sources` section lists every page used and when it was checked, and its `notes` say what is left out.
+
+**Costs are list prices, not your bill.** A report's costs are what the calls would cost billed per token at those prices. Calls made on a subscription (a Claude plan, ChatGPT sign-in, Codex) are not billed per token at all. For them the numbers say what each miss would have cost on an API key, which is still the right scale for comparing misses. Negotiated discounts, Batch and Flex, OpenAI and Gemini priority tiers, data-residency uplifts and per-modality (audio) prices are not applied. A trace does not record how a call was billed, so every report says this in a note.
+
+What an entry holds:
+
+| field | meaning |
+|---|---|
+| `names` | Exact model ids: the provider's id, its documented aliases and dated snapshots (`claude-haiku-4-5`, `claude-haiku-4-5-20251001`). |
+| `input`, `cache_read`, `output` | Per million tokens. Required. |
+| `cache_write` | Write price for the default cache lifetime: Anthropic 5 minutes, OpenAI 30 minutes (GPT-5.6 and later; earlier OpenAI models and Gemini charge no writes). |
+| `cache_write_1h` | Anthropic's 1-hour write price, applied to `cache_write_1h_tokens`. |
+| `cache_write_12h` | OpenAI's 12-hour write price. Recorded only: a trace cannot yet say which OpenAI writes were 12-hour, so all of them are priced at `cache_write`. |
+| `tiers` | Higher prices for the whole request when its prompt (uncached + read + written) is above `above_prompt_tokens`: Claude Haiku 5.5 above 100,000, OpenAI above 272,000, Gemini Pro above 200,000. |
+| `from`, `until` | First and last UTC day a price applies, for promotions that end on a set date. Calls are priced by the day they were sent. |
+| `when_params` | Request parameters that select the price. Anthropic fast mode is `{"speed": "fast"}`. |
+| `cache_ttl_seconds`, `min_cacheable_tokens` | This model's cache lifetime and minimum cacheable prompt, overriding the provider's. They decide when a miss is called expiry and when a prompt is too short to cache. |
+
+**How a model is matched.** The trace's model id and each name are compared after lowercasing and removing these parts:
+
+- router and API prefixes (`openrouter/openai/`, `models/`);
+- Bedrock region and vendor prefixes and version suffixes (`global.anthropic.`, `openai.`, `-v1:0`);
+- the separators `@` (Google Cloud dates) and `.`, which are both read as `-`.
+
+So `anthropic/claude-sonnet-4.5`, `claude-haiku-4-5@20251001` and `us.anthropic.claude-opus-4-1-20250805-v1:0` find their models. Matching then works like this:
+
+- An entry that lists the id wins. Among those, one whose `when_params` match the request beats one without.
+- Nothing else matches. A family name (`gpt-6`), an effort suffix (`gpt-6-luna-high`), a `-fast` suffix the provider does not document, or a hot-swapped alias (`gemini-flash-latest`) gets no price rather than a neighbour's.
+- A model with no price, or none on the day of the call, is reported with its token counts and the note `No price for <model>: add it to the pricing table to get costs.` The rest of the report is unchanged.
+- Your own table may also use glob patterns in a `match` field. They are tried only when no entry lists the id exactly.
+- Two entries that list the same id for overlapping days and the same parameters are an error.
+
+Cloud ids (Bedrock, Google Cloud) are priced at the first-party list price. Those platforms set their own prices.
+
+**Keeping it current.** When the table is more than `stale_after_days` days old (60 in the bundled table) on the day you run a report, the report gives its age. To update prices:
+
+1. Edit `pricing.json`, or copy it and pass your copy with `--pricing <file>` or `PREFIXLENS_PRICING=<file>`.
+2. Change the figures from the provider's pricing page.
+3. Set `as_of` and the provider's `sources.<provider>.checked` to the day you checked.
+
+`--pricing` wins over `PREFIXLENS_PRICING`, which wins over the bundled table.
 
 ## Trace format
 
