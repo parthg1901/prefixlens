@@ -4,7 +4,7 @@
 import { canonicalJson, hashContent, isRecord } from "./canonical.ts"
 import { IDENTIFYING_PARAMS, paramRule, type InvalidatesFrom } from "./params.ts"
 import { changedSpan, flatten, renderDiff } from "./textdiff.ts"
-import type { Block, Hint } from "./trace.ts"
+import { prefixBlocks, type Block, type Hint } from "./trace.ts"
 
 export type Cause =
   | "cold_start"
@@ -76,7 +76,7 @@ export interface PrefixChange {
   /** Plain-English description, e.g. "tool list changed (+2 tools)". */
   summary: string
   region: Region
-  /** Index into the request blocks of the first block that differs. */
+  /** Index of the first block that differs, into the request's prefix blocks (every block but deferred tools: `prefixBlocks`). */
   block_index?: number
   detail: Record<string, unknown>
   /** Small text diff of the first changed block (or params), when content is available. */
@@ -128,9 +128,12 @@ export function firstDivergence(prev: Block[], next: Block[]): number {
  * reappears unchanged at the start of `next`.
  *
  * Changes are reported in invalidation order: the model, then tools and the
- * system prompt, then params, then messages.
+ * system prompt, then params, then messages. Deferred tools are not part of the
+ * prefix and are left out on both sides.
  */
-export function comparePrefix(prev: Comparable, next: Comparable): PrefixChange | null {
+export function comparePrefix(before: Comparable, after: Comparable): PrefixChange | null {
+  const prev = { ...before, blocks: prefixBlocks(before.blocks) }
+  const next = { ...after, blocks: prefixBlocks(after.blocks) }
   if (prev.model !== next.model)
     return {
       cause: "model_changed",

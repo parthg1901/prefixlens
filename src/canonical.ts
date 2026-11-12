@@ -97,6 +97,7 @@ interface Draft {
   content: unknown
   key?: string
   breakpoint?: boolean
+  deferred?: boolean
 }
 
 interface Plan {
@@ -110,7 +111,8 @@ function draft(kind: BlockKind, content: unknown, key?: string, breakpoint?: boo
 }
 
 function hashDraft(planned: Draft): Block {
-  return makeBlock(planned.kind, planned.content, planned.key, planned.breakpoint)
+  const block = makeBlock(planned.kind, planned.content, planned.key, planned.breakpoint)
+  return planned.deferred ? { ...block, deferred: true } : block
 }
 
 // Request fields that never reach the model's prompt and so never affect caching.
@@ -128,9 +130,12 @@ export function canonicalizeAnthropic(body: Record<string, unknown>): CanonicalR
 }
 
 function draftAnthropic(body: Record<string, unknown>): Plan {
-  const tools = asArray(body.tools).map((tool) => {
+  const tools = asArray(body.tools).map((tool): Draft => {
     const stripped = stripCacheControl(tool)
-    return draft("tool", stripped.value, toolName(stripped.value), stripped.marked)
+    const planned = draft("tool", stripped.value, toolName(stripped.value), stripped.marked)
+    // A tool sent with defer_loading is not rendered into the prompt until tool search returns it: it is
+    // recorded, flagged, and left out of prefix comparison (SPEC 4.1).
+    return isRecord(stripped.value) && stripped.value.defer_loading === true ? { ...planned, deferred: true } : planned
   })
   const systemBlocks = systemParts(body.system, "system").map((part) => {
     const stripped = stripCacheControl(part)

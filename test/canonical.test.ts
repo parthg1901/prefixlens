@@ -101,6 +101,20 @@ describe("canonicalizeAnthropic", () => {
     expect(off.blocks.some((block) => block.breakpoint)).toBe(false)
   })
 
+  test("a tool sent with defer_loading is recorded and flagged as not part of the prefix", () => {
+    const deferred = { name: "search_docs", description: "Synthetic deferred tool.", input_schema: { type: "object" }, defer_loading: true }
+    const blocks = canonicalizeAnthropic(body([user("q")], { tools: [...TOOLS, deferred, { ...deferred, name: "eager", defer_loading: false }] })).blocks
+    expect(blocks.filter((block) => block.kind === "tool").map((block) => [block.key, block.deferred === true])).toEqual([
+      ["read_file", false],
+      ["write_file", false],
+      ["run_shell", false],
+      ["search_docs", true],
+      ["eager", false],
+    ])
+    // The block is still the tool as sent, hashed as sent.
+    expect(blocks[3]).toMatchObject({ kind: "tool", content: deferred, hash: hashContent(deferred) })
+  })
+
   test("tolerates a request without tools or system", () => {
     const request = canonicalizeAnthropic({ model: "m", messages: [user("x")] })
     expect(request.blocks).toHaveLength(1)

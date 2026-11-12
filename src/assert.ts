@@ -9,7 +9,7 @@ import { changeStart, declaredBreaks, defaultAfter, describePosition, isPosition
 import { canonicalizeRequest, type CanonicalRequest, type Provider } from "./canonical.ts"
 import { comparePrefix, type Cause, type PrefixChange } from "./diff.ts"
 import { apiFromBody, PROVIDER_OF } from "./record/exchange.ts"
-import type { Block, Hint, TraceRecord } from "./trace.ts"
+import { prefixBlocks, type Block, type Hint, type TraceRecord } from "./trace.ts"
 
 /**
  * A request to compare: a request body as sent to Anthropic Messages, OpenAI
@@ -189,16 +189,17 @@ function comparable(value: RequestLike, options: PrefixOptions) {
     Object.fromEntries(Object.entries(params ?? {}).filter(([key]) => !options.ignoreParams?.includes(key)))
   // Which provider's parameter rules apply: the option, else the trace record's provider, else the body's API.
   const known = options.provider ? { provider: options.provider } : {}
-  if (Array.isArray(value)) return { ...known, model: "", params: {}, blocks: value }
+  // Deferred tools are recorded but are not part of the prefix: block numbers and counts leave them out.
+  if (Array.isArray(value)) return { ...known, model: "", params: {}, blocks: prefixBlocks(value) }
   const body = value as Record<string, unknown>
-  if (Array.isArray(body.blocks)) return { ...known, model: String(body.model ?? ""), params: ignore(body.params as Record<string, unknown>), blocks: body.blocks as Block[] }
+  if (Array.isArray(body.blocks)) return { ...known, model: String(body.model ?? ""), params: ignore(body.params as Record<string, unknown>), blocks: prefixBlocks(body.blocks as Block[]) }
   if (isTraceRecord(value)) {
     if (!value.request) throw new TypeError("prefixlens/test: a usage-only trace record has no request to compare")
-    return { provider: options.provider ?? value.provider, model: value.model ?? "", params: ignore(value.params), blocks: value.request.blocks }
+    return { provider: options.provider ?? value.provider, model: value.model ?? "", params: ignore(value.params), blocks: prefixBlocks(value.request.blocks) }
   }
   const provider = options.provider ?? PROVIDER_OF[apiFromBody(body)]
   const canonical = canonicalizeRequest(provider, body)
-  return { provider, model: canonical.model, params: ignore(canonical.params), blocks: canonical.blocks }
+  return { provider, model: canonical.model, params: ignore(canonical.params), blocks: prefixBlocks(canonical.blocks) }
 }
 
 function isTraceRecord(value: RequestLike): value is TraceRecord {

@@ -35,6 +35,17 @@ describe("parseTrace", () => {
     expect(parseTrace(record({ fidelity: "full-request" })).errors[0]).toContain("request.blocks must be an array")
   })
 
+  test("a deferred tool block keeps its flag through the writer and reader; only a tool can be deferred", () => {
+    const tool = { name: "search_docs", input_schema: { type: "object" }, defer_loading: true }
+    const full = { v: 1, ts: "2026-01-01T00:00:00Z", provider: "anthropic", model: "m", fidelity: "full-request" as const, usage: { ...usageLine, cache_write_tokens: 0 } }
+    const blocks = [{ kind: "tool" as const, key: "search_docs", hash: hashContent(tool), content: tool, deferred: true }]
+    const read = parseTrace(serializeTrace([{ ...full, request: { blocks } }, { ...full, request: { blocks } }]))
+    expect(read.errors).toEqual([])
+    expect(read.records.map((entry) => entry.request!.blocks[0]!.deferred)).toEqual([true, true])
+    const bad = parseTrace(record({ fidelity: "full-request", request: { blocks: [{ kind: "message", hash: "abc", deferred: true }, { kind: "message", hash: "abd", deferred: "yes" }] } }))
+    expect(bad.errors).toEqual(["line 1: request.blocks[0] is deferred: only a tool block can be", "line 1: request.blocks[1].deferred must be a boolean"])
+  })
+
   test("hash-only blocks are allowed; a block with neither is not", () => {
     const ok = parseTrace(record({ fidelity: "full-request", request: { blocks: [{ kind: "tool", hash: "abc" }] } }))
     expect(ok.errors).toEqual([])

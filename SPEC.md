@@ -88,6 +88,7 @@ A full request is a list of blocks in the order the provider assembles the promp
 | `key` | string | no | The tool name for tools; the role for messages (`"user"`, `"assistant"`, `"tool"`, ...). Used in explanations only; not hashed. |
 | `breakpoint` | boolean | no | `true` when a cache breakpoint (Anthropic `cache_control`, OpenAI `prompt_cache_breakpoint`) was set on this block or on a part inside it. |
 | `elided` | boolean | no | 1.2. `true` when binary data inside `content` was replaced by its digest and size (section 4.5). `hash` is then still that of the content as sent, and is required. |
+| `deferred` | boolean | no | `true` on a tool block the request sent with deferred loading (Anthropic: `defer_loading: true` on the tool). The provider does not render such a tool into the prompt until tool search returns it, so it is not part of the cached prefix: adding, removing or editing one cannot cost cached tokens. Writers SHOULD still list it, in its place among the tools and hashed as sent, so the trace shows which tools were deferred. Readers MUST leave `deferred` blocks out when they compare two requests, and count blocks without them: block numbers in a report, an integer `after` (section 6.1) and the position of the last breakpoint all refer to the request's blocks with the deferred ones removed. `request.reuse` (section 4.6) counts every listed block, deferred ones included. Only a `tool` block may be `deferred`. A reader that does not know the field compares the block like any other tool, as before it existed. |
 | `unknown` | boolean | no | 1.2. `true` when the writer knows that a block was sent at this position but not what it held. `hash` is then a placeholder rather than a SHA-256 (e.g. `"unknown:claude-code-billing-attribution"`), the same on every record for which the writer cannot tell the block apart, and `content` MUST be absent; `key` MAY name what the block is. Placing it keeps every other block, and every breakpoint, at the position it was sent at, so a trace from this writer and one from a recorder of the same call agree on every block but this one. A change confined to an unknown block cannot be seen: a miss it caused reads as one with the prefix intact. |
 
 ### 4.2 Order
@@ -104,6 +105,8 @@ Within each group, blocks keep the order of the request:
 | Gemini | each entry of `tools[].functionDeclarations`; other tool entries (e.g. `{"googleSearch": {}}`) whole | each part of `systemInstruction.parts` | each element of `contents` |
 
 "Leading" means before the first element with any other role; a system or developer message later in the conversation is a message block, so the order rule holds.
+
+A tool sent with deferred loading keeps its place among the tool blocks and is marked `deferred` (section 4.1); it is listed, but is not part of the prefix.
 
 The tools-before-system order matches Anthropic's documented render order (tools, then system, then messages). For OpenAI and Gemini the provider's internal order is not documented; the order above is a convention, and since a change anywhere in the prefix invalidates what follows it, the first changed block still identifies the cause.
 
@@ -157,7 +160,7 @@ Even with content deduplicated, listing every block's hash on every line makes a
 - "Previous" means the closest earlier line in the file with the same `session` and `lane` and `fidelity: "full-request"`; usage-only records in between are skipped.
 - N MUST NOT exceed that record's block count; if there is no such record, N MUST be 0. Readers MUST reject the record otherwise.
 - The block-order rule of section 4.2 applies to the resolved list.
-- A writer that reuses a block with a different `breakpoint` value than before must list that block instead, since reuse copies the flag. In practice: reuse the longest leading run of blocks whose `hash`, `kind`, `key` and `breakpoint` are all unchanged.
+- A writer that reuses a block with a different `breakpoint` (or `deferred`) value than before must list that block instead, since reuse copies the flags. In practice: reuse the longest leading run of blocks whose `hash`, `kind`, `key`, `breakpoint` and `deferred` are all unchanged.
 - Omitting `reuse` (or writing 0) and listing every block is always valid.
 
 ## 5. Fidelity

@@ -6,7 +6,7 @@ import { coveringBreaks, declaredBreaks, describePosition, keptBlocks, type Decl
 import { CAUSE_GROUP, comparePrefix, type Cause, type CauseGroup, type PrefixChange, type Region } from "./diff.ts"
 import { resolvePrice, type CatalogueTable, type PriceSources, type Resolution } from "./catalogue.ts"
 import { costOf, DEFAULT_STALE_AFTER_DAYS, findFamily, pricedDays, pricingAge, providerFacts, ratesFor, uncachedRate, type Cost, type PricingTable } from "./pricing.ts"
-import { laneKey, type Billing, type Block, type Fidelity, type TraceRecord, type Usage } from "./trace.ts"
+import { laneKey, prefixBlocks, type Billing, type Block, type Fidelity, type TraceRecord, type Usage } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
 
 export type Status = "cold" | "hit" | "partial" | "miss" | "uncached"
@@ -207,11 +207,11 @@ function analyzeTurn(
           : "partial"
   const missCost = rates && lost > 0 && (status === "miss" || status === "partial") ? (lost * Math.max(0, uncachedRate(record.usage, rates) - rates.cache_read)) / 1e6 : rates ? 0 : null
   const full = record.fidelity === "full-request" && previous.fidelity === "full-request" && record.request && previous.request
+  // The prompt prefix of each request: deferred tools are recorded but not rendered into the prompt, so they are not compared.
+  const before = full ? prefixBlocks(previous.request!.blocks) : []
+  const sent = full ? prefixBlocks(record.request!.blocks) : []
   const change = full
-    ? comparePrefix(
-        { provider: previous.provider, model: previous.model, params: previous.params, blocks: previous.request!.blocks },
-        { provider: record.provider, model: record.model, params: record.params, blocks: record.request!.blocks, hints: record.hints },
-      )
+    ? comparePrefix({ provider: previous.provider, model: previous.model, params: previous.params, blocks: before }, { provider: record.provider, model: record.model, params: record.params, blocks: sent, hints: record.hints })
     : null
   const ttl = previous.cache_ttl_seconds ?? facts.cache_ttl_seconds
   const turn = {
@@ -233,10 +233,10 @@ function analyzeTurn(
         { intentional: true, checked: false, note: "usage-only: where the prefix changed cannot be checked against the declaration" },
       )
     // With explicit caching the previous call cached only up to its last breakpoint, so a change after it cannot explain the loss.
-    const lastBreakpoint = explicitCaching(previous) ? previous.request!.blocks.findLastIndex((block) => block.breakpoint) : -1
+    const lastBreakpoint = explicitCaching(previous) ? before.findLastIndex((block) => block.breakpoint) : -1
     const afterCached = change?.block_index !== undefined && lastBreakpoint !== -1 && change.block_index > lastBreakpoint
     const cause = confirmedCause(afterCached ? null : change, gap, ttl, previous.usage.cache_write_tokens ?? 0, [previous.headers?.["session-id"], record.headers?.["session-id"]])
-    const verdict = judgeDeclared(declared, afterCached ? null : change, previous.request!.blocks)
+    const verdict = judgeDeclared(declared, afterCached ? null : change, before)
     if (!afterCached) return withDeclared({ ...turn, cause }, verdict)
     const where = `cached prefix unchanged (the first change, at block ${change!.block_index! + 1}, is after the previous call's last cache breakpoint)`
     return withDeclared({ ...turn, cause: { ...cause, summary: cause.summary.replace(/^prefix unchanged/, where) }, prefix_change: fromChange(change!, "confirmed") }, verdict)

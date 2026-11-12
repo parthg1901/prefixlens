@@ -137,6 +137,17 @@ describe("assertPrefixStable", () => {
     expect(result.change).toMatchObject({ cause: "params_changed", summary: "request parameters changed: tool_choice", detail: { from: "messages" } })
   })
 
+  test("deferred tools are not prefix blocks: adding or removing one keeps the prefix, and they are not counted", () => {
+    const deferred = (name: string) => ({ name, description: `Synthetic deferred ${name}.`, input_schema: { type: "object" }, defer_loading: true })
+    const first = body([user("Hi.")], { tools: [TOOLS[0], deferred("search_docs"), TOOLS[1], TOOLS[2]] })
+    const second = body([user("Hi."), assistant("Hello.")], { tools: [...TOOLS, deferred("search_code")] })
+    expect(assertPrefixStable(first, second)).toMatchObject({ stable: true, appended: 1, unchanged: 5 })
+    // Block numbers count prefix blocks only: the edited system prompt is block 4 of 5, as without the deferred tool.
+    const edited = explainPrefixDiff(first, body([user("Hi.")], { tools: first.tools, system: "Changed." }))
+    expect(edited.block).toEqual({ number: 4, kind: "system", label: "system part 1" })
+    expect(edited.message).toContain("first changed block: 4 of 5 (system part 1)")
+  })
+
   test("a Gemini body needs provider: gemini", () => {
     const gemini = (contents: unknown[]) => ({ model: "gemini-test", systemInstruction: { parts: [{ text: "Synthetic." }] }, contents })
     const hi = { role: "user", parts: [{ text: "Hi." }] }

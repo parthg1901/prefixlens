@@ -33,6 +33,20 @@ export interface Block {
    * placeholder, constant for as long as the writer cannot tell the block changed, and there is no content.
    */
   unknown?: boolean
+  /**
+   * True for a tool the request sent with deferred loading (Anthropic `defer_loading: true`): the provider keeps
+   * it out of the rendered prompt until tool search returns it, so it is recorded but is not part of the cached
+   * prefix (SPEC 4.1). `prefixBlocks` leaves such blocks out.
+   */
+  deferred?: boolean
+}
+
+/**
+ * The blocks that make up the prompt prefix: every block except deferred tools, which the provider
+ * does not render into the prompt. Comparisons, block numbers and positions all count these blocks only.
+ */
+export function prefixBlocks(blocks: Block[]): Block[] {
+  return blocks.some((block) => block.deferred) ? blocks.filter((block) => !block.deferred) : blocks
 }
 
 export interface Usage {
@@ -260,7 +274,7 @@ export interface TraceWriter {
 const writers = new Map<string, TraceWriter>()
 
 function sameBlock(a: Block, b: Block): boolean {
-  return a.hash === b.hash && a.kind === b.kind && a.key === b.key && Boolean(a.breakpoint) === Boolean(b.breakpoint)
+  return a.hash === b.hash && a.kind === b.kind && a.key === b.key && Boolean(a.breakpoint) === Boolean(b.breakpoint) && Boolean(a.deferred) === Boolean(b.deferred)
 }
 
 function parseJson(line: string): unknown {
@@ -352,6 +366,8 @@ function readBlocks(value: unknown, problems: string[], warnings: string[], line
     const hash = block.hash ?? hashContent(block.content)
     if (block.elided !== undefined && typeof block.elided !== "boolean") problems.push(`request.blocks[${index}].elided must be a boolean`)
     if (block.unknown !== undefined && typeof block.unknown !== "boolean") problems.push(`request.blocks[${index}].unknown must be a boolean`)
+    if (block.deferred !== undefined && typeof block.deferred !== "boolean") problems.push(`request.blocks[${index}].deferred must be a boolean`)
+    if (block.deferred === true && block.kind !== "tool") problems.push(`request.blocks[${index}] is deferred: only a tool block can be`)
     if (block.unknown === true && (block.hash === undefined || block.content !== undefined)) problems.push(`request.blocks[${index}] is unknown: it needs a placeholder hash and no content`)
     // An elided block's content is not what was sent, so its hash cannot be checked against it.
     if (block.hash !== undefined && block.content !== undefined && block.elided !== true && hashContent(block.content) !== block.hash)

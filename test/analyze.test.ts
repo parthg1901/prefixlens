@@ -111,6 +111,19 @@ describe("analyze", () => {
     expect(turn.prefix_change?.cause).toBe("message_edited")
   })
 
+  test("a deferred tool added between two calls is not a prefix change: it is not in the prompt", () => {
+    const deferred = { name: "search_docs", description: "Synthetic deferred tool.", input_schema: { type: "object" }, defer_loading: true }
+    const records = [fullRecord(body(m1), usage(10, 0, 5000)), fullRecord(body(m2, { tools: [...TOOLS, deferred] }), usage(10, 5000, 300))]
+    const turn = run(records).turns[1]!
+    expect(turn.status).toBe("hit")
+    expect(turn.prefix_change).toBeUndefined()
+    // The trace still shows it.
+    expect(records[1]!.request!.blocks.find((block) => block.deferred)?.key).toBe("search_docs")
+    // The same tool sent without deferred loading is in the prompt, and is the cause of a miss.
+    const eager = [fullRecord(body(m1), usage(10, 0, 5000)), fullRecord(body(m2, { tools: [...TOOLS, { ...deferred, defer_loading: false }] }), usage(10, 0, 5300))]
+    expect(run(eager).turns[1]!.cause?.summary).toBe("tool list changed (+1 tool: 3 → 4)")
+  })
+
   test("no cache writes means nothing to miss", () => {
     const records = [fullRecord(body(m1), usage(5000, 0, 0)), fullRecord(body(m2), usage(5300, 0, 0))]
     const result = run(records)

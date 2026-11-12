@@ -3,7 +3,7 @@
 
 import zlib from "node:zlib"
 import { canonicalizeRequest, canonicalizeRequestAsync, isRecord, type CanonicalRequest } from "../canonical.ts"
-import { openTraceWriter, type Billing, type Block, type TraceRecord } from "../trace.ts"
+import { openTraceWriter, prefixBlocks, type Billing, type Block, type TraceRecord } from "../trace.ts"
 import { apiFromBody, apiFromPath, noUsageReason, PROVIDER_OF, readResponse, recordFrom, type Api } from "./exchange.ts"
 
 export interface RecorderOptions {
@@ -215,7 +215,9 @@ export class Recorder {
    * Rules 2 and 3 skip a lane whose cache key differs: a harness that names its
    * conversations (Codex sends its thread id as session-id) started another one.
    */
-  private assignLane(blocks: Block[], session: string | undefined, forced: string | undefined, cacheKey: string | undefined, began: number, group?: string): Lane {
+  private assignLane(sent: Block[], session: string | undefined, forced: string | undefined, cacheKey: string | undefined, began: number, group?: string): Lane {
+    // Lanes follow the prompt prefix, which deferred tools are not part of.
+    const blocks = prefixBlocks(sent)
     const candidates = this.lanes.filter((lane) => lane.session === session && (forced !== undefined || lane.group === group))
     // Calls that ended before this one began can never be in flight for a later call either.
     for (const lane of candidates) lane.calls = lane.calls.filter((other) => other.ended === undefined || other.ended >= began)
