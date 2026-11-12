@@ -194,7 +194,7 @@ const FIXES: Partial<Record<Cause, string>> = {
   message_inserted: "append new messages at the end; inserting into history moves everything after it.",
   message_removed: "do not drop sent messages; if this was a deliberate compaction, revert or refused exchange, declare it with allowBreak (\"compaction\", \"revert\", \"refusal\").",
   oldest_messages_removed:
-    "a window that slides on every call re-reads the whole history each time: drop history in chunks at a saved boundary (cut rarely, and replay from the same cut until the next one), or keep history append-only; declare a deliberate cut with { allowBreak: { after: \"system\", reason: \"history trimmed\" } }.",
+    "a window that slides on every call re-reads the whole history each time: drop history in chunks at a saved boundary (cut rarely, and replay from the same cut until the next one), or keep history append-only.",
   history_truncated: "if this was a deliberate compaction or revert, declare it with allowBreak (\"compaction\", \"revert\").",
   history_rewound: "if this was a deliberate revert, declare it with { allowBreak: \"revert\" }.",
   compaction: "a compaction always breaks the prefix; mark it with { allowBreak: { reason: \"compaction\" } }.",
