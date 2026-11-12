@@ -42,7 +42,7 @@ record options:
   --host <address>      address to listen on (default 127.0.0.1)
   -o, --out <file>      trace to append to (default prefixlens.trace.jsonl)
   --upstream <url>      where to forward (default https://api.anthropic.com or https://api.openai.com)
-  --allow-origin <o>    let browser pages from these origins (comma-separated, or *) call the proxy
+  --allow-origin <o>    do not refuse requests with these Origin values (comma-separated, or *)
   --keep-identifiers    keep metadata, user, safety_identifier and client_metadata in params
   --keep-binary         keep base64 images, documents and audio instead of their SHA-256 and size
   --quiet               do not print a line per recorded call

@@ -1,6 +1,6 @@
-// The recording proxy: forwards every request to the real API unchanged and
-// appends each model call to a trace. Point a harness at it with
-// ANTHROPIC_BASE_URL or OPENAI_BASE_URL.
+// The recording proxy: forwards every request to the real API, body and
+// credentials as sent, and appends each model call to a trace. Point a harness
+// at it with ANTHROPIC_BASE_URL or OPENAI_BASE_URL.
 
 import { copyResponse, observeBody } from "./record/fetch.ts"
 import { DECODED_ENCODINGS, serve } from "./runtime/server.ts"
@@ -28,8 +28,10 @@ export interface ProxyOptions {
   /** Keep base64 images, documents, audio and files in the trace instead of their SHA-256 and size. Default false. */
   keepBinary?: boolean
   /**
-   * Browser origins allowed to call the proxy, e.g. `["http://localhost:3000"]`, or `["*"]` for any.
+   * `Origin` values that are not refused, e.g. `["http://localhost:3000"]`, or `["*"]` for any.
    * Default none: a request with an `Origin` header (sent by browsers, never by harness CLIs) is refused.
+   * This only lets the request through: the proxy adds no CORS response headers and forwards a preflight
+   * like any other request, so a page can read the answer only if the upstream's own CORS headers allow it.
    */
   allowedOrigins?: string[]
   /** Called with each start-up warning (a non-loopback listen address, a plain-HTTP upstream). Default: printed to stderr. */
@@ -156,9 +158,10 @@ function refusal(headers: Headers, configured: string, allowedOrigins: string[])
   if (name === undefined || !(isLoopback(name) || name === bare(configured).toLowerCase()))
     return `the Host header ${host === null ? "is missing" : `"${host}" is not a loopback address or the address the proxy listens on`}`
   const origin = headers.get("origin")
-  if (origin !== null && !allowedOrigins.includes("*") && !allowedOrigins.includes(origin))
-    return `requests from web pages are refused (Origin ${origin}); start the proxy with --allow-origin ${origin} to allow this one`
-  return undefined
+  if (origin === null || allowedOrigins.includes("*") || allowedOrigins.includes(origin)) return undefined
+  // Every sandboxed frame and every page opened from a file sends "null", so allowing it is not suggested.
+  if (origin === "null") return "requests from web pages are refused (Origin null, which a sandboxed page or a page opened from a file sends; it names no page that could be allowed on its own)"
+  return `requests from web pages are refused (Origin ${origin}); start the proxy with --allow-origin ${origin} to allow this one`
 }
 
 function startupWarnings(hostname: string, upstream: URL, trace: string): string[] {

@@ -75,6 +75,11 @@ describe("the proxy's request guard", () => {
     expect(preflight.status).toBe(403)
     expect(upstream.seen.length).toBe(before)
     expect(skipped.at(-1)).toContain("--allow-origin https://attacker.example")
+    // "null" is what every sandboxed frame and local file sends: refused, and allowing it is not suggested.
+    expect(await send(port, { host: `127.0.0.1:${port}`, origin: "null" })).toBe(403)
+    expect(skipped.at(-1)).toContain("Origin null")
+    expect(skipped.at(-1)).not.toContain("--allow-origin")
+    expect(upstream.seen.length).toBe(before)
   })
 
   test("relays an Origin that was explicitly allowed, and only that one", async () => {
