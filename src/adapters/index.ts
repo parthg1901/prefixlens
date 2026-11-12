@@ -51,10 +51,10 @@ export const ADAPTERS: Adapter[] = [
   {
     name: "opencode",
     fidelity: "usage-only",
-    description: "opencode local storage: opencode.db (SQLite) or the legacy storage/ JSON directory.",
+    description: "opencode local storage: opencode.db or opencode-<channel>.db (SQLite), or the legacy storage/ JSON directory.",
     defaultPath: "~/.local/share/opencode/opencode.db",
     diagnoses:
-      "Usage only: hit rates and costs per model call, with causes inferred from model changes, timing, compactions, agent switches and pruned tool outputs. opencode does not log the tool list, system prompt or history each call was sent with, so no block diffs; other misses are 'cause unknown'.",
+      "Usage only: hit rates and costs per model call, with causes inferred from model changes, timing, compactions, agent switches and pruned tool outputs. opencode does not log the tool list, system prompt or history each call was sent with, so no block diffs; other misses are 'cause unknown'. Checked against opencode's table definitions and stored types in its source, not yet on a database a running opencode wrote. Calls opencode records only as events (title generation) are missed.",
     import: importOpencode,
     list: listOpencodeSessions,
   },

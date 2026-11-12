@@ -1,20 +1,27 @@
 // opencode local storage, ~/.local/share/opencode (XDG data dir; also on macOS).
+// The database is opencode.db, or opencode-<channel>.db for other release channels.
 //
 // Three layouts are read:
-// - SQLite opencode.db, v1 tables: session, message, part. Each row's `data`
-//   column is JSON. An assistant message can span several model calls; each
-//   call ends with a `step-finish` part that carries that call's tokens.
-// - SQLite opencode.db, newer tables: session_v2, session_message. Each
-//   `assistant` row is one model call with its own tokens; `compaction` rows
-//   record the compaction call.
+// - SQLite, newer tables: session_v2, session_message. Each `assistant` row is
+//   one model call with its own tokens; `compaction` rows carry the usage of
+//   the compaction (summed over its calls). A fresh install has only these.
+// - SQLite, v1 tables: session, message, part. Each row's `data` column is
+//   JSON. An assistant message can span several model calls; each call ends
+//   with a `step-finish` part that carries that call's tokens. An upgraded
+//   install keeps these next to the newer tables, which hold a one-row copy
+//   of each v1 message under the same id; the v1 parts are read instead.
 // - Legacy JSON files: storage/session/<project>/<id>.json,
 //   storage/message/<session>/<id>.json, storage/part/<message>/<id>.json,
 //   with the same shapes as the v1 `data` columns.
 //
+// These follow opencode's table definitions and stored message types in its
+// source; no database written by a running opencode has been read yet.
+//
 // opencode stores the conversation and per-call usage, but not the request it
 // sent (system prompt, tool list, exact replayed history), so every record is
 // usage-only. Hints carry what the log does show: compactions, agent
-// switches, and tool outputs pruned from history.
+// switches, and tool outputs pruned from history. Calls opencode records only
+// as events (title generation, failed attempts a retry overwrote) are missed.
 
 import { Database } from "bun:sqlite"
 import { readdir, stat } from "node:fs/promises"
@@ -97,6 +104,10 @@ async function openSource(input: string): Promise<Source> {
   const info = await stat(input)
   if (info.isFile()) return sqliteSource(input)
   if (await exists(path.join(input, "opencode.db"))) return sqliteSource(path.join(input, "opencode.db"))
+  // Builds on other release channels name the database opencode-<channel>.db.
+  const channels = (await readdir(input)).filter((name) => /^opencode-[\w.-]+\.db$/.test(name))
+  if (channels.length === 1) return sqliteSource(path.join(input, channels[0]!))
+  if (channels.length > 1) throw new Error(`${input} has several opencode databases (${channels.join(", ")}); pass one of them`)
   const storage = (await exists(path.join(input, "storage", "message"))) ? path.join(input, "storage") : input
   if (await exists(path.join(storage, "message"))) return jsonSource(storage)
   throw new Error(`${input} is neither an opencode database nor a storage directory`)
@@ -132,7 +143,6 @@ function sqliteSource(file: string): Source {
           .all()
           .map((row) => ({ id: row.id, title: row.title ?? undefined, parent: row.parent_id ?? undefined, updated: row.time_updated }))
       : []
-  const inNext = (id: string) => next && db.query("SELECT 1 FROM session_message WHERE session_id = ? LIMIT 1").get(id) !== null
   return {
     sessions() {
       // A migrated database has a session in both layouts; prefer the newer one.
@@ -141,27 +151,34 @@ function sqliteSource(file: string): Source {
       return [...sessions.values()]
     },
     calls(session) {
-      if (inNext(session)) {
-        const rows = db
-          .query<{ id: string; type: string; time_created: number; data: string }, [string]>(
-            "SELECT id, type, time_created, data FROM session_message WHERE session_id = ? ORDER BY seq",
-          )
-          .all(session)
-        return nextCalls(session, rows.map((row) => ({ id: row.id, type: row.type, time: row.time_created, data: parse(row.data) })))
-      }
-      const messages = db
-        .query<{ id: string; time_created: number; data: string }, [string]>("SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created, id")
-        .all(session)
-        .map((row) => ({ id: row.id, time: row.time_created, data: parse(row.data) }))
-      const parts = db
-        .query<{ id: string; message_id: string; time_created: number; data: string }, [string]>(
-          "SELECT id, message_id, time_created, data FROM part WHERE session_id = ? ORDER BY id",
+      // An upgraded database keeps the v1 tables and copies each v1 message into session_message under
+      // the same id, as one row with the last step's tokens; the v1 parts keep every step, so they win.
+      const old = v1 ? v1SessionCalls(session) : { calls: [], events: [], ids: new Set<string>() }
+      if (!next) return old
+      const rows = db
+        .query<{ id: string; type: string; time_created: number; data: string }, [string]>(
+          "SELECT id, type, time_created, data FROM session_message WHERE session_id = ? ORDER BY seq",
         )
         .all(session)
-        .map((row) => ({ id: row.id, message: row.message_id, time: row.time_created as number | undefined, data: parse(row.data) }))
-      return v1Calls(session, messages, parts)
+        .filter((row) => !old.ids.has(row.id))
+      const fresh = nextCalls(session, rows.map((row) => ({ id: row.id, type: row.type, time: row.time_created, data: parse(row.data) })))
+      return { calls: [...old.calls, ...fresh.calls].toSorted((a, b) => a.ts - b.ts), events: [...old.events, ...fresh.events] }
     },
     close: () => db.close(),
+  }
+
+  function v1SessionCalls(session: string) {
+    const messages = db
+      .query<{ id: string; time_created: number; data: string }, [string]>("SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created, id")
+      .all(session)
+      .map((row) => ({ id: row.id, time: row.time_created, data: parse(row.data) }))
+    const parts = db
+      .query<{ id: string; message_id: string; time_created: number; data: string }, [string]>(
+        "SELECT id, message_id, time_created, data FROM part WHERE session_id = ? ORDER BY id",
+      )
+      .all(session)
+      .map((row) => ({ id: row.id, message: row.message_id, time: row.time_created as number | undefined, data: parse(row.data) }))
+    return { ...v1Calls(session, messages, parts), ids: new Set(messages.map((message) => message.id)) }
   }
 }
 
@@ -271,6 +288,7 @@ function nextCalls(session: string, rows: { id: string; type: string; time: numb
     if (row.type === "compaction") {
       events.push({ ts: created, hint: { kind: "compaction", detail: `${str(data.reason) ?? ""} compaction`.trim() } })
       if (isRecord(data.tokens))
+        // The row's tokens and cost are the total over every call the compaction made.
         calls.push({ session, id: row.id, ts: created, provider: str(model.providerID) ?? "", model: str(model.id) ?? "", tokens: data.tokens, cost: num(data.cost), compactionCall: true })
     }
     if (row.type === "assistant" && isRecord(data.tokens))

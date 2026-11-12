@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { importClaudeCode } from "../src/adapters/claude-code.ts"
@@ -220,6 +220,74 @@ describe("opencode adapter", () => {
       ["m6", ["agent_switch", "compaction"]],
     ])
     expect(records[0]!.usage.cache_write_tokens).toBe(3000)
+  })
+
+  // Table definitions as opencode's current schema creates them (session_v2, session_message), plus the
+  // v1 tables an upgraded install keeps. Content is synthetic.
+  const nextTables = (db: Database) => {
+    db.run("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, time_created INTEGER, time_updated INTEGER)")
+    db.run("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT)")
+  }
+  const T1 = Date.parse("2026-01-01T11:00:00Z")
+  const anthropicModel = { id: "claude-opus-5-5", providerID: "anthropic" }
+  const usage = (input: number, read: number, write: number) => ({ input, output: 10, reasoning: 0, cache: { read, write } })
+
+  test("a fresh database with only the newer tables: a session without messages (an empty subagent) imports as nothing", async () => {
+    const file = path.join(temp, "fresh.db")
+    const db = new Database(file)
+    nextTables(db)
+    db.run("INSERT INTO session_v2 VALUES ('ses_root', NULL, 'root', 0, 9000)")
+    db.run("INSERT INTO session_v2 VALUES ('ses_kid', 'ses_root', 'empty child', 0, 8000)")
+    db.run("INSERT INTO session_message VALUES ('a1', 'ses_root', 'assistant', 0, ?, ?, ?)", [T1, T1, JSON.stringify({ agent: "build", model: anthropicModel, tokens: usage(5, 0, 2000), time: { created: T1 } })])
+    db.close()
+    const { records } = await importOpencode(file, { session: "ses_root" })
+    expect(records.map((record) => [record.id, record.lane])).toEqual([["a1", "main"]])
+    expect((await importOpencode(file, { session: "ses_kid" })).records).toEqual([])
+  })
+
+  test("an upgraded database: every v1 step is kept, the one-row copy of each v1 message is not counted again, newer rows are added", async () => {
+    const file = path.join(temp, "upgraded.db")
+    const db = new Database(file)
+    db.run("CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, title TEXT, time_created INTEGER, time_updated INTEGER)")
+    db.run("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT)")
+    db.run("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT)")
+    nextTables(db)
+    db.run("INSERT INTO session VALUES ('ses_up', 'proj', NULL, 'upgraded', 0, 5000)")
+    db.run("INSERT INTO session_v2 VALUES ('ses_up', NULL, 'upgraded', 0, 9000)")
+    const old = { id: "msg_old", role: "assistant", providerID: "anthropic", modelID: "claude-opus-5-5", time: { created: T1 } }
+    db.run("INSERT INTO message VALUES ('msg_old', 'ses_up', ?, ?, ?)", [T1, T1, JSON.stringify(old)])
+    const parts: [string, number, object][] = [
+      ["prt_1", T1, { type: "step-start" }],
+      ["prt_2", T1 + 2000, { type: "step-finish", tokens: usage(5, 0, 2000), cost: 0.01 }],
+      ["prt_3", T1 + 3000, { type: "step-start" }],
+      ["prt_4", T1 + 5000, { type: "step-finish", tokens: usage(5, 2000, 100), cost: 0.002 }],
+    ]
+    for (const [id, time, data] of parts) db.run("INSERT INTO part VALUES (?, 'msg_old', 'ses_up', ?, ?, ?)", [id, time, time, JSON.stringify(data)])
+    // The upgrade's copy: one row with the last step's tokens and the whole message's cost.
+    const copy = { agent: "build", model: anthropicModel, tokens: usage(5, 2000, 100), cost: 0.012, time: { created: T1 } }
+    db.run("INSERT INTO session_message VALUES ('msg_old', 'ses_up', 'assistant', 0, ?, ?, ?)", [T1, T1, JSON.stringify(copy)])
+    const later = { agent: "build", model: anthropicModel, tokens: usage(5, 2100, 50), cost: 0.001, time: { created: T1 + 60000 } }
+    db.run("INSERT INTO session_message VALUES ('a_new', 'ses_up', 'assistant', 1, ?, ?, ?)", [T1 + 60000, T1 + 60000, JSON.stringify(later)])
+    db.close()
+    const { records } = await importOpencode(file, { session: "ses_up" })
+    expect(records.map((record) => [record.id, record.usage.cache_read_tokens, record.usage.reported_cost])).toEqual([
+      ["prt_2", 0, 0.01],
+      ["prt_4", 2000, 0.002],
+      ["a_new", 2100, 0.001],
+    ])
+  })
+
+  test("a data directory whose database is named for its release channel (opencode-<channel>.db)", async () => {
+    const dir = path.join(temp, "channel")
+    mkdirSync(dir)
+    const db = new Database(path.join(dir, "opencode-local.db"))
+    nextTables(db)
+    db.run("INSERT INTO session_v2 VALUES ('ses_ch', NULL, 'channel', 0, 1000)")
+    db.run("INSERT INTO session_message VALUES ('c1', 'ses_ch', 'assistant', 0, ?, ?, ?)", [T1, T1, JSON.stringify({ agent: "build", model: anthropicModel, tokens: usage(5, 0, 900), time: { created: T1 } })])
+    db.close()
+    expect((await importOpencode(dir, {})).records.map((record) => record.id)).toEqual(["c1"])
+    new Database(path.join(dir, "opencode-other.db")).close()
+    await expect(importOpencode(dir, {})).rejects.toThrow("several opencode databases")
   })
 
   test("rejects paths that are not opencode storage", async () => {
