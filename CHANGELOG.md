@@ -6,6 +6,35 @@ No version has been published to a package registry yet. The versions below mark
 
 ## [Unreleased]
 
+Wrong verdicts found on real requests from Mastra, opencode, Claude Code and Codex.
+
+### Added
+
+- A cause for a sliding history window, `oldest_messages_removed` (group "history rewrites"): the next request's history is the previous one's with its oldest messages removed and everything after them replayed. It is reported as `2 oldest messages removed from the start of history (3 kept, 2 appended)`, with the fix "drop history in chunks at a saved boundary, or keep history append-only". It was reported as "message #1 (user) was edited after it was sent". A single message removed from the start of history, with the rest replayed, now has this cause instead of `message_removed`.
+- `allowBreak: { after: { system: n } }`, and the same `after` on a `prefix_break` hint: the tools and the first n system parts must stay. A position that is not one of the documented forms is now an error (it was counted as `NaN`, and the break silently allowed nothing).
+- The block field `deferred` for an Anthropic tool sent with `defer_loading: true`. Such a tool is recorded but is not part of the prompt prefix: adding or removing one is no longer reported as a tool-list change, and block numbers and counts leave deferred tools out. `prefixBlocks` in the trace module gives the blocks that are compared.
+- `turns[].warm_start` and the status label `hit (warm start)`; `summary.cache_steps`; `abandoned_cached_tokens` in a compaction cause's detail (the size of the cache the compaction gave up, also shown under the miss); `also_changed` in an expiry cause's detail; `references` in a `prefixlens/test` explanation; `TraceWriter.lanes()`.
+- `erasableSyntaxOnly` in `tsconfig.json`, so the TypeScript sources stay importable under Node's type stripping.
+
+### Changed
+
+- **Expiry outranks a prefix change.** A call that read nothing and was sent later than the cache lifetime after the previous call is an expiry miss: it would have missed with the prefix untouched. A prefix change found as well is named in the summary and reported as the call's `prefix_change`; for usage-only records, what the harness logged (a compaction, pruned tool outputs, a declared break) is named beside the likely expiry. A break declared on such a call no longer makes it an intentional break. A call that read part of the cache is unaffected, since the cache was evidently still there, and a model change still comes first. An expiry now also outranks a changed `session-id` header.
+- **Cache step size is learnt from the trace.** The step an implicit cache reads in is no longer assumed to be 128 tokens: per provider and model it is the greatest common divisor of the non-zero cache reads in the trace (from at least four reads with at least two values, never below 128). What a call is expected to read is counted in that step, and with a learnt step a request that exactly extends the previous one is a hit when it is less than one step short. A gateway that reads in steps of 1,088 tokens had most of its good requests flagged as provider-side partial misses.
+- **A first call that read from the cache is a hit**, shown as a warm start, not `cold`: an earlier session with the same tools and instructions had left that prefix cached. `summary.status.cold` counts only first calls that read nothing.
+- **A compaction that keeps a tail of recent messages is a compaction** (new messages in front, then the rest of the old history unchanged and in order), not an edited first message.
+- A miss with every recorded block intact, on a request with a block the trace could not record (the Claude Code importer's billing-attribution block), is still reported as provider-side but as *inferred*, worded "a provider-side miss, or a change in the block the trace does not record"; it no longer says "not caused by the harness".
+- Parts put ahead of parts already sent in a message are reported as `message_inserted` ("1 part inserted at the start of message #1 (user), ahead of content already sent"), not as "1 part appended": a message inserted into history reads this way once the SDK has merged it with the next one.
+- A relative date rendered again ("today" becoming "yesterday", "2 hours ago" becoming "3 hours ago") is a dynamic value, labelled "relative date", in the system prompt and in messages.
+- A top-level `cache_control` on an Anthropic request is recorded as a breakpoint on the last block and left out of `params`; it was a parameter, so turning it on read as "request parameters changed: cache_control". Traces recorded before this still carry it under `params`.
+- A request body with no `system` and no tool parts is read as Anthropic Messages when it has `stop_sequences`, a top-level `cache_control`, `anthropic_version`, or a `claude-…` model id and nothing that only Chat Completions has; it was read as Chat Completions, with OpenAI's parameter rules. A body with nothing that tells the two apart is still read as Chat Completions.
+- A stable verdict from `prefixlens/test` says how many of the unchanged blocks are OpenAI Responses `item_reference` items, which are compared by id only; a report notes calls that sent them; a reference to another item is named as that instead of as an edited message.
+- A recorder opened on a trace that already has records (a proxy restarted with `-o` on the same file) continues the lanes the file holds. Its first call used to open `main` again, where it was compared with whatever that lane held before.
+- The Claude Code importer imports each model call once when several session files hold it: a resumed or forked conversation starts its file with a copy of the earlier file's lines. The copy in the file that starts earliest is kept; a single file imported alone keeps the calls it copied; a warning says how many copies were left out.
+
+### Fixed
+
+- The TypeScript sources could not be imported under plain Node (`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`), because five classes declared fields as constructor parameter properties.
+
 ## [0.4.0] - 2026-11-12
 
 Checked against real traffic for the first time: Claude Code, Codex and opencode, through the recording proxy and through their importers (see "Status" in the README for what was run and what was not). Also: privacy defaults, trace format 1.2, current prices with an optional models.dev overlay, and Node.js support.
