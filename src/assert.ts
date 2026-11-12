@@ -8,6 +8,7 @@
 import { changeStart, declaredBreaks, defaultAfter, describePosition, isPosition, keptBlocks, POSITIONS, type DeclaredBreak, type Position } from "./breaks.ts"
 import { canonicalizeRequest, isItemReference, type CanonicalRequest, type Provider } from "./canonical.ts"
 import { comparePrefix, type Cause, type PrefixChange } from "./diff.ts"
+import { printable } from "./printable.ts"
 import { apiFromBody, PROVIDER_OF } from "./record/exchange.ts"
 import { prefixBlocks, type Block, type Hint, type TraceRecord } from "./trace.ts"
 
@@ -143,9 +144,13 @@ export function explainPrefixDiff(prev: RequestLike, next: RequestLike, options:
     ...(ok ? { allowed: reason } : {}),
     ...(references > 0 ? { references } : {}),
     ...(fix ? { fix } : {}),
-    message: ok
-      ? `prefix changed at block ${changedAt + 1}, allowed (${reason}): ${change.summary}`
-      : failureMessage(change, before.blocks, changedAt, block, fix, widest && keep !== undefined ? { reason, keep, after: widest.after } : undefined),
+    // The message names tools, models and parameters and quotes the diff, all taken from the requests;
+    // it ends up in a test runner's output and in CI logs.
+    message: printable(
+      ok
+        ? `prefix changed at block ${changedAt + 1}, allowed (${reason}): ${change.summary}`
+        : failureMessage(change, before.blocks, changedAt, block, fix, widest && keep !== undefined ? { reason, keep, after: widest.after } : undefined),
+    ),
   }
 }
 

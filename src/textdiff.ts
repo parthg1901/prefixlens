@@ -1,6 +1,7 @@
 // A small line diff for showing what changed inside one block.
 
 import { isRecord } from "./canonical.ts"
+import { printable } from "./printable.ts"
 
 /**
  * Renders a JSON value as readable lines: `path: value`, with multi-line
@@ -84,7 +85,11 @@ export interface DiffOptions {
   maxLineWidth?: number
 }
 
-/** A unified-style excerpt: changed lines with a little context, capped in length. */
+/**
+ * A unified-style excerpt: changed lines with a little context, capped in length. Its lines are for
+ * people to read in a terminal, a CI log or a report, so control characters in the content are
+ * written visibly (`printable`).
+ */
 export function renderDiff(before: unknown, after: unknown, options: DiffOptions = {}): string {
   const context = options.context ?? 2
   const maxLines = options.maxLines ?? 24
@@ -101,7 +106,7 @@ export function renderDiff(before: unknown, after: unknown, options: DiffOptions
     if (!keep.has(index)) continue
     if (last !== -1 && index > last + 1) lines.push("  ...")
     last = index
-    lines.push(...renderOp(ops, index, width))
+    lines.push(...renderOp(ops, index, width).map(printable))
   }
   if (lines.length <= maxLines) return lines.join("\n")
   const hidden = lines.slice(maxLines).filter((line) => line.startsWith("-") || line.startsWith("+")).length

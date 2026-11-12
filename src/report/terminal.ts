@@ -1,6 +1,7 @@
 // Plain-text report for the terminal.
 
 import type { Analysis, TurnResult } from "../analyze.ts"
+import { printable, printableDeep } from "../printable.ts"
 import { atLeast, clock, costBasis, cutOffMark, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, shortModel, spansDays, statusLabel, tokens } from "./format.ts"
 
 export interface TerminalOptions {
@@ -15,14 +16,17 @@ const ROW_LIMIT = 60
 const MISS_LIMIT = 40
 const DIFF_LINES = 14
 
-export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}): string {
+export function renderTerminal(input: Analysis, options: TerminalOptions = {}): string {
+  // Everything below prints strings that came from the trace (model ids, lanes, tool names, diffs of
+  // prompts and tool output), so the only escape sequences in the output are the painter's own.
+  const analysis = printableDeep(input)
   const paint = painter(options.color ?? false)
   const summary = analysis.summary
   const out: string[] = []
   const multiLane = summary.lanes.length > 1
   const withDate = spansDays(analysis.turns)
 
-  out.push(paint.bold(`prefixlens report${options.title ? `: ${options.title}` : ""}`))
+  out.push(paint.bold(`prefixlens report${options.title ? `: ${printable(options.title)}` : ""}`))
   out.push(
     `${exact(summary.turns)} model calls · ${summary.lanes.length} ${summary.lanes.length === 1 ? "lane" : "lanes"} · ` +
       `${exact(summary.fidelity.full_request)} full-request, ${exact(summary.fidelity.usage_only)} usage-only`,
@@ -111,7 +115,7 @@ export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}
   }
   out.push("")
   out.push(paint.bold(summary.headline))
-  for (const note of [...summary.notes, ...(options.pricingNote ? [options.pricingNote] : [])]) out.push(paint.dim(`note: ${note}`))
+  for (const note of [...summary.notes, ...(options.pricingNote ? [printable(options.pricingNote)] : [])]) out.push(paint.dim(`note: ${note}`))
   for (const warning of analysis.warnings.slice(0, 10)) out.push(paint.yellow(`warning: ${warning}`))
   return out.join("\n") + "\n"
 }

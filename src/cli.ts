@@ -11,6 +11,7 @@ import { ADAPTERS, findAdapter } from "./adapters/index.ts"
 import { analyze } from "./analyze.ts"
 import { cataloguePath, loadCatalogue, parseProviderMapping } from "./catalogue.ts"
 import { loadPricing } from "./pricing.ts"
+import { printable } from "./printable.ts"
 import { renderHtml } from "./report/html.ts"
 import { renderJson } from "./report/json.ts"
 import { renderTerminal } from "./report/terminal.ts"
@@ -159,7 +160,7 @@ async function runImport(args: string[], flags: Flags): Promise<number> {
   if (flags.list) {
     if (!adapter.list) return fail(`the ${adapter.name} adapter imports one session file; --list is not needed`)
     for (const session of await adapter.list(source))
-      console.log(`${session.id}  ${session.updated}${session.parent ? `  (subagent of ${session.parent})` : ""}  ${session.title ?? ""}`)
+      console.log(printable(`${session.id}  ${session.updated}${session.parent ? `  (subagent of ${session.parent})` : ""}  ${session.title ?? ""}`))
     return 0
   }
   const result = await adapter.import(source, {
@@ -167,7 +168,7 @@ async function runImport(args: string[], flags: Flags): Promise<number> {
     subagents: flags["no-subagents"] !== true,
     contentOnDemand: true,
   })
-  for (const warning of result.warnings) console.error(`warning: ${warning}`)
+  for (const warning of result.warnings) console.error(printable(`warning: ${warning}`))
   if (result.records.length === 0) return fail(`no model calls with usage found in ${input}; nothing written`)
   // Line by line, each block's content read back from the harness's files as it is first written.
   const encoder = createTraceEncoder(result.content ? { content: result.content } : {})
@@ -208,7 +209,7 @@ async function runReport(args: string[], flags: Flags): Promise<number> {
   const parsed = parseTrace(text)
   if (parsed.records.length === 0 && !looksLikeTrace(text))
     return fail(`${name} is not a prefixlens trace (no line has "v": 1); convert harness logs first with prefixlens import <adapter> <path>`)
-  for (const error of parsed.errors.slice(0, 20)) console.error(`error: ${error}`)
+  for (const error of parsed.errors.slice(0, 20)) console.error(printable(`error: ${error}`))
   if (parsed.errors.length > 20) console.error(`error: ... ${parsed.errors.length - 20} more`)
   if (parsed.records.length === 0) return fail(parsed.errors.length > 0 ? "no valid trace records" : "the trace has no records (the import found no model calls with usage)")
   const pricingPath = typeof flags.pricing === "string" ? flags.pricing : undefined
@@ -277,12 +278,15 @@ async function runRecord(flags: Flags): Promise<number> {
       if (quiet) return
       const prompt = promptTokens(record.usage)
       const rate = prompt === 0 ? 0 : (record.usage.cache_read_tokens / prompt) * 100
+      // The lane and the model id come from the request, which any local process can send.
       console.error(
-        `#${count} ${record.lane} ${record.model}: prompt ${prompt.toLocaleString("en-US")}, cache read ${record.usage.cache_read_tokens.toLocaleString("en-US")} (${rate.toFixed(0)}%), output ${record.usage.output_tokens.toLocaleString("en-US")}`,
+        printable(
+          `#${count} ${record.lane} ${record.model}: prompt ${prompt.toLocaleString("en-US")}, cache read ${record.usage.cache_read_tokens.toLocaleString("en-US")} (${rate.toFixed(0)}%), output ${record.usage.output_tokens.toLocaleString("en-US")}`,
+        ),
       )
     },
     onSkip: (reason) => {
-      if (!quiet) console.error(reason)
+      if (!quiet) console.error(printable(reason))
     },
   })
   const variable = provider === "anthropic" ? `ANTHROPIC_BASE_URL=${proxy.url}` : `OPENAI_BASE_URL=${proxy.url}/v1`
