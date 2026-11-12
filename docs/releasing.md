@@ -87,7 +87,7 @@ Sentences that stop being true:
 Before the tag:
 
 - [x] `.github/workflows/ci.yml` and `release.yml`: pin each action to a full commit hash instead of a major tag (`actions/checkout@v4`, `actions/setup-node@v4`, `oven-sh/setup-bun@v2`), with the version in a comment beside it. It matters most in the `publish` job of `release.yml`, which holds `id-token: write`. Look the hashes up on each action's releases page; do not copy them from anywhere else.
-- [ ] Decide whether the author name and email in the commits are what you want public ("Pushing" above).
-- [ ] Check that nothing private ships: `node scripts/check-package.mjs` lists the tarball's size and file count and fails on tests, fixtures, traces, source maps or local paths in it.
-- [ ] `package.json`: remove `"private": true`. Do this last: it is the one thing that stops a tag from publishing.
+- [x] Decide whether the author name and email in the commits are what you want public ("Pushing" above).
+- [x] Check that nothing private ships: `node scripts/check-package.mjs` lists the tarball's size and file count and fails on tests, fixtures, traces, source maps or local paths in it.
+- [x] `package.json`: remove `"private": true`. Do this last: it is the one thing that stops a tag from publishing.
 - [ ] Push with `git push origin main` and `git push origin v0.5.0` only, never `--tags` ("Pushing" above).
