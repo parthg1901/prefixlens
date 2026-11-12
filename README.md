@@ -484,6 +484,8 @@ The sources run on Bun as they are. What differs between the runtimes is kept in
 
 CI (`.github/workflows/ci.yml`) runs the Bun suite on Ubuntu and macOS with Bun 1.4.0, the Node suite and the package check on Node 22.0.0 and 26 on Ubuntu and macOS, and fails if a trace, session log or credential is committed.
 
+Releases are published from a `v<version>` tag by `.github/workflows/release.yml`, with npm trusted publishing and provenance; the one-time setup, the steps and the checklist are in [docs/releasing.md](docs/releasing.md). Nothing is published while `package.json` is private.
+
 Test fixtures are hand-written. Never commit real session logs or traces: they contain secrets and private code.
 
 ## Licence
