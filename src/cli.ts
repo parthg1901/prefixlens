@@ -6,6 +6,7 @@ import os from "node:os"
 import path from "node:path"
 import { ADAPTERS, findAdapter } from "./adapters/index.ts"
 import { analyze } from "./analyze.ts"
+import { cataloguePath, loadCatalogue, parseProviderMapping } from "./catalogue.ts"
 import { loadPricing } from "./pricing.ts"
 import { renderHtml } from "./report/html.ts"
 import { renderJson } from "./report/json.ts"
@@ -21,6 +22,9 @@ Usage:
   prefixlens report <trace.jsonl|-> [options]    report hit rates, costs and miss causes
   prefixlens record --provider <p> [options]     run a local proxy that records every model call
   prefixlens adapters                            list adapters and what they can diagnose
+  prefixlens pricing update [--from <file>]      fetch models.dev prices into the user cache (network)
+  prefixlens pricing check [--from <file>]       list where models.dev disagrees with the pricing table (network)
+  prefixlens pricing show <model> [options]      which price a model gets, from which source and date
 
 import options:
   -o, --out <file>      write the trace here (default: stdout)
@@ -40,9 +44,24 @@ report options:
   --json                print the report as JSON
   --html [file]         write a self-contained HTML report (default: <trace>.html)
   --pricing <file>      pricing table (default: $PREFIXLENS_PRICING or the bundled pricing.json)
+  --no-catalogue        do not use the models.dev prices fetched by prefixlens pricing update
+  --catalogue-provider <trace>=<models.dev>[,...]
+                        price a trace provider's models the table lacks from another models.dev
+                        provider, e.g. anthropic=openrouter (default: each provider's own)
   --tolerance <tokens>  lost tokens still counted as a hit (default 128)
   --all                 show every row and every miss in the terminal report
   --no-color            plain terminal output (also honours NO_COLOR)
+
+pricing options:
+  --from <file>         read a saved copy of https://models.dev/api.json instead of fetching it
+  --pricing <file>      the table to compare with or look in (default: as for report)
+  --provider <name>     show: the trace provider (inferred for claude, gpt, o-series and gemini ids)
+  --date <YYYY-MM-DD>   show: the day of the call (default: today)
+  --catalogue-provider, --no-catalogue   as for report
+  --json                check: print the comparison as JSON
+  --all                 update, check: list every change, not the first 20
+  update and check (without --from) make one HTTP GET to https://models.dev/api.json; report never fetches.
+  update writes ${cataloguePath().replace(os.homedir(), "~")}; delete it to stop using catalogue prices.
 
 Examples:
   prefixlens import claude-code ~/.claude/projects/-my-project/<session-id>.jsonl -o session.trace.jsonl
@@ -53,8 +72,8 @@ Examples:
 
 type Flags = Record<string, string | true>
 
-const VALUE_FLAGS = new Set(["out", "session", "pricing", "tolerance", "provider", "port", "host", "upstream"])
-const KNOWN_FLAGS = new Set([...VALUE_FLAGS, "list", "no-subagents", "json", "html", "all", "no-color", "quiet", "help", "version"])
+const VALUE_FLAGS = new Set(["out", "session", "pricing", "tolerance", "provider", "port", "host", "upstream", "from", "date", "catalogue-provider"])
+const KNOWN_FLAGS = new Set([...VALUE_FLAGS, "list", "no-subagents", "json", "html", "all", "no-color", "no-catalogue", "quiet", "help", "version"])
 const ALIASES: Record<string, string> = { o: "out", h: "help", v: "version" }
 
 export async function main(argv: string[]): Promise<number> {
@@ -76,6 +95,20 @@ export async function main(argv: string[]): Promise<number> {
   if (command === "import") return runImport(positionals.slice(1), flags)
   if (command === "report") return runReport(positionals.slice(1), flags)
   if (command === "record") return runRecord(flags)
+  if (command === "pricing") {
+    const mapping = typeof flags["catalogue-provider"] === "string" ? parseProviderMapping(flags["catalogue-provider"]) : undefined
+    const { runPricing } = await import("./pricing-command.ts")
+    return runPricing(positionals[1], positionals.slice(2), {
+      ...(typeof flags.from === "string" ? { from: expandHome(flags.from) } : {}),
+      ...(typeof flags.pricing === "string" ? { pricing: flags.pricing } : {}),
+      ...(typeof flags.provider === "string" ? { provider: flags.provider } : {}),
+      ...(typeof flags.date === "string" ? { date: flags.date } : {}),
+      ...(mapping ? { catalogueProviders: mapping } : {}),
+      json: flags.json === true,
+      all: flags.all === true,
+      noCatalogue: flags["no-catalogue"] === true,
+    })
+  }
   return fail(`unknown command "${command}"; run prefixlens --help`)
 }
 
@@ -157,17 +190,32 @@ async function runReport(args: string[], flags: Flags): Promise<number> {
   const pricing = await loadPricing(pricingPath)
   const tolerance = typeof flags.tolerance === "string" ? Number(flags.tolerance) : undefined
   if (tolerance !== undefined && !(Number.isFinite(tolerance) && tolerance >= 0)) return fail("--tolerance must be a non-negative number")
-  const analysis = analyze(parsed.records, { pricing, ...(tolerance !== undefined ? { toleranceTokens: tolerance } : {}) })
-  analysis.warnings.unshift(...parsed.warnings)
-  const pricingSource = pricingPath ?? process.env.PREFIXLENS_PRICING ?? "bundled pricing.json"
-  const pricingNote = `prices from ${pricingSource === "bundled pricing.json" ? "the bundled pricing.json" : pricingSource}${pricing.as_of ? ` (as of ${pricing.as_of})` : ""}`
+  const catalogueProviders = typeof flags["catalogue-provider"] === "string" ? parseProviderMapping(flags["catalogue-provider"]) : undefined
+  const catalogueWarnings: string[] = []
+  const catalogue =
+    flags["no-catalogue"] === true
+      ? undefined
+      : await loadCatalogue().catch((error: unknown) => {
+          catalogueWarnings.push(`not using the models.dev prices: ${error instanceof Error ? error.message : String(error)}`)
+          return undefined
+        })
+  const analysis = analyze(parsed.records, {
+    pricing,
+    ...(catalogue ? { catalogue } : {}),
+    ...(catalogueProviders ? { catalogueProviders } : {}),
+    ...(tolerance !== undefined ? { toleranceTokens: tolerance } : {}),
+  })
+  analysis.warnings.unshift(...parsed.warnings, ...catalogueWarnings)
+  const pricingSource = pricingPath || process.env.PREFIXLENS_PRICING || "bundled pricing.json"
+  const usesCatalogue = analysis.turns.some((turn) => turn.priced === "catalogue")
+  const pricingNote = `prices from ${pricingSource === "bundled pricing.json" ? "the bundled pricing.json" : pricingSource}${pricing.as_of ? ` (as of ${pricing.as_of})` : ""}${catalogue && usesCatalogue ? `, then models.dev (fetched ${catalogue.fetched_at.slice(0, 10)}) for models it does not list` : ""}`
   const title = input === "-" ? "stdin" : path.basename(input)
   if (flags.html) {
     const out = typeof flags.html === "string" ? flags.html : `${input === "-" ? "prefixlens-report" : input.replace(/\.jsonl?$/, "")}.html`
     await Bun.write(out, renderHtml(analysis, { title, pricingNote, generatedAt: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC" }))
     console.error(`wrote ${out}`)
   }
-  if (flags.json) process.stdout.write(renderJson(analysis, { trace: input, pricing: { source: pricingSource, ...(pricing.as_of ? { as_of: pricing.as_of } : {}) } }))
+  if (flags.json) process.stdout.write(renderJson(analysis, { trace: input, pricing: { source: pricingSource, ...(pricing.as_of ? { as_of: pricing.as_of } : {}), ...(catalogue ? { catalogue: { source: "models.dev", fetched_at: catalogue.fetched_at } } : {}) } }))
   else if (!flags.html)
     process.stdout.write(
       renderTerminal(analysis, {

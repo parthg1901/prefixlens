@@ -4,7 +4,7 @@ import type { Analysis } from "../analyze.ts"
 
 export interface JsonOptions {
   trace?: string
-  pricing?: { source: string; as_of?: string }
+  pricing?: { source: string; as_of?: string; catalogue?: { source: string; fetched_at: string } }
 }
 
 export function renderJson(analysis: Analysis, options: JsonOptions = {}): string {

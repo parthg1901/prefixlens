@@ -1,0 +1,110 @@
+{
+  "anthropic": {
+    "id": "anthropic",
+    "name": "Anthropic",
+    "doc": "https://example.invalid/anthropic",
+    "models": {
+      "claude-opus-5-5": {
+        "id": "claude-opus-5-5",
+        "cost": { "input": 4, "output": 20, "cache_read": 0.2, "cache_write": 5 },
+        "experimental": { "modes": { "fast": { "cost": { "input": 8, "output": 40, "cache_read": 0.4, "cache_write": 10 }, "provider": { "body": { "speed": "fast" } } } } },
+        "last_updated": "2026-09-22"
+      },
+      "claude-sonnet-5-5": { "id": "claude-sonnet-5-5", "cost": { "input": 3, "output": 10, "cache_read": 0.1, "cache_write": 2.5 }, "last_updated": "2026-10-01" },
+      "claude-haiku-5-5": { "id": "claude-haiku-5-5", "cost": { "input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125 }, "last_updated": "2026-10-07" },
+      "claude-zeta-1": {
+        "id": "claude-zeta-1",
+        "cost": {
+          "input": 1,
+          "output": 5,
+          "cache_read": 0.1,
+          "cache_write": 1.25,
+          "tiers": [{ "input": 2, "output": 10, "cache_read": 0.2, "cache_write": 2.5, "tier": { "type": "context", "size": 100000 } }]
+        },
+        "experimental": {
+          "modes": {
+            "fast": { "cost": { "input": 2, "output": 10, "cache_read": 0.2, "cache_write": 2.5 }, "provider": { "body": { "speed": "fast" } } },
+            "deep": { "provider": { "body": { "thinking": { "mode": "deep" } } } }
+          }
+        },
+        "last_updated": "2026-10-20"
+      },
+      "claude-zeta-noread": { "id": "claude-zeta-noread", "cost": { "input": 1, "output": 5 } },
+      "claude-zeta-nowrite": { "id": "claude-zeta-nowrite", "cost": { "input": 1, "output": 5, "cache_read": 0.1 } },
+      "claude-zeta-tiergap": {
+        "id": "claude-zeta-tiergap",
+        "cost": { "input": 1, "output": 5, "cache_read": 0.1, "cache_write": 1.25, "tiers": [{ "input": 2, "output": 10, "tier": { "type": "context", "size": 100000 } }] }
+      },
+      "claude-zeta-latest": { "id": "claude-zeta-latest", "cost": { "input": 1, "output": 5, "cache_read": 0.1, "cache_write": 1.25 } }
+    }
+  },
+  "openai": {
+    "id": "openai",
+    "name": "OpenAI",
+    "models": {
+      "gpt-6-luna": {
+        "id": "gpt-6-luna",
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.01,
+          "cache_write": 0.125,
+          "tiers": [{ "input": 0.2, "output": 0.75, "cache_read": 0.02, "cache_write": 0.25, "tier": { "type": "context", "size": 272000 } }]
+        },
+        "last_updated": "2026-10-01"
+      },
+      "gpt-5.4": {
+        "id": "gpt-5.4",
+        "cost": { "input": 2.5, "output": 15, "cache_read": 0.25, "tiers": [{ "input": 5, "output": 22.5, "cache_read": 0.5, "tier": { "type": "context", "size": 272000 } }] },
+        "last_updated": "2026-03-05"
+      },
+      "gpt-5.6-sol": {
+        "id": "gpt-5.6-sol",
+        "cost": { "input": 4, "output": 20, "cache_read": 0.4, "cache_write": 5, "tiers": [{ "input": 8, "output": 30, "cache_read": 0.8, "cache_write": 10, "tier": { "type": "context", "size": 272000 } }] }
+      },
+      "gpt-zeta": {
+        "id": "gpt-zeta",
+        "cost": { "input": 1, "output": 4, "cache_read": 0.1 },
+        "experimental": { "modes": { "fast": { "cost": { "input": 2, "output": 8, "cache_read": 0.2 }, "provider": { "body": { "service_tier": "priority" } } } } }
+      },
+      "gpt-zeta-reasoner": { "id": "gpt-zeta-reasoner", "cost": { "input": 1, "output": 4, "reasoning": 8, "cache_read": 0.1 } },
+      "gpt-zeta-same": { "id": "gpt-zeta-same", "cost": { "input": 1, "output": 4, "reasoning": 4, "cache_read": 0.1 } },
+      "gpt-zeta-hourly": { "id": "gpt-zeta-hourly", "cost": { "input": 1, "output": 4, "tiers": [{ "input": 2, "output": 8, "tier": { "type": "time_of_day", "size": 1 } }] } },
+      "gpt-zeta-free": { "id": "gpt-zeta-free", "cost": { "input": "1", "output": 4 } },
+      "gpt-image-zeta": { "id": "gpt-image-zeta" }
+    }
+  },
+  "google": {
+    "id": "google",
+    "name": "Google",
+    "models": {
+      "gemini-2.5-flash": { "id": "gemini-2.5-flash", "cost": { "input": 0.3, "output": 2.5, "cache_read": 0.03 } },
+      "gemini-zeta": { "id": "gemini-zeta", "cost": { "input": 0.5, "output": 3, "cache_read": 0.05 }, "last_updated": "2026-08" }
+    }
+  },
+  "openrouter": {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "models": {
+      "anthropic/claude-zeta-1": { "id": "anthropic/claude-zeta-1", "cost": { "input": 1.05, "output": 5.25, "cache_read": 0.105, "cache_write": 1.3125 } },
+      "acme/claude-zeta-1": { "id": "acme/claude-zeta-1", "cost": { "input": 0.5, "output": 2, "cache_read": 0.05 } },
+      "anthropic/claude-zeta-1.5": { "id": "anthropic/claude-zeta-1.5", "cost": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 } },
+      "acme/widget-1": { "id": "acme/widget-1", "cost": { "input": 0.2, "output": 0.8, "cache_read": 0.02 } },
+      "openai/gpt-6-luna": { "id": "openai/gpt-6-luna", "cost": { "input": 0.12, "output": 0.6, "cache_read": 0.012 } }
+    }
+  },
+  "amazon-bedrock": {
+    "id": "amazon-bedrock",
+    "name": "Amazon Bedrock",
+    "models": {
+      "anthropic.claude-zeta-1": { "id": "anthropic.claude-zeta-1", "cost": { "input": 1, "output": 5, "cache_read": 0.1, "cache_write": 1.25 } },
+      "us.anthropic.claude-zeta-1": { "id": "us.anthropic.claude-zeta-1", "cost": { "input": 1.1, "output": 5.5, "cache_read": 0.11, "cache_write": 1.375 } }
+    }
+  },
+  "deepseek": {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "models": { "deepseek-zeta": { "id": "deepseek-zeta", "cost": { "input": 0.27, "output": 1.1, "cache_read": 0.07 }, "last_updated": "2026-05-01" } }
+  },
+  "empty": { "id": "empty", "name": "No models" }
+}

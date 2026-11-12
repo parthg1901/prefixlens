@@ -3,7 +3,8 @@
 
 import { coveringBreaks, declaredBreaks, describePosition, keptBlocks, type DeclaredBreak } from "./breaks.ts"
 import { CAUSE_GROUP, comparePrefix, type Cause, type CauseGroup, type PrefixChange, type Region } from "./diff.ts"
-import { costOf, DEFAULT_STALE_AFTER_DAYS, findPrice, pricedDays, pricingAge, providerFacts, ratesFor, uncachedRate, type Cost, type PricingTable } from "./pricing.ts"
+import { resolvePrice, type CatalogueTable, type PriceSources, type Resolution } from "./catalogue.ts"
+import { costOf, DEFAULT_STALE_AFTER_DAYS, pricedDays, pricingAge, providerFacts, ratesFor, uncachedRate, type Cost, type PricingTable } from "./pricing.ts"
 import { laneKey, type Block, type Fidelity, type TraceRecord, type Usage } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
 
@@ -46,7 +47,8 @@ export interface TurnResult {
   uncached_cost: number | null
   /** What lost_tokens cost above the cache-read price. */
   miss_cost: number | null
-  priced: "table" | "reported" | "none"
+  /** table: the pricing table; catalogue: the models.dev overlay (see the report's notes); reported: the harness's own figure. */
+  priced: "table" | "catalogue" | "reported" | "none"
   /** Turn number of the previous call in the same lane, the baseline for comparison. */
   baseline_turn?: number
   gap_seconds?: number
@@ -111,6 +113,10 @@ export interface Analysis {
 
 export interface AnalyzeOptions {
   pricing: PricingTable
+  /** The models.dev overlay, for models the pricing table does not list. */
+  catalogue?: CatalogueTable
+  /** Trace provider to models.dev provider, for opting in to a router's or cloud's prices (default: anthropic, openai, gemini to their own). */
+  catalogueProviders?: Record<string, string>
   /** Lost tokens at or below this count are treated as a hit. Default 128 (OpenAI caches in 128-token steps). */
   toleranceTokens?: number
   /** The date the pricing table's age is measured against. Default: now. */
@@ -121,28 +127,33 @@ export function analyze(records: TraceRecord[], options: AnalyzeOptions): Analys
   const tolerance = options.toleranceTokens ?? 128
   const warnings: string[] = []
   const last = new Map<string, number>()
+  const sources: PriceSources = { table: options.pricing, ...(options.catalogue ? { catalogue: options.catalogue } : {}), ...(options.catalogueProviders ? { catalogueProviders: options.catalogueProviders } : {}) }
+  const prices: PriceLog = new Map()
   const turns = records.map((record, index): TurnResult => {
     const lane = laneKey(record)
     const previousIndex = last.get(lane)
     last.set(lane, index)
-    return analyzeTurn(records, index, previousIndex, options.pricing, tolerance, warnings)
+    return analyzeTurn(records, index, previousIndex, sources, prices, tolerance, warnings)
   })
-  return { version: 1, summary: summarize(turns, records, options.pricing, options.now ?? new Date()), turns, warnings }
+  return { version: 1, summary: summarize(turns, records, sources, prices, options.now ?? new Date()), turns, warnings }
 }
 
 function analyzeTurn(
   records: TraceRecord[],
   index: number,
   previousIndex: number | undefined,
-  pricing: PricingTable,
+  sources: PriceSources,
+  prices: PriceLog,
   tolerance: number,
   warnings: string[],
 ): TurnResult {
   const record = records[index]!
   const previous = previousIndex === undefined ? undefined : records[previousIndex]
   const prompt = promptTokens(record.usage)
-  const price = findPrice(pricing, record.provider, record.model, { ts: record.ts, ...(record.params ? { params: record.params } : {}) })
-  const facts = providerFacts(pricing, record.provider, price)
+  const resolution = resolvePrice(sources, record.provider, record.model, record.usage, { ts: record.ts, ...(record.params ? { params: record.params } : {}) })
+  logPrice(prices, record, resolution)
+  const price = resolution.source === "none" ? undefined : resolution.entry
+  const facts = providerFacts(sources.table, record.provider, price)
   const rates = price ? ratesFor(price, prompt) : undefined
   const cost = rates ? costOf(record.usage, rates) : null
   const base = {
@@ -159,7 +170,7 @@ function analyzeTurn(
     hit_rate: prompt === 0 ? 0 : record.usage.cache_read_tokens / prompt,
     cost,
     uncached_cost: cost ? cost.input + cost.cache_write : null,
-    priced: cost ? ("table" as const) : record.usage.reported_cost !== undefined ? ("reported" as const) : ("none" as const),
+    priced: cost ? resolution.source === "catalogue" ? ("catalogue" as const) : ("table" as const) : record.usage.reported_cost !== undefined ? ("reported" as const) : ("none" as const),
   }
   if (!previous)
     return {
@@ -353,7 +364,8 @@ function fromChange(change: PrefixChange, confidence: Confidence): CauseInfo {
   }
 }
 
-function summarize(turns: TurnResult[], records: TraceRecord[], pricing: PricingTable, now: Date): Summary {
+function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSources, prices: PriceLog, now: Date): Summary {
+  const pricing = sources.table
   const sum = (pick: (turn: TurnResult) => number) => turns.reduce((total, turn) => total + pick(turn), 0)
   const tokens = {
     prompt: sum((turn) => turn.prompt_tokens),
@@ -401,7 +413,8 @@ function summarize(turns: TurnResult[], records: TraceRecord[], pricing: Pricing
           `${usageOnly} of ${turns.length} calls are usage-only: hit rates and costs are exact, but root-cause diffs need full requests (causes shown are inferred from timing and harness hints).`,
         ]
       : []),
-    ...(unpriced.length > 0 ? [`No price for ${unpricedList(turns, pricing)}: add it to the pricing table to get costs.`] : []),
+    ...(unpriced.length > 0 ? [`No price for ${unpricedList(turns, pricing, prices)}: add it to the pricing table to get costs.`] : []),
+    ...sourceNotes(sources, prices, now),
     ...(status.uncached > 0
       ? [`${status.uncached} calls had nothing cacheable from the call before (no cache writes, or a prefix below the minimum cacheable size).`]
       : []),
@@ -439,12 +452,14 @@ function headline(misses: number, cost: number | null, groups: GroupTotal[], rea
 }
 
 // "gpt-5.6-sol on 2026-12-03 (priced until 2026-11-30)" when the table prices the model, only not on the calls' days.
-function unpricedList(turns: TurnResult[], pricing: PricingTable): string {
+function unpricedList(turns: TurnResult[], pricing: PricingTable, prices: PriceLog): string {
   const groups = new Map<string, TurnResult[]>()
   for (const turn of turns.filter((turn) => turn.cost === null)) groups.set(turn.model, [...(groups.get(turn.model) ?? []), turn])
   return [...groups.entries()]
     .map(([model, list]) => {
       const periods = pricedDays(pricing, list[0]!.provider, model)
+      const reason = catalogueGap(prices.get(`${list[0]!.provider}\0${model}`))
+      if (reason) return `${model} (${reason})`
       if (periods.length === 0) return model
       const days = [...new Set(list.map((turn) => turn.ts.slice(0, 10)))].sort()
       const when = days.length === 1 ? days[0] : `${days[0]} to ${days.at(-1)}`
@@ -452,6 +467,93 @@ function unpricedList(turns: TurnResult[], pricing: PricingTable): string {
       return `${model} on ${when} (priced ${priced.join(" and ")})`
     })
     .join(", ")
+}
+
+// One entry per provider and model: how its calls were priced, and which catalogue fields its unpriced calls lacked.
+interface LoggedPrice {
+  provider: string
+  model: string
+  resolutions: Resolution[]
+  missing: Set<string>
+}
+type PriceLog = Map<string, LoggedPrice>
+
+function logPrice(prices: PriceLog, record: TraceRecord, resolution: Resolution) {
+  if (resolution.source === "table" && !resolution.differences) return
+  const key = `${record.provider}\0${record.model}`
+  const entry = prices.get(key) ?? { provider: record.provider, model: record.model, resolutions: [], missing: new Set<string>() }
+  if (!entry.resolutions.some((seen) => seen.source === resolution.source && JSON.stringify(seen) === JSON.stringify(resolution))) entry.resolutions.push(resolution)
+  if (resolution.source === "none") for (const field of resolution.missing ?? []) entry.missing.add(field)
+  prices.set(key, entry)
+}
+
+const MISSING_FIELD: Record<string, string> = {
+  input: "input price",
+  output: "output price",
+  cache_read: "cache-read price",
+  cache_write: "cache-write price",
+  cache_write_1h: "1-hour cache-write price",
+  reasoning: "way to apply its separate reasoning-token price",
+}
+
+// Why a model the catalogue has is still unpriced: a price the calls need is not listed, or the id is ambiguous.
+function catalogueGap(logged: LoggedPrice | undefined): string | undefined {
+  if (!logged) return undefined
+  if (logged.missing.size > 0) {
+    const catalogue = logged.resolutions.find((resolution) => resolution.source === "none" && resolution.catalogue)
+    const id = catalogue?.source === "none" && catalogue.catalogue ? `${catalogue.catalogue.provider} ${catalogue.catalogue.id}` : logged.model
+    const fields = [...logged.missing].map((field) => MISSING_FIELD[field] ?? `price for its ${field.replace(/_mode$/, "")} mode`)
+    return `models.dev lists ${id} with no ${fields.join(" or ")}, which these calls need; they are not costed rather than priced at a guess`
+  }
+  const alias = logged.resolutions.find((resolution) => resolution.source === "none" && resolution.alias)
+  if (alias?.source === "none" && alias.alias)
+    return `models.dev ${alias.alias.provider} ${alias.alias.id} is an alias the provider repoints at other models, so its catalogue price is not used`
+  const ambiguous = logged.resolutions.find((resolution) => resolution.source === "none" && resolution.ambiguous)
+  if (ambiguous?.source === "none" && ambiguous.ambiguous)
+    return `models.dev ${ambiguous.ambiguous[0]!.provider} lists ${ambiguous.ambiguous.map((entry) => entry.id).join(", ")} at different prices; use the full model id`
+  return undefined
+}
+
+// Which prices came from the catalogue, and where the table and the catalogue disagree.
+function sourceNotes(sources: PriceSources, prices: PriceLog, now: Date): string[] {
+  const catalogue = sources.catalogue
+  if (!catalogue) return []
+  const fetched = catalogue.fetched_at.slice(0, 10)
+  const logged = [...prices.values()]
+  const fromCatalogue = logged.flatMap((entry) => entry.resolutions.filter((resolution) => resolution.source === "catalogue").map((resolution) => ({ entry, resolution })))
+  const used = [...new Map(fromCatalogue.map((item) => [`${item.entry.model}\0${item.resolution.catalogue.provider}\0${item.resolution.catalogue.id}\0${item.resolution.mode ?? ""}`, item])).values()]
+  const catalogueNote =
+    used.length === 0
+      ? []
+      : [
+          `Priced from the models.dev catalogue (fetched ${fetched}), not the hand-verified pricing table: ${used
+            .map(({ entry, resolution }) => {
+              const facts = providerFacts(sources.table, entry.provider)
+              return `${entry.model} as models.dev ${resolution.catalogue.provider} ${resolution.catalogue.id}${resolution.mode ? ` (${resolution.mode} mode)` : ""}${resolution.catalogue.last_updated ? `, last updated ${resolution.catalogue.last_updated}` : ""}; cache lifetime ${facts.cache_ttl_seconds} s and minimum ${facts.min_cacheable_tokens.toLocaleString("en-US")} tokens are ${entry.provider} defaults`
+            })
+            .join("; ")}. models.dev is community-maintained; check a price with prefixlens pricing show <model>.`,
+        ]
+  const age = Math.floor((now.getTime() - Date.parse(catalogue.fetched_at)) / 86_400_000)
+  const limit = sources.table.stale_after_days ?? DEFAULT_STALE_AFTER_DAYS
+  const staleNote = used.length > 0 && age > limit ? [`The models.dev prices were fetched ${age} days ago (${fetched}): run prefixlens pricing update.`] : []
+  const disagreements = logged.flatMap((entry) =>
+    entry.resolutions.flatMap((resolution) => {
+      if (resolution.source !== "table" || !resolution.differences || !resolution.compared) return []
+      const checked = sources.table.sources?.[resolution.entry.provider ?? entry.provider]?.checked ?? sources.table.as_of
+      const compared = resolution.compared
+      const fields = resolution.differences
+        .map((difference) => `${difference.field.replaceAll("_", " ")} ${difference.table === undefined ? "none" : dollars(difference.table)} vs ${difference.catalogue === undefined ? "none" : dollars(difference.catalogue)}`)
+        .join(", ")
+      return [
+        `Prices differ for ${entry.model}: the pricing table${checked ? ` (checked ${checked})` : ""} vs models.dev ${compared.provider} ${compared.id}${compared.last_updated ? ` (last updated ${compared.last_updated}, fetched ${fetched})` : ` (fetched ${fetched})`}: ${fields} per million tokens. The pricing table's figures are used; check the provider's pricing page.`,
+      ]
+    }),
+  )
+  return [...catalogueNote, ...staleNote, ...[...new Set(disagreements)]]
+}
+
+function dollars(value: number): string {
+  return `$${Number(value.toFixed(6))}`
 }
 
 function pricingNotes(pricing: PricingTable, now: Date): string[] {

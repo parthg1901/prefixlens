@@ -47,6 +47,8 @@ export interface PricingTable {
   /** A report notes the table's age once it is older than this many days. Default 60. */
   stale_after_days?: number
   providers?: Record<string, ProviderFacts>
+  /** Where each provider's prices came from and the day they were checked. */
+  sources?: Record<string, { checked?: string; urls?: string[]; notes?: string[] }>
   models: PriceEntry[]
 }
 
@@ -112,6 +114,17 @@ export function findPrice(table: PricingTable, provider: string, model: string, 
     named.find((entry) => entry.when_params !== undefined) ??
     named[0] ??
     table.models.find((entry) => applies(entry) && patterns(entry).some((pattern) => glob(normalizeModelId(pattern)).test(id)))
+  )
+}
+
+/** True when the table lists `model` for `provider` at all, on any day or with any parameters, by the same rules as findPrice. */
+export function listsModel(table: PricingTable, provider: string, model: string): boolean {
+  const id = normalizeModelId(model)
+  const strict = table.models.some((entry) => entry.provider === provider)
+  return table.models.some(
+    (entry) =>
+      (!strict || entry.provider === undefined || entry.provider === provider) &&
+      ((entry.names ?? []).some((name) => normalizeModelId(name) === id) || patterns(entry).some((pattern) => glob(normalizeModelId(pattern)).test(id))),
   )
 }
 

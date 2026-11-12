@@ -346,7 +346,53 @@ Cloud ids (Bedrock, Google Cloud) are priced at the first-party list price. Thos
 2. Change the figures from the provider's pricing page.
 3. Set `as_of` and the provider's `sources.<provider>.checked` to the day you checked.
 
-`--pricing` wins over `PREFIXLENS_PRICING`, which wins over the bundled table.
+`--pricing` wins over `PREFIXLENS_PRICING`, which wins over the bundled table. Whichever is used, the models.dev prices below fill in only the models it does not list.
+
+### A second source: models.dev
+
+[models.dev](https://models.dev) is a community-maintained catalogue of models and their prices across more than 200 providers, including routers and clouds that resell the same models under their own ids. prefixlens can use it for models the hand-verified table does not list, and to notice when the table has gone stale. Its data is © 2025 models.dev, published under the [MIT licence](https://github.com/anomalyco/models.dev/blob/dev/LICENSE); thanks to its contributors. The file prefixlens writes carries the licence notice.
+
+Nothing is fetched unless you ask:
+
+```sh
+prefixlens pricing update                     # fetch https://models.dev/api.json, convert it, save it
+prefixlens pricing update --from api.json     # or convert a copy you saved (offline)
+prefixlens pricing show claude-opus-5-5       # which price a model gets, from which source and date
+prefixlens pricing check                      # where models.dev and the pricing table disagree (exit 1 if they do)
+```
+
+`update` fetches with a 30-second timeout and a 32 MB limit (the catalogue is about 6 MB), and fails with a clear message when offline. It prints what changed since the previous fetch (models added and removed, prices changed) and every disagreement with the pricing table. It saves only the converted prices, about 1 MB, to:
+
+| platform | file |
+|---|---|
+| Linux and others | `$XDG_CACHE_HOME/prefixlens/models.dev.json`, else `~/.cache/prefixlens/models.dev.json` |
+| macOS | `~/Library/Caches/prefixlens/models.dev.json` (or under `$XDG_CACHE_HOME` when set) |
+| Windows | `%LOCALAPPDATA%\prefixlens\Cache\models.dev.json` |
+
+Delete that file to stop using catalogue prices, or pass `--no-catalogue` to `report` or `pricing show`. The catalogue is not bundled with prefixlens: it changes daily and is mostly models no trace of yours will use. `pricing check` is meant for maintainers and a scheduled CI job: it fetches the catalogue (or reads `--from`), compares every entry of the pricing table in effect today with models.dev's entry for the same provider and id, and exits 1 when any shared figure differs.
+
+**Which price a call gets.**
+
+1. The pricing table (`--pricing`, else `PREFIXLENS_PRICING`, else the bundled one) wins for every model it lists, with every field: cache-write lifetimes, tiers, cache lifetime, minimum cacheable size, dated prices. A model it lists only on other days or with other parameters stays unpriced on the other days; the catalogue does not fill the gap.
+2. For a model in both, the shared figures (input, cache read, the default-lifetime cache write, output, prompt-size tiers, and Anthropic fast mode) are compared. A difference becomes a report note naming both figures and both dates, and the table's price is used.
+3. Only for a model the table does not list does the catalogue price the call, and the report says so in a note that names the models.dev entry, its last-updated date and the fetch date. Cache lifetime and minimum cacheable size then come from the table's provider defaults, since models.dev has neither.
+
+**Provider and model identity.** A trace's `provider` names whose caching rules apply, not who billed the call (a call through OpenRouter to Claude is `anthropic`). It maps to one models.dev provider: `anthropic` to `anthropic`, `openai` to `openai`, `gemini` to `google`, and any other id to the models.dev provider of the same id (`deepseek`, `openrouter`). Within that one provider, the model id is matched exactly (lowercase, `.` and `@` read as `-`), then without leading `segment/` prefixes (`openrouter/anthropic/claude-x` → `anthropic/claude-x` → `claude-x`), then with the normalization the pricing table uses. When that last step finds several entries with different prices, such as a router's `vendor/model` ids or a cloud's regional ids (`us.anthropic.…` costs 10% more on Bedrock), the call gets no price and the note names the candidates. Another provider's price for a same-named model is never used, unless you opt in for models the table lacks:
+
+```sh
+prefixlens report run.trace.jsonl --catalogue-provider anthropic=openrouter,openai=openrouter
+```
+
+Aliases that a provider repoints at other models (`gemini-flash-latest`, any id ending in `latest`) get no catalogue price, as in the bundled table.
+
+**What models.dev does not have, and what the report does about it.** It has no 1-hour (Anthropic) or 12-hour (OpenAI) cache-write price, no cache lifetime or minimum cacheable size, no dates on which a promotional price ends, and no record of where a figure came from. A catalogue price is used only when it lists every price the call needs; otherwise the call is reported unpriced, with a note saying which price was missing, rather than priced at a guess:
+
+- no cache-read price: no call of that model is costed (a miss is costed against the cache-read price);
+- no cache-write price: calls that wrote to the cache are not costed; calls that wrote nothing are;
+- calls with 1-hour cache writes are not costed from the catalogue;
+- a prompt-size tier that leaves out a price the base lists does not borrow the base's;
+- a separate reasoning-token price: calls that report reasoning tokens are not costed;
+- request parameters that select one of models.dev's per-mode prices (`speed: "fast"`) use that price, and a mode with no price leaves the call unpriced. OpenAI's `service_tier` modes are not applied, as in the bundled table.
 
 ## Trace format
 
@@ -395,7 +441,7 @@ What is never written: every request header except `session-id`, `anthropic-beta
 
 The proxy forwards credentials to the provider unchanged, so it sees your API keys. It listens on `127.0.0.1` by default and has no authentication of its own. Binding it to another interface with `--host` sends your keys and prompts over plain HTTP and lets anyone who can reach the port send requests through it into your trace.
 
-prefixlens has no telemetry: its only network traffic is the proxy forwarding to the configured upstream, and `wrap`/`lens.fetch` passing requests to the client's own fetch.
+prefixlens has no telemetry. Its only network traffic is the proxy forwarding to the configured upstream, `wrap`/`lens.fetch` passing requests to the client's own fetch, and, only when you run `prefixlens pricing update` or `prefixlens pricing check` without `--from`, one HTTP GET to `https://models.dev/api.json` with no body, cookies or credentials. `report` and `pricing show` never fetch.
 
 Details, and how to report a vulnerability, are in [SECURITY.md](SECURITY.md).
 

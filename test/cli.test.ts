@@ -12,7 +12,8 @@ function run(args: string[], stdin?: string) {
   const result = Bun.spawnSync(["bun", path.join(root, "src/cli.ts"), ...args], {
     cwd: temp,
     stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
-    env: { ...process.env, NO_COLOR: "1", PREFIXLENS_PRICING: "" },
+    // A models.dev overlay in the real user cache must not change these reports.
+    env: { ...process.env, NO_COLOR: "1", PREFIXLENS_PRICING: "", XDG_CACHE_HOME: path.join(temp, "cache") },
   })
   return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() }
 }

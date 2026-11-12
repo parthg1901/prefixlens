@@ -10,9 +10,11 @@ No version has been published to a package registry yet. The versions below mark
 
 - MIT licence, `SECURITY.md`, this changelog, and a CI workflow (type-check and tests on Ubuntu and macOS, plus a check that no trace, session log or credential is committed).
 - A "Security and privacy" section in the README, and tests for what the proxy, `wrap`, `lens.fetch`, `lens.observe` and `buildRecord` write and never write.
+- `prefixlens pricing update`, `pricing check` and `pricing show`: an optional second source of prices from the [models.dev](https://models.dev) catalogue (MIT licence), fetched only on request into the user cache directory. The pricing table still wins for every model it lists; the catalogue prices models it lacks, a report notes every catalogue-priced model and every figure on which the two sources disagree, and a call needing a price the catalogue lacks (cache read, cache write, 1-hour write) is left unpriced rather than guessed. `report` gains `--no-catalogue` and `--catalogue-provider`; a turn's `priced` can now be `"catalogue"`.
 
 ### Changed
 
+- An empty `PREFIXLENS_PRICING` no longer leaves the report's pricing note without a source name.
 - `package.json` is marked `private` until the first release, so it cannot be published by accident.
 - The README's install instructions describe using prefixlens from a clone, since it is not on a registry yet.
 
