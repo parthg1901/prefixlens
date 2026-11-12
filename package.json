@@ -1,9 +1,28 @@
 {
   "name": "prefixlens",
   "version": "0.3.0",
+  "private": true,
   "license": "MIT",
-  "description": "Explains prompt-cache hits and misses for LLM agent harnesses.",
+  "author": "Parth",
+  "description": "Explains prompt-cache hits and misses for LLM agent harnesses: import session logs, record through a local proxy or a wrapped SDK client, and assert prefix stability in CI.",
+  "keywords": [
+    "llm",
+    "prompt-caching",
+    "prompt-cache",
+    "cache",
+    "anthropic",
+    "openai",
+    "claude",
+    "agents",
+    "harness",
+    "observability",
+    "tracing",
+    "cost",
+    "ci",
+    "testing"
+  ],
   "type": "module",
+  "sideEffects": false,
   "bin": {
     "prefixlens": "./src/cli.ts"
   },

@@ -3,3 +3,7 @@ node_modules/
 *.report.html
 /out/
 .DS_Store
+*.trace.html
+.env
+.env.*
+*.pem

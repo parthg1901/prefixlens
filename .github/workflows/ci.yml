@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Type-check
+        run: bun run typecheck
+      - name: Test
+        run: bun test
+      - name: Test the CI example
+        working-directory: examples/ci-prefix-test
+        run: bun test
+
+  hygiene:
+    name: No traces, session logs or credentials
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tracked files
+        shell: bash
+        run: |
+          status=0
+
+          # Tracked files that .gitignore says should never be committed (traces, reports, .env).
+          ignored=$(git ls-files --cached --ignored --exclude-standard)
+          if [ -n "$ignored" ]; then
+            echo "::error::tracked files match .gitignore:"; echo "$ignored"; status=1
+          fi
+
+          # Traces, reports, session logs, databases and key files by name. Hand-written fixtures live in test/fixtures.
+          names=$(git ls-files | grep -Ev '^test/fixtures/' | grep -Ei '(\.trace\.(jsonl|html)$|\.report\.html$|(^|/)rollout-.*\.jsonl$|(^|/)opencode\.db$|\.(db|sqlite|sqlite3|pem|p12|key)$|(^|/)\.env(\..*)?$|(^|/)id_(rsa|ed25519|ecdsa)$|(^|/)\.npmrc$)' || true)
+          if [ -n "$names" ]; then
+            echo "::error::files that look like traces, session logs or credentials:"; echo "$names"; status=1
+          fi
+
+          # Credentials and real home-directory paths in content. Test secrets are spelled sk-synthetic-....
+          secrets=$(git grep -nIE 'sk-ant-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{40,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|/home/[a-z][a-z0-9_-]*/|/Users/[A-Za-z][A-Za-z0-9._-]*/' -- . ':!bun.lock' ':!examples/*/bun.lock' || true)
+          if [ -n "$secrets" ]; then
+            echo "::error::content that looks like a credential or a real home directory path:"; echo "$secrets"; status=1
+          fi
+
+          exit $status
