@@ -3,7 +3,7 @@
 
 import zlib from "node:zlib"
 import { canonicalizeRequest, isRecord } from "../canonical.ts"
-import { openTraceWriter, type Block, type TraceRecord } from "../trace.ts"
+import { openTraceWriter, type Billing, type Block, type TraceRecord } from "../trace.ts"
 import { apiFromBody, apiFromPath, buildRecord, PROVIDER_OF, readResponse, type Api } from "./exchange.ts"
 
 export interface RecorderOptions {
@@ -21,6 +21,8 @@ export interface RecorderOptions {
   name: string
   /** Keep identifying request fields (`metadata`, `user`, `safety_identifier`, `client_metadata`) in `params`. Default false. */
   keepIdentifiers?: boolean
+  /** `billing` of every record, when the recorder knows how its calls are billed. */
+  billing?: Billing
 }
 
 /** Header a harness may send to choose the lane (and session) of a call itself; the proxy strips it before forwarding. */
@@ -85,7 +87,7 @@ export class Recorder {
     return {
       finish: (response) => {
         if (!end()) return undefined
-        const built = buildRecord({ api, body, response: readResponse(api, response), startedAt, ...(input.headers ? { headers: input.headers } : {}), ...(session ? { session } : {}), lane: lane.name, recorder: input.recorder ?? this.options.name, ...(this.options.keepIdentifiers ? { keepIdentifiers: true } : {}) })
+        const built = buildRecord({ api, body, response: readResponse(api, response), startedAt, ...(input.headers ? { headers: input.headers } : {}), ...(session ? { session } : {}), lane: lane.name, recorder: input.recorder ?? this.options.name, ...(this.options.keepIdentifiers ? { keepIdentifiers: true } : {}), ...(this.options.billing ? { billing: this.options.billing } : {}) })
         if (typeof built === "string") {
           this.options.onSkip?.(`not recorded: ${built}`)
           return undefined

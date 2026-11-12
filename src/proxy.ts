@@ -4,7 +4,7 @@
 
 import { copyResponse, observeBody } from "./record/fetch.ts"
 import { LANE_HEADER, Recorder, SESSION_HEADER } from "./record/recorder.ts"
-import { readableByOthers, type TraceRecord } from "./trace.ts"
+import { readableByOthers, type Billing, type TraceRecord } from "./trace.ts"
 
 export const UPSTREAMS = {
   anthropic: "https://api.anthropic.com",
@@ -48,6 +48,7 @@ export function startProxy(options: ProxyOptions) {
     ...(options.onRecord ? { onRecord: options.onRecord } : {}),
     ...(options.onSkip ? { onSkip: options.onSkip } : {}),
     ...(options.keepIdentifiers ? { keepIdentifiers: true } : {}),
+    ...(upstreamBilling(upstream) ? { billing: upstreamBilling(upstream) } : {}),
   })
   const server = Bun.serve({
     port: options.port ?? 8787,
@@ -97,6 +98,15 @@ export function startProxy(options: ProxyOptions) {
     trace: options.trace,
     stop: () => server.stop(true),
   }
+}
+
+/**
+ * How calls through this upstream are billed, when the upstream alone says so.
+ * ChatGPT's backend serves only signed-in plans. Any other endpoint may be
+ * reached with an API key or a plan's token, so it is left unsaid.
+ */
+export function upstreamBilling(upstream: URL): Billing | undefined {
+  return /(^|\.)chatgpt\.com$/.test(upstream.hostname) ? "subscription" : undefined
 }
 
 /**

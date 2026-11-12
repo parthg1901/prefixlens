@@ -1,7 +1,7 @@
 // Plain-text report for the terminal.
 
 import type { Analysis, TurnResult } from "../analyze.ts"
-import { atLeast, clock, cutOffMark, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, shortModel, spansDays, STATUS_LABEL, tokens } from "./format.ts"
+import { atLeast, clock, costBasis, cutOffMark, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, shortModel, spansDays, STATUS_LABEL, tokens } from "./format.ts"
 
 export interface TerminalOptions {
   color?: boolean
@@ -86,7 +86,7 @@ export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}
   out.push(`  cache hit rate  ${percent(summary.hit_rate)} of prompt tokens read from cache`)
   if (summary.cost)
     out.push(
-      `  cost            ${atLeast(summary.interrupted)}${money(summary.cost.total)} at API list prices · ${money(summary.cost.uncached)} on uncached input and cache writes · ${money(summary.cost.misses)} lost to misses${summary.intentional.breaks > 0 ? ` · ${money(summary.cost.intentional)} on intentional breaks` : ""}`,
+      `  cost            ${atLeast(summary.interrupted)}${money(summary.cost.total)} ${costBasis(summary.billing)} · ${money(summary.cost.uncached)} on uncached input and cache writes · ${money(summary.cost.misses)} lost to misses${summary.intentional.breaks > 0 ? ` · ${money(summary.cost.intentional)} on intentional breaks` : ""}`,
     )
   if (summary.reported_cost !== undefined) out.push(`  harness cost    ${money(summary.reported_cost)} as recorded by the harness`)
   out.push(

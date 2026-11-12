@@ -7,7 +7,7 @@ This document specifies the trace format that prefixlens reads. A harness in any
 - every 1.0 and 1.1 trace is a valid 1.2 trace and reads exactly as before;
 - an older reader reads a newer trace, ignoring what it does not know (section 2, section 6). A 1.0 reader will then report a declared intentional break (section 6.1) as an ordinary miss: the trace degrades to what it would have said without the declaration, never to something less safe.
 
-Version 1.2 adds the optional `interrupted` record field (section 2) and the `tools_changed` hint (section 6).
+Version 1.2 adds the optional `interrupted` and `billing` record fields (section 2), the optional `cache_write_12h_tokens` usage field (section 3), and the `tools_changed` hint (section 6).
 
 Version 1.1 adds the `prefix_break` hint (section 6.1), states the canonical form of every `cache_control` marker and of a non-string system prompt (section 4.3), and documents which request parameters each provider caches on (section 8.1).
 
@@ -41,6 +41,7 @@ A trace records the model calls an agent made, one record per call, so that each
 | `hints` | array | no | Facts the harness knows about what happened before this call, including intentional breaks it declares. See section 6. |
 | `headers` | object of strings | no | Request headers that route the request to a cache or change what is cached, lowercase names, e.g. `{"session-id": "…"}` (OpenAI's ChatGPT sign-in flow routes its prompt cache by `session-id`), `anthropic-beta`, `anthropic-version`, `openai-beta`. Writers MUST write only headers known not to be credentials: never `authorization`, `x-api-key`, cookies or account ids. prefixlens reports a miss with the prefix intact and a changed `session-id` as a routing change, not a provider-side miss. |
 | `interrupted` | boolean | no | 1.2. `true` when the response ended before its final event: the client disconnected or the connection broke. `usage` then holds what the response reported before it ended; its input side (`input_tokens`, `cache_read_tokens`, `cache_write_tokens`) MUST be final, and `output_tokens` is a lower bound (Anthropic reports the input side in its first stream event, so a cut-off Anthropic call can be recorded; an OpenAI stream reports usage only at its end, so a cut-off one cannot). A writer that does not have final input-side counts MUST NOT write the record. Readers count the call in hit rates and miss arithmetic as usual and treat its output tokens and cost as lower bounds. Absent means `false`. |
+| `billing` | string | no | 1.2. How the call was billed: `"per_token"` (API billing, where list prices are what was charged before discounts) or `"subscription"` (a plan such as a Claude plan or ChatGPT sign-in, where list prices are only a comparison). Set it only when the writer knows; absent means unknown, and readers MUST NOT assume either. |
 | `source` | object | no | Free-form provenance, e.g. `{"adapter": "claude-code", "version": "2.1.322"}` or `{"harness": "myagent", "version": "0.3.0"}`. Readers do not interpret it. |
 
 Readers MUST ignore fields they do not know. Writers MUST NOT put API keys, auth headers or other credentials in any field.
@@ -52,7 +53,8 @@ Readers MUST ignore fields they do not know. Writers MUST NOT put API keys, auth
 | `input_tokens` | integer ≥ 0 | yes | Input tokens that were neither read from nor written to the cache (billed at the base input price). |
 | `cache_read_tokens` | integer ≥ 0 | yes | Input tokens read from the cache. |
 | `cache_write_tokens` | integer ≥ 0, or `null` | yes | Input tokens written to the cache, as the provider reported them. `null` when the provider does not report writes (Gemini; OpenAI before GPT-5.6). Use `0`, not `null`, when an explicit-caching provider wrote nothing. A figure from an implicit-caching provider (OpenAI, Gemini) is a billing fact, not a measure of what was cached: section 8. |
-| `cache_write_1h_tokens` | integer ≥ 0 | no | The part of `cache_write_tokens` written with a 1-hour TTL (priced differently from 5-minute writes). |
+| `cache_write_1h_tokens` | integer ≥ 0 | no | The part of `cache_write_tokens` written with a 1-hour TTL (Anthropic; priced differently from 5-minute writes). |
+| `cache_write_12h_tokens` | integer ≥ 0 | no | 1.2. The part of `cache_write_tokens` written with a 12-hour lifetime (OpenAI; priced differently from the default 30-minute writes). OpenAI Responses: `input_tokens_details.cache_write_tokens_details.ttl_12h_tokens`. Omit when the provider does not report the split. |
 | `output_tokens` | integer ≥ 0 | yes | All billed output tokens, including reasoning. |
 | `reasoning_tokens` | integer ≥ 0 | no | The part of `output_tokens` spent on reasoning. |
 | `reported_cost` | number ≥ 0 | no | What the harness itself recorded this call cost, in USD. prefixlens prices calls from its own table and shows this only for comparison. |

@@ -5,7 +5,7 @@ import { coveringBreaks, declaredBreaks, describePosition, keptBlocks, type Decl
 import { CAUSE_GROUP, comparePrefix, type Cause, type CauseGroup, type PrefixChange, type Region } from "./diff.ts"
 import { resolvePrice, type CatalogueTable, type PriceSources, type Resolution } from "./catalogue.ts"
 import { costOf, DEFAULT_STALE_AFTER_DAYS, pricedDays, pricingAge, providerFacts, ratesFor, uncachedRate, type Cost, type PricingTable } from "./pricing.ts"
-import { laneKey, type Block, type Fidelity, type TraceRecord, type Usage } from "./trace.ts"
+import { laneKey, type Billing, type Block, type Fidelity, type TraceRecord, type Usage } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
 
 export type Status = "cold" | "hit" | "partial" | "miss" | "uncached"
@@ -59,6 +59,8 @@ export interface TurnResult {
   declared_break?: DeclaredBreakResult
   /** The response was cut off before it ended (SPEC 2, `interrupted`): input-side counts are final, output tokens and cost are lower bounds. */
   interrupted?: true
+  /** How the call was billed, when the trace says (SPEC 2, `billing`). */
+  billing?: Billing
 }
 
 export interface DeclaredBreakResult {
@@ -106,6 +108,8 @@ export interface Summary {
   notes: string[]
   /** Turns whose response was cut off before it ended; their output tokens, and so the totals of output and cost, are lower bounds. */
   interrupted: number[]
+  /** Calls by how they were billed: per token, on a subscription (list prices are a comparison), or not stated in the trace. */
+  billing: { per_token: number; subscription: number; unknown: number }
 }
 
 export interface Analysis {
@@ -175,6 +179,7 @@ function analyzeTurn(
     cost,
     uncached_cost: cost ? cost.input + cost.cache_write : null,
     ...(record.interrupted ? { interrupted: true as const } : {}),
+    ...(record.billing ? { billing: record.billing } : {}),
     priced: cost ? resolution.source === "catalogue" ? ("catalogue" as const) : ("table" as const) : record.usage.reported_cost !== undefined ? ("reported" as const) : ("none" as const),
   }
   if (!previous)
@@ -431,6 +436,11 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
   const usageOnly = turns.filter((turn) => turn.fidelity === "usage-only").length
   const unpriced = [...new Set(turns.filter((turn) => turn.cost === null).map((turn) => turn.model))]
   const cutOff = turns.filter((turn) => turn.interrupted).map((turn) => turn.turn)
+  const billing = {
+    per_token: turns.filter((turn) => turn.billing === "per_token").length,
+    subscription: turns.filter((turn) => turn.billing === "subscription").length,
+    unknown: turns.filter((turn) => turn.billing === undefined).length,
+  }
   const notes = [
     ...(cutOff.length > 0
       ? [
@@ -447,7 +457,7 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
     ...(status.uncached > 0
       ? [`${status.uncached} calls had nothing cacheable from the call before (no cache writes, or a prefix below the minimum cacheable size).`]
       : []),
-    ...(turns.some((turn) => turn.cost !== null) ? pricingNotes(pricing, now) : []),
+    ...(turns.some((turn) => turn.cost !== null) ? pricingNotes(pricing, now, billing) : []),
   ]
   return {
     turns: turns.length,
@@ -464,6 +474,7 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
     headline: headline(missed.length, cost?.misses ?? null, byGroup, byReason, cost?.intentional ?? null),
     unpriced_models: unpriced,
     interrupted: cutOff,
+    billing,
     notes,
   }
 }
@@ -586,11 +597,21 @@ function dollars(value: number): string {
   return `$${Number(value.toFixed(6))}`
 }
 
-function pricingNotes(pricing: PricingTable, now: Date): string[] {
+function pricingNotes(pricing: PricingTable, now: Date, billing: Summary["billing"]): string[] {
   const age = pricingAge(pricing, now)
   const limit = pricing.stale_after_days ?? DEFAULT_STALE_AFTER_DAYS
+  const calls = billing.per_token + billing.subscription + billing.unknown
+  const exclusions = "Discounts, batch and priority tiers are not applied."
+  const basis =
+    billing.subscription === calls
+      ? `These calls were made on a subscription, which is not billed per token: costs are what the same calls would cost at API list prices, a scale for comparing misses, not what was paid. ${exclusions}`
+      : billing.subscription > 0
+        ? `${billing.subscription} of ${calls} calls were made on a subscription, which is not billed per token: their costs are what they would cost at API list prices, not what was paid. The rest are at API list prices${billing.unknown > 0 ? "; for calls whose billing the trace does not record, that may not be what was paid either" : ""}. ${exclusions}`
+        : billing.per_token === calls
+          ? `Costs are at API list prices for per-token billing. ${exclusions}`
+          : "Costs are at API list prices: what these calls would cost billed per token, not what was paid. Calls on a subscription (a Claude plan, ChatGPT sign-in, Codex) are not billed per token, and discounts, batch and priority tiers are not applied."
   return [
-    "Costs are at API list prices: what these calls would cost billed per token, not what was paid. Calls on a subscription (a Claude plan, ChatGPT sign-in, Codex) are not billed per token, and discounts, batch and priority tiers are not applied.",
+    basis,
     ...(age === undefined
       ? ["The pricing table has no as_of date, so how current its prices are is unknown."]
       : age > limit

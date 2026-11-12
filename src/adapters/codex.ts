@@ -82,6 +82,8 @@ function readRollout(file: string, text: string, warnings: string[]) {
   const compactionCalls = new Set(
     entries.flatMap((entry) => (entry.type === "compacted" && isRecord(entry.payload) && str(entry.payload.compaction_response_id) ? [str(entry.payload.compaction_response_id)] : [])),
   )
+  // Codex signed in with ChatGPT logs the plan's rate limits, with its plan type, on each token_count event.
+  const subscription = entries.some((entry) => isRecord(entry.payload) && entry.payload.type === "token_count" && isRecord(entry.payload.rate_limits) && str(entry.payload.rate_limits.plan_type) !== undefined)
   const records: TraceRecord[] = []
   let model = ""
   let mode: string | undefined
@@ -131,6 +133,7 @@ function readRollout(file: string, text: string, warnings: string[]) {
       model,
       fidelity: "usage-only",
       usage: toUsage(usage.usage),
+      ...(subscription ? { billing: "subscription" as const } : {}),
       ...(hints.length > 0 ? { hints } : {}),
       source: { adapter: "codex", ...(version ? { version } : {}), ...(providerId !== "openai" ? { provider_id: providerId } : {}) },
     })

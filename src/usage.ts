@@ -53,10 +53,14 @@ function fromOpenAI(raw: Record<string, unknown>): Usage {
   const cached = Math.min(total, count(inputDetails.cached_tokens))
   // Absent (or null) means not reported; zero is kept as the provider's figure.
   const writes = inputDetails.cache_write_tokens == null ? null : Math.min(total - cached, count(inputDetails.cache_write_tokens))
+  // GPT-5.6 and later split writes by lifetime: ttl_30m_tokens (the default) and ttl_12h_tokens.
+  const lifetimes = isRecord(inputDetails.cache_write_tokens_details) ? inputDetails.cache_write_tokens_details : {}
+  const twelveHour = Math.min(writes ?? 0, count(lifetimes.ttl_12h_tokens))
   return {
     input_tokens: total - cached - (writes ?? 0),
     cache_read_tokens: cached,
     cache_write_tokens: writes,
+    ...(twelveHour > 0 ? { cache_write_12h_tokens: twelveHour } : {}),
     output_tokens: count(chat ? raw.completion_tokens : raw.output_tokens),
     ...(outputDetails.reasoning_tokens !== undefined ? { reasoning_tokens: count(outputDetails.reasoning_tokens) } : {}),
   }

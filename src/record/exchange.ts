@@ -3,7 +3,7 @@
 // recording fetch behind `wrap(client)`, and `lens.observe`.
 
 import { canonicalizeRequest, isRecord, type Provider } from "../canonical.ts"
-import type { TraceRecord } from "../trace.ts"
+import type { Billing, TraceRecord } from "../trace.ts"
 import { withoutIdentifiers } from "../params.ts"
 import { normalizeUsage } from "../usage.ts"
 import pkg from "../../package.json" with { type: "json" }
@@ -151,6 +151,8 @@ export interface RecordInput {
    * `client_metadata`) in `params`. Default false: they are left out.
    */
   keepIdentifiers?: boolean
+  /** How the call was billed, when the caller knows (`billing` in SPEC 2). Left out otherwise. */
+  billing?: Billing
 }
 
 /** @deprecated Use RecordInput. Removed in the next minor. */
@@ -196,6 +198,7 @@ export function buildRecord(input: RecordInput): TraceRecord | string {
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
     // A stream cut off after it reported usage (Anthropic reports the input side in its first event).
     ...(input.response.complete ? {} : { interrupted: true }),
+    ...(input.billing ? { billing: input.billing } : {}),
     source: { recorder: input.recorder ?? "library", api: input.api, version: pkg.version },
   }
 }

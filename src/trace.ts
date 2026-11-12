@@ -13,6 +13,7 @@ export const TRACE_VERSION = 1
 export const TRACE_FORMAT_VERSION = "1.2"
 
 export type Fidelity = "full-request" | "usage-only"
+export type Billing = "per_token" | "subscription"
 export type BlockKind = "tool" | "system" | "message"
 
 export interface Block {
@@ -33,8 +34,10 @@ export interface Usage {
   cache_read_tokens: number
   /** Tokens written to the cache, or null when the provider does not report writes (implicit caching). */
   cache_write_tokens: number | null
-  /** The part of cache_write_tokens written with a 1-hour TTL, when known. */
+  /** The part of cache_write_tokens written with a 1-hour TTL (Anthropic), when known. */
   cache_write_1h_tokens?: number
+  /** The part of cache_write_tokens written with a 12-hour lifetime (OpenAI), when known. Format 1.2. */
+  cache_write_12h_tokens?: number
   /** All billed output tokens, including reasoning. */
   output_tokens: number
   /** The part of output_tokens spent on reasoning, when known. */
@@ -84,6 +87,11 @@ export interface TraceRecord {
    * Format 1.2. prefixlens also reads the `source.complete: false` its own recorders wrote before.
    */
   interrupted?: boolean
+  /**
+   * How the call was billed, when the writer knows: "per_token" (API billing at list prices) or
+   * "subscription" (a plan such as ChatGPT sign-in, where list prices are only a comparison). Format 1.2.
+   */
+  billing?: Billing
   source?: Record<string, unknown>
 }
 
@@ -241,6 +249,8 @@ function readRecord(value: unknown, problems: string[], warnings: string[], line
   if (value.headers !== undefined && !(isRecord(value.headers) && Object.values(value.headers).every((header) => typeof header === "string")))
     problems.push("headers must be an object of strings")
   if (value.interrupted !== undefined && typeof value.interrupted !== "boolean") problems.push("interrupted must be a boolean")
+  if (value.billing !== undefined && value.billing !== "per_token" && value.billing !== "subscription")
+    problems.push('billing must be "per_token" or "subscription"')
   if (value.cache_ttl_seconds !== undefined && !isCount(value.cache_ttl_seconds))
     problems.push("cache_ttl_seconds must be a non-negative integer")
   const usage = readUsage(value.usage, problems)
@@ -268,7 +278,7 @@ function readUsage(value: unknown, problems: string[]): Usage | undefined {
     if (!isCount(value[field])) problems.push(`usage.${field} must be a non-negative integer`)
   if (value.cache_write_tokens !== null && !isCount(value.cache_write_tokens))
     problems.push("usage.cache_write_tokens must be a non-negative integer or null")
-  for (const field of ["cache_write_1h_tokens", "reasoning_tokens"])
+  for (const field of ["cache_write_1h_tokens", "cache_write_12h_tokens", "reasoning_tokens"])
     if (value[field] !== undefined && !isCount(value[field])) problems.push(`usage.${field} must be a non-negative integer`)
   if (value.reported_cost !== undefined && (typeof value.reported_cost !== "number" || value.reported_cost < 0))
     problems.push("usage.reported_cost must be a non-negative number")

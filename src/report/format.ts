@@ -1,7 +1,7 @@
 // Shared formatting for the reports.
 
 import { money } from "../analyze.ts"
-import type { Status, TurnResult } from "../analyze.ts"
+import type { Analysis, Status, TurnResult } from "../analyze.ts"
 
 export { money }
 
@@ -85,6 +85,14 @@ export function cutOffMark(turn: TurnResult): string {
 /** "≥ " before a total that includes cut-off calls, whose output is a lower bound. */
 export function atLeast(interrupted: number[]): string {
   return interrupted.length > 0 ? "≥ " : ""
+}
+
+/** How a report's cost totals are to be read: "at API list prices", and for subscription calls that it is a comparison. */
+export function costBasis(billing: Analysis["summary"]["billing"]): string {
+  const calls = billing.per_token + billing.subscription + billing.unknown
+  if (billing.subscription === 0) return "at API list prices"
+  if (billing.subscription === calls) return "at API list prices (subscription: a comparison, not billed)"
+  return `at API list prices (${billing.subscription} of ${calls} calls on a subscription, not billed per token)`
 }
 
 export function shortModel(model: string): string {
