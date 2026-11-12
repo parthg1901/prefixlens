@@ -30,8 +30,8 @@ describe("codex adapter", () => {
     expect(records.map((record) => [record.id, record.lane, record.model])).toEqual([
       ["resp_1", "main", "gpt-test-1"],
       ["resp_2", "main", "gpt-test-1"],
+      ["resp_c", "main", "gpt-test-1"],
       ["resp_3", "main", "gpt-test-1"],
-      ["resp_sub", "thread-synthetic-sub", "gpt-test-1"],
       ["resp_4", "main", "gpt-test-1"],
     ])
     expect(records[0]).toMatchObject({
@@ -44,20 +44,22 @@ describe("codex adapter", () => {
     expect(warnings).toEqual([expect.stringContaining("when each response finished")])
   })
 
-  test("maps OpenAI-convention usage: input includes cached and cache-write tokens", async () => {
+  test("maps Responses usage: input includes cached and cache-write tokens, output includes reasoning", async () => {
     const { records } = await codex.import(newer, {})
     expect(records[0]!.usage).toEqual({ input_tokens: 2000, cache_read_tokens: 0, cache_write_tokens: null, output_tokens: 100, reasoning_tokens: 40 })
     expect(records[1]!.usage).toEqual({ input_tokens: 700, cache_read_tokens: 1900, cache_write_tokens: null, output_tokens: 50 })
-    expect(records[3]!.usage).toEqual({ input_tokens: 500, cache_read_tokens: 1000, cache_write_tokens: 1500, output_tokens: 20 })
+    const sub = (await codex.import(codexDir, {})).records.find((record) => record.id === "resp_sub")!
+    expect(sub.usage).toEqual({ input_tokens: 500, cache_read_tokens: 1000, cache_write_tokens: 1500, output_tokens: 20 })
   })
 
-  test("compactions and collaboration-mode switches become hints on the next call", async () => {
+  test("the compaction call is named by compaction_response_id; the compaction and a mode switch are hints on the next call", async () => {
     const { records } = await codex.import(newer, {})
-    expect(records[2]!.hints).toEqual([
+    expect(records[2]!.hints).toEqual([{ kind: "compaction_call" }])
+    expect(records[3]!.hints).toEqual([
       { kind: "compaction", detail: "history compacted" },
       { kind: "agent_switch", detail: "default → plan" },
     ])
-    expect(records.filter((record) => record.hints).length).toBe(1)
+    expect(records.filter((record) => record.hints).length).toBe(2)
   })
 
   test("analysis infers compaction and expiry causes", async () => {
@@ -66,8 +68,8 @@ describe("codex adapter", () => {
     expect(turns.map((turn) => [turn.status, turn.cause?.cause])).toEqual([
       ["cold", "cold_start"],
       ["hit", undefined],
+      ["hit", undefined],
       ["miss", "compaction"],
-      ["cold", "cold_start"],
       ["miss", "cache_expired"],
     ])
   })
@@ -83,13 +85,25 @@ describe("codex adapter", () => {
     expect(analyze(records, { pricing }).turns[1]!.cause?.cause).toBe("model_changed")
   })
 
-  test("a directory imports every rollout under it as its own session", async () => {
+  test("a subagent's own rollout file becomes a lane of its root session, without its parent's copied history", async () => {
     const { records } = await codex.import(codexDir, {})
-    expect(records.length).toBe(7)
+    expect(records.length).toBe(8)
     expect([...new Set(records.map((record) => record.session))]).toEqual(["00000000-0000-4000-8000-0000000c0de1", "00000000-0000-4000-8000-0000000c0de2"])
-    const only = await codex.import(codexDir, { session: "00000000-0000-4000-8000-0000000c0de2", subagents: false })
-    expect(only.records.length).toBe(2)
-    expect((await codex.import(newer, { subagents: false })).records.map((record) => record.lane)).not.toContain("thread-synthetic-sub")
+    const sub = records.find((record) => record.id === "resp_sub")!
+    expect(sub).toMatchObject({ session: "00000000-0000-4000-8000-0000000c0de1", lane: "subagent:00000000-0000-4000-8000-0000000c0de3" })
+    // The fork's copy of the parent's compaction is not a compaction before the subagent's first call.
+    expect(sub.hints).toBeUndefined()
+  })
+
+  test("--session takes a root session with its subagents, or one thread; subagents: false keeps the main lane", async () => {
+    const root = await codex.import(codexDir, { session: "00000000-0000-4000-8000-0000000c0de1" })
+    expect(root.records.map((record) => record.id)).toEqual(["resp_1", "resp_2", "resp_c", "resp_3", "resp_sub", "resp_4"])
+    const main = await codex.import(codexDir, { session: "00000000-0000-4000-8000-0000000c0de1", subagents: false })
+    expect(main.records.map((record) => record.lane)).toEqual(["main", "main", "main", "main", "main"])
+    const thread = await codex.import(codexDir, { session: "00000000-0000-4000-8000-0000000c0de3" })
+    expect(thread.records.map((record) => record.id)).toEqual(["resp_sub"])
+    const older = await codex.import(codexDir, { session: "00000000-0000-4000-8000-0000000c0de2", subagents: false })
+    expect(older.records.length).toBe(2)
   })
 
   test("records survive a trace round trip", async () => {

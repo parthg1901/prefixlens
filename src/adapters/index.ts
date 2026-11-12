@@ -61,10 +61,10 @@ export const ADAPTERS: Adapter[] = [
   {
     name: "codex",
     fidelity: "usage-only",
-    description: "Codex CLI rollout files (rollout-<timestamp>-<uuid>.jsonl), or a directory of them (each file one session).",
+    description: "Codex CLI rollout files (rollout-<timestamp>-<uuid>.jsonl), or a directory of them (each file one thread; subagents join their root session).",
     defaultPath: "~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl",
     diagnoses:
-      "Usage only: hit rates and costs per model response, with causes inferred from model changes, timing, compactions and collaboration-mode switches. Codex logs the history items and base instructions but not the exact request (tool list, per-call instructions), so no block diffs; other misses are 'cause unknown'. Timestamps are response ends, not request starts. Written from the record shapes in local Codex rollouts and tested on synthetic fixtures only.",
+      "Usage only: hit rates and costs per model response, matching what the API reported (checked against proxy recordings of the same sessions), with causes inferred from model changes, timing, compactions (the compaction call itself is marked) and collaboration-mode switches. Subagents, which Codex logs in files of their own, are lanes of their root session. Rollouts log the input items but no request hash and only some parameters, and older versions send the tool list outside the logged items, so a rebuilt request cannot be shown to be the one sent: no block diffs; other misses are 'cause unknown'. Timestamps are response ends, not request starts.",
     import: importCodex,
   },
   {
