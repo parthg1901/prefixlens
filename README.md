@@ -1,691 +1,180 @@
 # prefixlens
 
-**Cache regressions are silent and expensive. prefixlens catches them in CI before they reach your bill.**
+Explains prompt-cache hits and misses for any agent, harness or framework that calls a model API.
 
-prefixlens explains prompt-cache hits and misses for any LLM agent harness. It turns a run into a trace of model calls, works out for each call how much of the cache it should have read and how much it did, and when it missed, finds the first part of the request that changed: the tool list, the system prompt, a message rewritten after it was sent, an injected timestamp, a compaction, a model or parameter change. Then it says so in plain words:
+Cache regressions are silent and expensive: one reordered tool list or a timestamp in the system prompt, and every later request pays full price. prefixlens shows which request broke the cache, why, and what it cost. It also catches the break in CI, before it reaches your bill.
+
+It works on the request itself. Anything that sends OpenAI Responses, OpenAI Chat Completions or Anthropic Messages requests can use it with no adapter: your own harness, an SDK, a framework such as the Vercel AI SDK or Mastra, or a gateway.
+
+A session of an agent whose tool list grew before its fourth call:
 
 ```
-turn 41: miss, tool list changed (+2 tools: 42 → 44), ~$0.38
+turn  time (UTC)  model            prompt   read  write  uncached  out    hit   cost  status
+   1  10:00:02    claude-opus-5-5   48.2k      0  48.2k        12  140     0%  $0.24  cold
+   2  10:00:09    claude-opus-5-5   48.6k  48.2k    420        12   95  99.1%  $0.01  hit
+   3  10:00:17    claude-opus-5-5   49.0k  48.6k    380        12  110  99.2%  $0.01  hit
+   4  10:00:26    claude-opus-5-5   49.9k      0  49.9k        12  160     0%  $0.25  miss: tool list changed (+1 tool: 3 → 4)
+   5  10:00:34    claude-opus-5-5   50.3k  49.9k    350        12   60  99.3%  $0.01  hit
+
+Misses
+  turn 4: miss, tool list changed (+1 tool: 3 → 4), ~$0.24
+    lost 49,000 of 49,000 cached tokens · vs turn 3 · confirmed
+    + web_search
+
+1 miss cost $0.24 at list prices; 1 from tool-list changes
 ```
-
-A harness that breaks its prefix on purpose (a compaction, a revert, a model change the user asked for) can say so in the trace. That call is then reported as an intentional break, with its cost shown and totalled apart from the misses that point at bugs.
-
-There are four ways in:
-
-- **import** a harness's existing session logs (Claude Code, opencode, Codex, OpenTelemetry GenAI spans);
-- **record** live traffic with a local proxy that every harness can point its base URL at;
-- **wrap** an Anthropic or OpenAI SDK client in your own harness (or `observe` calls from a custom client);
-- **test** prefix stability in CI with `prefixlens/test`, before a regression reaches your bill.
-
-## Status
-
-prefixlens 0.5 is unreleased. It has run on one machine, Linux arm64, with Bun 1.4.0 and Node 24.20. CI is set up to run the Bun suite on Linux and macOS and the Node suite on Node 22.0.0 (the minimum) and 26, on Linux and macOS, but it has not run yet: there is no public repository. So Node support has been tested on Linux only, with Node 24 only, and nothing has been run on macOS.
-
-Checked on real traffic, all on that machine:
-
-- **The recording proxy**, with:
-  - Claude Code (Anthropic Messages; five runs of Claude Code 2.1.322 on a Haiku model, ten model calls);
-  - Codex (OpenAI Responses with ChatGPT sign-in; Codex CLI 0.167.0, five `codex exec` runs, the same calls and token counts as Codex's own logs, no credential in the trace);
-  - another harness on the Responses API with ChatGPT sign-in;
-  - opencode 1.19.5 with its free models (Chat Completions through opencode's gateway; the same calls and token counts as opencode's database, plus the title calls opencode does not store, no credential in the trace).
-- **The `claude-code` importer**, on real sessions and against the proxy's records of the same sessions: usage, tool hashes and message hashes identical on every call, and every rebuilt request matched the digest Claude Code logged of the request it built. The importer then places the one system block Claude Code adds without logging it, so every other block and every breakpoint lines up with what the proxy recorded. The streaming importer writes byte-identical traces to the importer it replaced, on eight real sessions of 7 to 102 MB.
-- **The `codex` importer**, on real rollouts, whose per-response records match the proxy's calls one for one.
-- **The `opencode` importer**, on databases opencode 1.19.5 wrote (eight sessions, two free models): calls and tokens matched an independent recount and the recording proxy.
-- **Where the wrong verdicts fixed in 0.5 came from** (the fixes are listed under 0.5.0 in the [changelog](CHANGELOG.md)). They were first seen on real requests from four harnesses:
-  - Mastra: tests against the published `@mastra/core` 1.82.0 and `@mastra/memory` 1.41.0 with a recording fake provider. That gives the request bodies Mastra builds, and no real provider cache;
-  - opencode 1.19.5, through the recording proxy against its free-model gateway;
-  - Claude Code and Codex: a survey of imported session logs.
-- **One of those fixes, after it was made:** the Mastra sliding-window case was run again on real requests and now reports "oldest messages removed from the start of history".
-
-Not checked on real traffic:
-
-- the other verdict fixes of 0.5, after they were made: each fix is covered by a synthetic test, but apart from the Mastra sliding-window case none was run again on the traffic that had shown the wrong verdict;
-- the `otel` importer, tested only on synthetic fixtures;
-- `wrap(client)` and `lens.fetch` against the real APIs: they have run only against a simulated upstream (there was no API key);
-- cache expiry on real Anthropic traffic (Claude Code uses 1-hour lifetimes, so no expiry happened);
-- Claude Code's interactive mode and its side calls, so the proxy's lane separation for them is unchecked;
-- opencode with a provider that caches and is priced (only its free models were used), and opencode's compaction;
-- OpenAI's explicit cache breakpoints (`prompt_cache_breakpoint`), implemented from OpenAI's documentation and SDK types only;
-- the release workflow, which cannot run before there is a repository and an npm package.
-
-The prices in `pricing.json` have not been checked independently (see [Pricing](#pricing)).
 
 ## Install
 
-prefixlens is not on a package registry yet; use it from a clone, or pack the clone and install the tarball.
+```sh
+npm install --save-dev prefixlens    # or: bun add -d prefixlens
+```
 
-Requirements, on Linux or macOS:
+Requires Node.js 22 or later, or Bun 1.1 or later. There are no runtime dependencies.
 
-- [Node.js](https://nodejs.org) 22 or later; or
-- [Bun](https://bun.sh). Only Bun 1.4.0 has been run. `package.json` accepts 1.1 or later, and no version before 1.4.0 has been tested.
+## Quickstart
 
-There are no runtime dependencies.
+### 1. Test prefix stability in CI
 
-Node 22 is the oldest Node line still supported upstream (Node 20 reached end of life in April 2026), and nothing in prefixlens needs a newer one except two features, which say so when they are missing instead of raising the minimum for everyone:
+Build the request for two consecutive steps the way your harness does, and assert that the second keeps the first one's prefix. Nothing is sent to a provider.
 
-- reading an opencode SQLite database needs Node's built-in SQLite (Node 22.13 or later);
-- the proxy decodes zstd-compressed request bodies (Codex with ChatGPT sign-in sends them) only on Node 22.15 or later.
+```ts
+import { test } from "node:test"                  // or "bun:test"
+import { assertPrefixStable } from "prefixlens/test"
 
-Bun has both.
+// Stand-in for your harness: the request body it sends for a given history.
+const buildRequest = (messages) => ({
+  model: "claude-opus-5-5",
+  max_tokens: 1024,
+  system: "You are a coding agent.",
+  tools: [{ name: "read_file", description: "Read a file", input_schema: { type: "object" } }],
+  messages,
+})
 
-From a clone, with Bun (runs the TypeScript sources directly):
+test("a new step extends the previous request", () => {
+  const history = [{ role: "user", content: "Fix the failing test." }]
+  const first = buildRequest(history)
+  const second = buildRequest([...history, { role: "assistant", content: "Reading it now." }, { role: "user", content: "Go on." }])
+  assertPrefixStable(first, second)
+})
+```
+
+When the builder puts the current time in the system prompt, the test fails with the first changed block, a diff and a fix:
+
+```
+PrefixBreakError: prefix not stable: system prompt changed: a timestamp value was updated (2026-01-01T10:00:00Z → 2026-01-01T10:00:01Z)
+
+  first changed block: 2 of 3 (system part 1); block 1 still matches, everything from block 2 on is re-read
+
+      type: text
+    - text: You are a coding agent. Now: 2026-01-01T10:00:00Z
+    + text: You are a coding agent. Now: 2026-01-01T10:00:01Z
+
+  fix: keep clocks and ids out of the system prompt: send them in a new message, or round them (to the day, say).
+  if this change is intentional, pass { allowBreak: { reason: "..." } }
+```
+
+More in [assertions](https://github.com/parthg1901/prefixlens/blob/main/docs/assertions.md).
+
+### 2. Record through the proxy
+
+Point any client's base URL at a local proxy. It forwards every request unchanged and records each model call.
 
 ```sh
-git clone https://github.com/parthg1901/prefixlens.git prefixlens && cd prefixlens
-bun install              # dev dependencies only: TypeScript, Bun's types, and the two SDKs the tests wrap
-bun src/cli.ts --help    # the CLI, run from the checkout
+npx prefixlens record --provider anthropic -o run.trace.jsonl   # or --provider openai; listens on 127.0.0.1:8787
 ```
 
-Run `bun src/cli.ts` wherever this README says `prefixlens`. With Node, build first; `dist/` then holds the JavaScript and type declarations that ship:
+In another terminal, set the base URL and run your agent as usual:
 
 ```sh
-bun install && bun run build    # or, without Bun: npm install --no-package-lock && npm run build
-node dist/cli.js --help
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787   # with --provider openai: OPENAI_BASE_URL=http://127.0.0.1:8787/v1
 ```
 
-To use the CLI, the library or `prefixlens/test` in another project, on Node or Bun, pack the checkout and install the tarball there:
+Stop the proxy with Ctrl-C, then read the report:
 
 ```sh
-cd prefixlens && npm pack                          # builds dist/ and writes prefixlens-<version>.tgz (nothing is published)
-cd ../your-project && npm install --save-dev ../prefixlens/prefixlens-*.tgz    # or: bun add -d ../prefixlens/prefixlens-*.tgz
-npx prefixlens --help
+npx prefixlens report run.trace.jsonl          # add --html for a self-contained page, --json for the data
 ```
 
-## Quickstart: import an existing session
+Credentials are forwarded and never written. More in [proxy](https://github.com/parthg1901/prefixlens/blob/main/docs/proxy.md).
 
-```sh
-# Claude Code: one session file (its subagents/ directory is picked up too)
-prefixlens import claude-code ~/.claude/projects/<project>/<session-id>.jsonl -o session.trace.jsonl
+### 3. Wrap your client
 
-# opencode: list sessions, then import one
-prefixlens import opencode ~/.local/share/opencode/opencode.db --list
-prefixlens import opencode ~/.local/share/opencode/opencode.db --session <id> -o session.trace.jsonl
-
-# Codex: one rollout file, or a directory of them
-prefixlens import codex ~/.codex/sessions/2026/01/01/rollout-<timestamp>-<id>.jsonl -o session.trace.jsonl
-
-# OpenTelemetry GenAI spans (an OTLP/JSON export)
-prefixlens import otel spans.json -o session.trace.jsonl
-
-# Report
-prefixlens report session.trace.jsonl            # terminal
-prefixlens report session.trace.jsonl --json     # machine-readable
-prefixlens report session.trace.jsonl --html     # writes session.trace.html, one self-contained file
-```
-
-`import` writes to stdout when `-o` is not given, so the two commands pipe: `prefixlens import opencode <db> | prefixlens report -`.
-
-Output on a small synthetic session. This is the table, the misses and the headline; the two header lines above the table, the Totals block and the notes under the headline are left out here:
-
-```
-turn  time (UTC)  lane      model            prompt   read  write  uncached  out    hit     cost  status
-   1  10:00:01    main      claude-opus-5-5   2,003      0  2,000         3   40     0%    $0.02  cold
-   2  10:00:06    main      claude-opus-5-5   2,103  2,000    100         3   10  95.1%  $0.0014  hit
-   3  10:00:10    agent-a1  claude-opus-5-5   1,502      0  1,500         2    5     0%  $0.0076  cold
-   4  10:00:15    agent-a1  claude-opus-5-5   1,552  1,500     50         2    5  96.6%  $0.0007  hit
-   5  10:00:21    main      claude-opus-5-5   2,303      0  2,300         3   12     0%    $0.02  miss: tool list changed (+1 tool: 2 → 3)
-
-Misses
-  turn 5: miss, tool list changed (+1 tool: 2 → 3), ~$0.02
-    lost 2,100 of 2,100 cached tokens · vs turn 2 · lane main · confirmed
-    + web_fetch
-
-1 miss cost $0.02 at list prices; 1 from tool-list changes
-```
-
-Long sessions hide the hit rows in the terminal (`--all` shows them); the HTML report always has every row, a chart of prompt tokens per call, and the diff for each miss.
-
-### Report options
-
-| option | meaning |
-|---|---|
-| `--json` | Print the full analysis as JSON (summary, every call, causes, diffs). Its fields may still change between minor versions: see [The JSON report](#the-json-report). |
-| `--html [file]` | Write a self-contained HTML report (default `<trace>.html`). No external requests. |
-| `--pricing <file>` | Use another pricing table (also `PREFIXLENS_PRICING`). |
-| `--no-catalogue` | Do not use the models.dev prices that `prefixlens pricing update` fetched ([below](#a-second-source-modelsdev)). |
-| `--catalogue-provider <trace>=<models.dev>[,...]` | Price a trace provider's models that the table lacks from another models.dev provider, e.g. `anthropic=openrouter`. Default: each provider's own. |
-| `--tolerance <tokens>` | Lost tokens still counted as a hit (default 128). Where a trace shows a cache reading in larger steps ([How it decides](#how-it-decides)), a request that exactly extends the previous one is also a hit when it is less than one such step short. |
-| `--all` | Show every row and every miss in the terminal. |
-| `--no-color` | Plain output (also when `NO_COLOR` is set or output is not a terminal). |
-
-### The JSON report
-
-`report --json` prints one JSON object. **Its fields are not a stable interface yet: until 1.0 a minor version may add, rename or remove them.** Such changes are listed in the [changelog](CHANGELOG.md). The top-level fields today:
-
-| field | holds |
-|---|---|
-| `report` | Always `"prefixlens"`. |
-| `trace` | The trace path as given on the command line (`"-"` for stdin). |
-| `pricing` | Where the prices came from: `source`, `as_of` when the table has one, and `catalogue` (`source`, `fetched_at`) when a models.dev file was loaded. |
-| `version` | `1`. It has not been raised for the fields added so far, so do not use it to detect a change before 1.0. |
-| `summary` | Totals for the trace: calls, lanes, tokens, hit rate, cost, calls by status, misses by cause group, intentional breaks, the headline and the notes. |
-| `turns` | One object per model call, in trace order: its usage, hit rate, cost, expected and lost cached tokens, status, and for a miss its `cause` (with `summary`, `confidence`, `detail` and a `diff` excerpt). |
-| `warnings` | What the trace reader and the analysis warned about. |
-
-Strings in it are the trace's content as it was, except the `diff` excerpts, in which control characters are written visibly (`\x1b`).
-
-## Quickstart: record with the proxy
-
-```sh
-prefixlens record --provider anthropic -o run.trace.jsonl     # listens on 127.0.0.1:8787
-ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude                # in another terminal: use the harness as usual
-# Ctrl-C the proxy, then
-prefixlens report run.trace.jsonl
-```
-
-The proxy forwards every request to the real API with its method, path, query, body and credentials as the harness sent them, and streams each response back chunk by chunk as it arrives. It does not change the content of a request or a response. It is not a byte-for-byte relay, though:
-
-- it drops the hop-by-hop headers and its own two (`x-prefixlens-lane`, `x-prefixlens-session`), and narrows `accept-encoding` to what the runtime can decode;
-- the runtime's fetch adds its defaults for headers the harness did not send (`accept`, `accept-encoding`, `user-agent`; on Node also `accept-language` and `sec-fetch-mode`);
-- it reads each request body whole before forwarding it;
-- it passes the response on decompressed, without the provider's `content-encoding` and `content-length`.
-
-The exact list is in [SECURITY.md](SECURITY.md#the-recording-proxy).
-
-When a model call ends, and only after the client has received every byte of the response, the proxy appends one full-request record: the canonical request, the final usage, the request start time. Auth headers, cookies and API keys are never written, nor are identifying request fields or the bytes of images and documents (see [Security and privacy](#security-and-privacy)); the only headers kept are `session-id` (cache affinity on OpenAI's ChatGPT sign-in flow), `anthropic-beta`, `anthropic-version` and `openai-beta`. It prints one line per call, so you can watch the hit rate while you work:
-
-```
-#2 main gpt-6-luna: prompt 2,987, cache read 2,816 (94%), output 9
-```
-
-| option | meaning |
-|---|---|
-| `--provider anthropic\|openai` | Which API (required). Sets the default upstream. |
-| `--port <n>` | Port (default 8787). |
-| `--host <address>` | Listen address (default 127.0.0.1). |
-| `-o, --out <file>` | Trace to append to (default `prefixlens.trace.jsonl`). |
-| `--upstream <url>` | Forward somewhere else: a gateway, a regional endpoint. A path is prefixed to each request path. With `https://chatgpt.com` (Codex's ChatGPT sign-in backend) records are marked `"billing": "subscription"`. |
-| `--allow-origin <origins>` | Do not refuse requests whose `Origin` is one of these (comma-separated, or `*`). By default a request with an `Origin` header is refused (403). This alone does not make the proxy usable from a web page: it adds no CORS response headers and forwards the preflight upstream, so a page can read the answer only if the upstream's CORS headers allow it. |
-| `--keep-identifiers` | Keep `metadata`, `user`, `safety_identifier` and `client_metadata` in the recorded params (left out by default). |
-| `--keep-binary` | Keep base64 images, documents and audio in the trace instead of their SHA-256 and size. |
-| `--quiet` | No line per call. |
-
-What is recorded, and what is not:
-
-- **Recorded.** `POST …/messages` (Anthropic Messages), `…/chat/completions` and `…/responses` (OpenAI), streamed (SSE, with or without `[DONE]`, with `: keep-alive` comments) or not, and compressed request bodies (gzip, deflate, br, zstd).
-- **Passed through.** Everything else passes through unrecorded, as do error responses.
-- **WebSockets.** Handshakes are answered `426 Upgrade Required` and never forwarded: the proxy relays HTTP only.
-- **Cut-off calls.** A client that disconnects mid-stream is recorded only if the stream already reported usage (Anthropic does in its first event); the record is marked `"interrupted": true`, and the report shows the call as cut off, with its output and cost as lower bounds.
-- **Refused.** A request whose `Host` is not a loopback name or the `--host` address, or that carries an `Origin` header, is refused with 403 and not forwarded. Browsers send `Origin` on the requests a page can make to an API (a cross-origin `fetch` or `POST`), and harness CLIs do not; this keeps a web page open in your browser from sending model calls through the proxy. A plain `GET` navigation or image load carries no `Origin` and is forwarded, unrecorded and without credentials ([SECURITY.md](SECURITY.md#the-recording-proxy)).
-- **Usage in streams.** Chat Completions streams report usage only with `stream_options: {"include_usage": true}`; the proxy does not add it, since it never changes a request body, so without it those calls are skipped with a note.
-
-**Lanes.** One proxy often carries several conversations at once (subagents, title generation, side queries), and each call must be compared with the call it builds on. The proxy assigns lanes by shared prefix. A call joins the first of these that applies:
-
-1. the lane whose latest request it extends;
-2. else the lane it shares the most leading messages with, when it also shares the start of the request or that lane is idle with the same tools or system prompt (an edit, a mode switch);
-3. else an idle lane with the same tools and system prompt (a compaction);
-4. else it opens a new lane.
-
-A call that does not extend a lane joins it only when its cache key (the `session-id` header, else `prompt_cache_key`) matches, so a harness that names its conversations, as Codex does, gets a lane per conversation.
-
-Sessions, overrides and restarts:
-
-- **Session headers.** A harness that names its sessions in a request header gets a session per conversation: the proxy reads the headers listed in `SESSION_HEADERS` (today opencode's `x-opencode-session-id`, and `x-opencode-parent-session-id` from a subagent), records each call in its session, and a subagent's calls in its root session as lane `subagent:<id>`, as `prefixlens import opencode` does; so two opencode sessions run one after the other through one proxy never share a lane. These headers are forwarded and not written.
-- **Title calls.** opencode's title call comes first in a new session and has its own instructions, so it opens the session's `main` lane and the conversation itself is `lane-2`.
-- **Explicit lanes.** A harness that knows better can send `x-prefixlens-lane` (and `x-prefixlens-session`), which win over all of this; the proxy strips both before forwarding.
-- **Restarts.** A proxy started on a trace that already has records (`-o` with an existing file) reads the lanes the file holds and continues them, so a conversation carried over a restart is compared with its own previous call and new conversations get lane names the file does not use yet.
-
-### The base URL to set, per harness
-
-| harness | start the proxy with | then set |
-|---|---|---|
-| Claude Code | `--provider anthropic` | `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` |
-| Anthropic SDKs (TypeScript, Python) | `--provider anthropic` | `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` |
-| OpenAI SDKs (TypeScript, Python), and tools built on them | `--provider openai` | `OPENAI_BASE_URL=http://127.0.0.1:8787/v1` |
-| Codex CLI, signed in with ChatGPT (its requests go to `https://chatgpt.com/backend-api/codex/responses`) | `--provider openai --upstream https://chatgpt.com` | `codex -c 'openai_base_url="http://127.0.0.1:8787/backend-api/codex"'`, or `openai_base_url` in `~/.codex/config.toml` |
-| Codex CLI with an API key | `--provider openai` | `openai_base_url="http://127.0.0.1:8787/v1"` (as above) |
-| A harness on the Responses API with ChatGPT sign-in (requests to `https://api.openai.com/v1/responses`) | `--provider openai` | its base URL option: `http://127.0.0.1:8787/v1` |
-| opencode | `--provider openai --upstream https://opencode.ai/inference/openai` for its free `opencode/*` models; otherwise the provider you use | `"provider": { "opencode": { "options": { "baseURL": "http://127.0.0.1:8787/v1" } } }` in `~/.config/opencode/opencode.json` (another provider's id for others) |
-
-What was run for each row:
-
-- **Codex with ChatGPT sign-in:** live (Codex CLI 0.167.0, five small `codex exec` runs through the proxy: every call recorded, the same calls and token counts as Codex's own rollout logs, no credential in the trace). Codex opens Responses over a WebSocket first; the proxy relays HTTP only and answers the handshake with 426, on which Codex switches to HTTP at once. A base URL ending in `/backend-api/codex` keeps the routes Codex uses only on its own backend (Codex's source decides this by that suffix).
-- **The other ChatGPT sign-in row:** live, with another harness.
-- **Codex with an API key:** not run. The row follows Codex's source (the same setting, with `https://api.openai.com/v1` as the default).
-- **opencode:** run live with opencode 1.19.5 and its free models, which need no sign-in: every call recorded, the same calls and token counts as opencode's database plus the title calls opencode does not store, no credential in the trace.
-- **Claude Code:** run live, five runs of Claude Code 2.1.322 on a Haiku model through the proxy, ten model calls recorded.
-- **The TypeScript SDK rows:** against a local stand-in for each API.
-- **The Python SDK rows:** not run through the proxy here. They follow those SDKs' documented settings.
-
-## Quickstart: wrap your SDK client
+Record from inside your own process, with no proxy:
 
 ```ts
 import Anthropic from "@anthropic-ai/sdk"
-import OpenAI from "openai"
 import { wrap } from "prefixlens"
 
-const anthropic = wrap(new Anthropic())                          // records to $PREFIXLENS_TRACE or ./prefixlens.trace.jsonl
-const openai = wrap(new OpenAI(), { trace: "run.trace.jsonl" })
+const client = wrap(new Anthropic(), { trace: "run.trace.jsonl" })   // also wrap(new OpenAI())
 ```
 
-`wrap` works with the official TypeScript SDKs (`@anthropic-ai/sdk`, `openai`), streaming and helpers included (`messages.stream()`, `responses.stream()`, `.withResponse()`). It does not import either SDK: both send every request through the client's `fetch`, and `wrap` replaces it on the client you pass with one that records and passes every byte through as it arrives. It returns the same client; wrapping twice records once. Options: `trace` (a path, or `false` for none), `onRecord(record)`, `onSkip(reason)`, `session`, `lane`, `keepIdentifiers`, `keepBinary`.
-
-For other clients:
+For a client or framework that is not one of those SDKs:
 
 ```ts
 import { createLens } from "prefixlens"
 
 const lens = createLens({ trace: "run.trace.jsonl" })
-
-// A client that takes a fetch function (most do):
-const client = new MyClient({ fetch: lens.fetch() })
-
-// Or report each call yourself, after the response ends:
-lens.observe({
-  request: body,                     // the request body as sent: Responses, Chat Completions or Anthropic Messages
-  response: completedEvent,          // final JSON, the parsed stream events, the SSE text, or the final event alone
-  startedAt: requestStart,           // cache lifetimes run from the request start
-  headers: { "session-id": cacheKey },
-})
+const recordingFetch = lens.fetch()             // pass it to any client or framework that accepts a fetch function
+lens.observe({ request: body, response })       // or report each call yourself: the body as sent, the response as received
 ```
 
-## Quickstart: test prefix stability in CI
+`buildRecord` builds the same record from a request and a response you already have. From another language, write the [trace format](SPEC.md) or use the proxy. More in [library](https://github.com/parthg1901/prefixlens/blob/main/docs/library.md).
 
-```ts
-import { test } from "node:test"          // or "bun:test"
-import { assertPrefixStable } from "prefixlens/test"
+## Works with
 
-test("each step extends the previous request", () => {
-  const first = harness.buildRequest(session)
-  session.append(toolCall, toolResult)
-  assertPrefixStable(first, harness.buildRequest(session))
-})
-```
+Any client of the Anthropic Messages, OpenAI Chat Completions or OpenAI Responses request formats, on a provider with implicit or explicit prompt caching. There is no per-harness adapter.
 
-`assertPrefixStable(prev, next, options?)` throws a `PrefixBreakError` unless `next` keeps every block of `prev` unchanged, in place, with the same model and cache-relevant parameters. `explainPrefixDiff(prev, next, options?)` returns the same explanation without throwing (`stable`, `ok`, `appended`, `unchanged`, `change`, `block`, `references`, `fix`, `message`). Both are pure functions with no network. `prev` and `next` can be request bodies as sent (Anthropic Messages, OpenAI Chat Completions, OpenAI Responses; Gemini with `provider: "gemini"`), canonical requests, trace records, or block lists.
-
-A failure names the first changed block and what changed, shows a small diff, and says what to do:
-
-```
-PrefixBreakError: prefix not stable: tool order changed (3 of 3 tools moved; same tools, different order)
-
-  first changed block: 1 of 5 (tool "write_file", now tool "read_file"); nothing before it matches, so the whole request is re-read
-
-    - [0]: write_file
-    - [1]: run_shell
-    - [2]: read_file
-    + [0]: read_file
-    + [1]: write_file
-    + [2]: run_shell
-
-  fix: build the tool list in a deterministic order (sort it once, e.g. by name) instead of connection or map order.
-  if this change is intentional, pass { allowBreak: { reason: "..." } }
-```
-
-Options:
-
-| option | meaning |
+| | |
 |---|---|
-| `allowBreak: "revert"` | An intentional break, with the same meaning as a `prefix_break` hint in a trace ([below](#declaring-intentional-breaks)). The reason sets how far it may reach: `"revert"` and `"refusal"` must keep the tools and system prompt; `"compaction"`, `"model_switch"`, `"settings_change"` and any other reason may change anything. A `"compaction"` reason also names the change as one. |
-| `allowBreak: { after, reason }` | The prefix may change only after `after`: `"start"` (anywhere, model included), `"tools"`, `"system"` (tools and instructions must survive, e.g. a compaction that keeps them), `{ system: n }` (the tools and the first n system parts, for a later system part you rewrite on purpose, such as working memory), `{ message: n }`, or a block count. Anything else is an error. |
-| `ignoreParams: ["truncation"]` | Parameters to leave out, for one you have shown your provider does not cache on. The built-in rules per provider are in [SPEC.md section 8.1](SPEC.md#81-which-request-parameters-are-part-of-the-cached-prefix). |
-| `hints` | Trace hints (`[{ kind: "compaction" }]`) to name the change. A `prefix_break`, `compaction` or `model_switch` hint also allows the break, exactly as the report would; so do the hints of `next` when it is a trace record. |
-| `provider` | Request format, when the body shape is ambiguous. Also picks the parameter rules. A body is read as Anthropic Messages when it has a top-level `system`, `thinking`, `stop_sequences`, `cache_control` or `anthropic_version`, Anthropic-style tools or content parts, or a `claude-…` model id with nothing in it that only Chat Completions has; a body with `messages` and none of these (`{ model, max_tokens, messages }` is valid for both APIs) is read as Chat Completions, so pass `provider: "anthropic"` for it. |
+| Assertions | Request bodies in those three formats, and Gemini `generateContent` bodies with `provider: "gemini"`. |
+| Proxy, `wrap`, `lens.fetch`, `lens.observe`, `buildRecord` | Calls in those three formats, streamed or not. A gateway's or another provider's compatible endpoint is recorded in the format it uses. |
+| Caching | Implicit caches (OpenAI, Gemini) and explicit breakpoints (Anthropic `cache_control`, OpenAI `prompt_cache_breakpoint`). |
+| Other languages | The proxy, or a trace written to [SPEC.md](SPEC.md). |
 
-What is compared, where it is not obvious:
+## What it tells you
 
-- **Deferred tools.** An Anthropic tool sent with `defer_loading: true` is not rendered into the prompt until tool search returns it, so it is not part of the prefix: adding or removing one is not a change, and block numbers and counts leave such tools out. A trace still lists them, flagged `deferred`.
-- **Request-level caching.** A top-level `cache_control` on an Anthropic request is a breakpoint on the last block, not a parameter: turning it on, or moving to it from a marker on the last message, keeps the prefix.
-- **`item_reference` items** (OpenAI Responses, earlier output named by id): compared by the id. The item itself was never in the request, so a stable verdict says how many of the unchanged blocks are references whose content and size are unknown (`references` in the explanation).
+For each call: prompt tokens read from the cache, written and uncached, the hit rate and the cost. For each miss: the first changed block, a diff, the tokens lost, the cost, and one of these causes.
 
-Some verdicts on history, as they are worded:
+| cause | what happened |
+|---|---|
+| Tool-list changes | A tool added, removed, redefined or reordered. |
+| System-prompt changes | The system prompt edited, or a timestamp, id or relative date in it rendered again. |
+| History rewrites | A sent message edited, inserted, removed or reordered; a tool output or reasoning block rewritten on replay; a sliding window; a rewind. |
+| Reshaped steps | Messages merged or split on replay. |
+| Compaction | History replaced by a summary. |
+| Model or parameter changes | Another model, or a change to a parameter the provider caches on. |
+| Cache expiry | The prefix is intact, but the call came after the cache lifetime. |
+| Provider-side misses | The prefix is intact and in time: the provider evicted the entry or routed the request elsewhere. |
 
-| what the harness did | verdict | fix it suggests |
-|---|---|---|
-| dropped the oldest messages and replayed the rest (a sliding window) | `2 oldest messages removed from the start of history (3 kept, 2 appended)` | drop history in chunks at a saved boundary, or keep history append-only |
-| replaced history with a summary, with or without a tail of recent messages kept word for word | `history compacted (25 → 12 messages from message #1)` | mark it with `allowBreak: { reason: "compaction" }` |
-| inserted a message before one already sent, which the SDK merged into it | `1 part inserted at the start of message #1 (user), ahead of content already sent; …` | append new messages at the end |
-| rendered a relative date again | `system prompt changed: a relative date value was updated (today → yesterday)` | keep clocks and ids out of the system prompt: send them in a new message, or round them |
-
-[`examples/ci-prefix-test`](examples/ci-prefix-test) is a small project whose `bun test` suite catches the four common bugs: tools sorted differently each turn, a timestamp in the system prompt, an already-sent message rewritten, and the tool list changing on a mode switch. It also shows two legitimate changes passing: `tool_choice: "none"` on the last step, and a declared revert.
+More in [reports](https://github.com/parthg1901/prefixlens/blob/main/docs/report.md).
 
 ## Declaring intentional breaks
 
-Some prefix breaks are deliberate: the harness compacts history and rebuilds its instructions, the user reverts to an earlier point, a refused exchange is left out of history, the user picks another model or reasoning effort. Declare each one on the first call after it, as a hint in the trace record:
+A compaction, a revert or a model change the user asked for breaks the prefix on purpose. Declare it, and it is reported as an intentional break, with its cost totalled apart from the misses that point at bugs.
 
-```json
-"hints": [{ "kind": "prefix_break", "reason": "revert", "detail": "reverted to message 12" }]
-```
+In a test: `assertPrefixStable(prev, next, { allowBreak: "compaction" })`. In a trace: a `prefix_break` hint on the first call after the break.
 
-| reason | for | may change |
-|---|---|---|
-| `compaction` | history summarized or replaced, instructions possibly rebuilt | anything |
-| `revert` | conversation rewound to an earlier point | messages only (tools and system prompt must stay) |
-| `refusal` | a refused exchange left out of history | messages only |
-| `model_switch` | another model | anything |
-| `settings_change` | a parameter changed on purpose, e.g. reasoning effort | anything |
+A declaration excuses one call, and only a change its reason allows. See [intentional breaks](https://github.com/parthg1901/prefixlens/blob/main/docs/intentional-breaks.md).
 
-`after` overrides how far a break may reach (`"start"`, `"tools"`, `"system"`, `{"system": n}` for the tools and the first n system parts, `{"message": n}` or a block count). The older `compaction` and `model_switch` hints still declare a break; `agent_switch` and `tool_output_pruned` do not, since a mode switch that changes the tool list is exactly the kind of change prefixlens should catch.
+## Limits
 
-A declaration is not a way to make misses disappear:
+- It sees the request your code sends, not what the provider does with it. Server-side context editing, eviction and routing show up as a miss with the prefix intact.
+- Costs are API list prices from a bundled table, not your bill. Subscriptions, discounts and batch tiers are not applied, and the table can be out of date. See [pricing](https://github.com/parthg1901/prefixlens/blob/main/docs/pricing.md).
+- Gemini's native API and WebSocket transports are not recorded. Chat Completions streams are recorded only when they report usage (`stream_options: {"include_usage": true}`).
+- A trace holds your prompts, tool output and the files your agent read. Keep it private and never commit it. See [SECURITY.md](SECURITY.md).
+- The fields of `report --json` may change in a minor version before 1.0. What has been checked on real traffic is listed in [verification](https://github.com/parthg1901/prefixlens/blob/main/docs/verification.md).
 
-- it excuses the miss of the call it is on and nothing else; a second miss right after it is a miss;
-- it excuses only a change where its reason allows: a declared revert that also changed the tool list is reported as a miss, with the reason;
-- it never excuses a miss with the prefix intact (expiry, provider-side), nor a call that read nothing after the cache lifetime had passed: the cache was gone whatever the harness did, so that miss is an expiry, with the declared break named beside it;
-- the report shows each intentional break with what changed and what it cost, and totals that cost separately (`summary.intentional`, `summary.cost.intentional` in `--json`); `summary.misses` and the miss cost count only the rest.
+## Documentation
 
-```
-   4  10:01:20    gpt-4.1   2,000      0      -     2,000   40     0%  $0.0043  intentional break (compaction): system prompt changed (part 1 of 1 edited)
-   7  10:02:20    gpt-4.1   2,500      0      -     2,500   40     0%  $0.0053  intentional break (revert): conversation rewound at message #3: …
-   8  10:02:40    gpt-4.1   2,900      0      -     2,900   40     0%  $0.0061  miss: system prompt changed (part 1 of 1 edited)
-
-1 miss cost $0.0036 at list prices; 1 from system-prompt changes. Also 2 intentional breaks declared by the harness cost $0.0067 at list prices (1 revert, 1 compaction).
-```
-
-`assertPrefixStable(prev, next, { allowBreak: "revert" })` allows exactly what a `revert` declaration excuses in the report. The rules are in [SPEC.md section 6.1](SPEC.md#61-declaring-an-intentional-break).
-
-## What each adapter can and can't diagnose
-
-Every adapter declares the fidelity it produces. `prefixlens adapters` prints a shorter form of what follows: each adapter's fidelity, default location and a summary of what it can diagnose.
-
-| adapter | fidelity |
-|---|---|
-| [`claude-code`](#claude-code) | full-request on recent Claude Code versions, usage-only on older logs |
-| [`opencode`](#opencode) | usage-only |
-| [`codex`](#codex) | usage-only |
-| [`otel`](#otel) | usage-only |
-
-### `claude-code`
-
-**Reads:** `~/.claude/projects/<project>/<session>.jsonl` and `<session>/subagents/*.jsonl`
-
-**Fidelity:**
-
-- **full-request** on recent Claude Code versions, whose logs record each request (its tools, system prompt, params, cache breakpoints, and messages by hash). prefixlens rebuilds every request and checks it against the SHA-256 digest Claude Code logged of the request as it built it; a rebuilt request that does not match is imported usage-only.
-- That digest proves the tools, the logged system parts, the messages, the params and the breakpoints, not the bytes sent: Claude Code's transport then puts a first system block in front (a billing-attribution line that differs per session) that the log never contains, and sends the logged `betas` as the `anthropic-beta` header. The importer writes that block as an `unknown` block in its place, so every other block and breakpoint sits where it was sent, and `betas` as the header; the report says the system prompt is partly unknown.
-- **usage-only** on older logs, which record responses only.
-- A directory is imported with each model call once: a resumed or forked conversation starts its file with a copy of the earlier file's lines, and the copy in the file that starts earliest is kept (same call id and timestamp; a warning says how many copies were left out). One such file imported alone keeps the calls it copied.
-
-**Can diagnose:**
-
-- Full: every cause, with the first changed block and a diff: tool list and order changes (e.g. an MCP server dropping out), system prompt edits, edited, appended or removed messages, rewinds, compaction, param changes, expiry against the logged TTL, and misses with every recorded block intact (reported as provider-side but *inferred*, since the billing-attribution block cannot be compared).
-- Usage-only: hit rates, costs, model changes, likely expiry (TTL inferred from the 5-minute/1-hour write split), compaction from the transcript's compact boundaries.
-
-**Can't diagnose:**
-
-- Full: a change to the billing-attribution block (its content is unknown; a miss it caused reads as one with the prefix intact); changes the provider makes after the request leaves Claude Code (server-side context editing such as clearing old thinking, set by the `context_management` param), which show up as a miss with the prefix intact; and calls Claude Code bills but does not log one by one (compaction summaries, title and other side queries; the importer warns when Claude Code's own totals exceed the logged calls).
-- Usage-only: no tool list, system prompt or history, so tool-list, tool-order, system-prompt and history changes cannot be told apart; such misses are reported as *cause unknown* rather than guessed.
-
-### `opencode`
-
-**Reads:** `~/.local/share/opencode/opencode.db` (`opencode-<channel>.db` on other channels; `opencode db path` prints it): the `session/message/part` tables released versions write (checked on 1.19.5), the `session_v2/session_message` tables of opencode's unreleased development code, or a legacy `storage/` JSON directory
-
-**Fidelity:** usage-only
-
-**Can diagnose:**
-
-- Per-call hit rates and costs (one record per model call), model changes, likely expiry, and inferred causes from opencode's records: compactions, agent switches (e.g. build → plan), pruned tool outputs.
-- `input` excludes cached tokens and `output` excludes reasoning; on 1.19.5 every call's tokens matched the recording proxy.
-- `ts` is the message's creation, 30–100 ms before the request (1–3 s on a prompt's first call).
-
-**Can't diagnose:**
-
-- Anything that needs the request: opencode stores the conversation and per-call usage, not the tool list, system prompt, parameters or replayed history, nor a request hash, and neither `opencode export` nor any log level records requests; use the proxy.
-- Causes are *inferred*, no block diffs, unexplained misses are *cause unknown*.
-- Title-generation calls are not stored and are missed, with a warning.
-- Compaction was not exercised on 1.19.5.
-
-### `codex`
-
-**Reads:** `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, one file or a directory of them. Each file is one thread; a subagent's file joins its root session as a lane (`subagent:<thread id>`), and `--session <id>` takes a root session with its subagents
-
-**Fidelity:** usage-only
-
-**Can diagnose:**
-
-- Per-response hit rates and costs, model changes, likely expiry, compactions (with the compaction call itself marked), collaboration-mode switches, and tool-list changes, from the hash Codex logs for each tool definition (`world_state`; tools added, removed or redefined; inferred).
-- Calls made with ChatGPT sign-in, which Codex logs with the plan's rate limits, are marked `"billing": "subscription"`.
-- Usage is the API's own: Codex copies it from each `response.completed`, so `input_tokens` includes cached and cache-write tokens and output includes reasoning (Codex's source); on real rollouts the per-response records add up exactly to Codex's own running totals, and on sessions recorded through the proxy they match the proxy's calls one for one, by response id and token counts.
-
-**Can't diagnose:**
-
-- The request. Newer rollouts (0.167) log every input item, tool declarations included, and on the sessions recorded through the proxy they rebuilt each request's input block for block; but no version logs a request hash or the full parameters, and older versions send the tool list outside the logged items, so a rebuilt request cannot be shown to be the one sent: no block diffs, and instruction and history changes are *cause unknown* (tool-list changes are named from the logged tool hashes when newer versions log them).
-- Timestamps are response ends, not request starts (2–7 s after the proxy's request starts here).
-- Logs with `token_count` events only (no `token_usage_record` lines) do not report compaction calls.
-
-### `otel`
-
-**Reads:** OpenTelemetry GenAI spans: an OTLP/JSON export, JSONL of exports, or a JSON array of spans
-
-**Fidelity:** usage-only
-
-**Can diagnose:** Per-call hit rates and costs from `gen_ai.usage.*` (cache reads and writes included), model changes, likely expiry; `gen_ai.conversation.id` becomes the session.
-
-**Can't diagnose:**
-
-- The request: the content attributes are opt-in and not the exact request, so no block diffs.
-- Follows the semantic conventions (`input_tokens` includes cached tokens); a span whose cache counts exceed its input is read as reporting input without cache, with a warning.
-
-### Reading the labels
-
-Usage-only traces always say so: hit rates and costs are exact, but a root-cause diff needs full requests. Each miss in a report is labelled *confirmed* (proven from two full requests), *inferred* (from timing, a model change or the harness's own log; also a miss with the recorded prefix intact when a block of the request could not be recorded) or *unknown*.
-
-## Why caches miss
-
-Prompt caching is a prefix match. The provider caches the request up to a point, and the next request reuses that cache only if it starts with exactly the same tokens. Anthropic renders a request as tools, then system prompt, then messages, so a change anywhere invalidates everything after it. Most misses are not the provider's fault; they come from the harness rewriting its own prefix:
-
-- **The tool list changed.** A mode switch trims 47 tools to 42, or an MCP server reconnects. Tools come first, so this invalidates everything.
-- **The tool order changed.** The same tools, sorted by whichever MCP server connected first.
-- **History was rewritten after the fact.** Old tool outputs truncated or expanded on replay, reasoning blocks dropped, a reminder appended to an old message, a recalled message inserted before one already sent, a relative date ("today", "2 hours ago") rendered again.
-- **The history window slid.** The oldest messages are dropped on every call so the last N stay; everything after them is re-read each time. Reported as *N oldest messages removed from the start of history*.
-- **Steps were reshaped on replay.** Consecutive tool calls merged into one message, or one split into two.
-- **Instructions were refreshed mid-session.** The system prompt rebuilt with a new timestamp, a re-read instructions file, or a changed environment block.
-- **Compaction.** History replaced by a summary, with or without a tail of recent messages kept word for word. Expected, but each one costs a full re-write. The loss is counted on the new, shorter prompt (a call cannot pay for more tokens than it sent), and the report also says how large the cache was that the compaction gave up.
-- **Model or parameter changes.** Caches are per model. Which parameters count depends on the provider: on Anthropic, changing thinking, effort or `tool_choice` invalidates cached messages (documented); on OpenAI, reasoning effort, verbosity, the output format and `parallel_tool_calls` count (documented), and `tool_choice` does not (measured on the Responses API).
-- **Provider-side or expiry misses.** The prefix is intact, but more time passed than the TTL (5 minutes by default, 1 hour if requested), or the provider evicted or routed elsewhere. A call that read nothing after the TTL had passed is an expiry even when the prefix also changed: it would have missed anyway, and the change is named beside it.
-
-Breakpoints count where a provider caches only up to them: Anthropic's `cache_control`, and OpenAI's `prompt_cache_breakpoint` in explicit-only mode (`prompt_cache_options.mode: "explicit"`, GPT-5.6 and later). Both are recorded as `breakpoint` on the block and left out of its hash, so a breakpoint that moves is not an edit; a change after the previous call's last breakpoint is not blamed for a miss.
-
-prefixlens separates these: with full requests it proves which block changed, or that none did.
-
-## How it decides
-
-For each call it looks at the previous call in the same lane (subagents get their own lane):
-
-- **expected cached tokens**: what the previous call left in the cache (Anthropic: what it read plus what it wrote; OpenAI and Gemini: its whole prompt, in whole cache steps, once it is long enough to cache). The step is 128 tokens unless the trace shows another: it is learnt per provider and model as the greatest common divisor of the non-zero cache reads seen (from at least four reads, never below 128), because a gateway can read in other steps than the provider behind it (1,088 tokens was seen on opencode's free-model gateway). A report says when it used a learnt step;
-- **lost tokens**: expected minus what this call read; more than 128 lost is a partial miss, almost nothing read is a miss. With a learnt step, a request that exactly extends the previous one is still a hit when it is less than one step short; a whole step short is a miss;
-- **miss cost**: lost tokens × (the price paid for them − the cache-read price);
-- **cause**: when the call read nothing and was sent later than the TTL after the previous one, expiry; otherwise the first changed block in prefix order; or, with the prefix intact, expiry versus a provider-side miss. When a block of the request could not be recorded (the Claude Code importer's billing-attribution block), a miss with everything else intact is worded as *a provider-side miss, or a change in the block the trace does not record*, and labelled inferred.
-
-The first call in a lane has nothing to be compared with: it is `cold` when it read nothing, and a hit, shown as `hit (warm start)`, when it read from a cache something outside the lane had left (an earlier session with the same tools and instructions).
-
-The exact rules are in [SPEC.md](SPEC.md#8-how-prefixlens-analyzes-a-trace-informative).
-
-### Which request parameters count
-
-A parameter change explains a miss only if the provider caches on it. prefixlens keeps a table per provider ([SPEC.md section 8.1](SPEC.md#81-which-request-parameters-are-part-of-the-cached-prefix), `PARAM_RULES` in code), and says for each entry how it knows:
-
-| | verified (measured live) | documented (provider's caching docs) | assumed |
-|---|---|---|---|
-| Anthropic | | `tool_choice` (messages only), `thinking`, `output_config.effort`, `speed` | sampling and output limits don't count; `context_management`, `mcp_servers` do |
-| OpenAI | `tool_choice` does not count (Responses API) | `reasoning`, `text`, `parallel_tool_calls`, `context_management`, `prompt_cache_key` count | `tool_choice` on Chat Completions; the Chat names `reasoning_effort`, `verbosity`, `response_format`; sampling, limits, `store`, `include`, `prompt_cache_options`, `prompt_cache_retention` don't count |
-| Gemini | | | everything but sampling and limits counts |
-
-Any parameter not in the table is assumed to count, so a change is never silently ignored.
-
-## Pricing
-
-Prices live in [`pricing.json`](pricing.json), not in code. The bundled table has the pay-as-you-go API list prices of Anthropic, OpenAI and Gemini text models, standard tier, as published on the providers' own pricing pages and model pages on the table's `as_of` date. Its `sources` section lists every page used and when it was checked, and its `notes` say what is left out.
-
-**Costs are list prices, not your bill.** A report's costs are what the calls would cost billed per token at those prices. Calls made on a subscription (a Claude plan, ChatGPT sign-in, Codex) are not billed per token at all. For them the numbers say what each miss would have cost on an API key, which is still the right scale for comparing misses. Negotiated discounts, Batch and Flex, OpenAI and Gemini priority tiers, data-residency uplifts and per-modality (audio) prices are not applied. A trace records how a call was billed when its writer knows (`"billing"`, trace format 1.2: the proxy for the ChatGPT sign-in upstream, the Codex importer for ChatGPT sign-in), and a report words its cost lines accordingly; when no record says, the report notes that costs are list prices.
-
-What an entry holds:
-
-| field | meaning |
-|---|---|
-| `names` | Exact model ids: the provider's id, its documented aliases and dated snapshots (`claude-haiku-4-5`, `claude-haiku-4-5-20251001`). |
-| `input`, `cache_read`, `output` | Per million tokens. Required. |
-| `cache_write` | Write price for the default cache lifetime: Anthropic 5 minutes, OpenAI 30 minutes (GPT-5.6 and later; earlier OpenAI models and Gemini charge no writes). |
-| `cache_write_1h` | Anthropic's 1-hour write price, applied to `cache_write_1h_tokens`. |
-| `cache_write_12h` | OpenAI's 12-hour write price, applied to `cache_write_12h_tokens` (the writes a trace records as 12-hour, format 1.2); the other writes are priced at `cache_write`. |
-| `tiers` | Higher prices for the whole request when its prompt (uncached + read + written) is above `above_prompt_tokens`: Claude Haiku 5.5 above 100,000, OpenAI above 272,000, Gemini Pro above 200,000. |
-| `from`, `until` | First and last UTC day a price applies, for promotions that end on a set date. Calls are priced by the day they were sent. |
-| `when_params` | Request parameters that select the price. Anthropic fast mode is `{"speed": "fast"}`. |
-| `cache_ttl_seconds`, `min_cacheable_tokens` | This model's cache lifetime and minimum cacheable prompt, overriding the provider's. They decide when a miss is called expiry and when a prompt is too short to cache. |
-| `unverified` | Fields the provider's pages do not print, e.g. `["cache_read"]` where OpenAI shows "-" for a pro model's cached input (the table then charges cached tokens at the input price). Informational. |
-
-Two more lists sit beside `models`:
-
-- `exclude`: models left unpriced on purpose, each with a `reason`, such as the `-latest` aliases Google repoints at newer models. They get no price from the table or from models.dev, and the report gives the reason.
-- `families`: cache facts by model-id prefix (`{"provider": "openai", "prefixes": ["gpt-5.6", "gpt-6"], "cache_ttl_seconds": 1800}`), for models no entry lists, such as ones priced from models.dev. An entry's own facts win, then the longest matching family, then the provider's.
-
-**How a model is matched.** The trace's model id and each name are compared after lowercasing and removing these parts:
-
-- router and API prefixes (`openrouter/openai/`, `models/`);
-- Bedrock region and vendor prefixes and version suffixes (`global.anthropic.`, `openai.`, `-v1:0`);
-- the separators `@` (Google Cloud dates) and `.`, which are both read as `-`.
-
-So `anthropic/claude-sonnet-4.5`, `claude-haiku-4-5@20251001` and `us.anthropic.claude-opus-4-1-20250805-v1:0` find their models. Matching then works like this:
-
-- An entry that lists the id wins. Among those, one whose `when_params` match the request beats one without.
-- Nothing else matches. A family name (`gpt-6`), an effort suffix (`gpt-6-luna-high`) or a `-fast` suffix the provider does not document gets no price rather than a neighbour's, and so does a hot-swapped alias (`gemini-flash-latest`), which the bundled table lists in `exclude`.
-- A model with no price, or none on the day of the call, is reported with its token counts and the note `No price for <model>: add it to the pricing table to get costs.` The rest of the report is unchanged.
-- Your own table may also use glob patterns in a `match` field. They are tried only when no entry lists the id exactly.
-- Two entries that list the same id for overlapping days and the same parameters are an error.
-
-Cloud ids (Bedrock, Google Cloud) are priced at the first-party list price. Those platforms set their own prices.
-
-**Keeping it current.** When the table is more than `stale_after_days` days old (60 in the bundled table) on the day you run a report, the report gives its age. To update prices:
-
-1. Edit `pricing.json`, or copy it and pass your copy with `--pricing <file>` or `PREFIXLENS_PRICING=<file>`.
-2. Change the figures from the provider's pricing page.
-3. Set `as_of` and the provider's `sources.<provider>.checked` to the day you checked.
-
-`--pricing` wins over `PREFIXLENS_PRICING`, which wins over the bundled table. Whichever is used, the models.dev prices below fill in only the models it does not list.
-
-### A second source: models.dev
-
-[models.dev](https://models.dev) is a community-maintained catalogue of models and their prices across more than 200 providers, including routers and clouds that resell the same models under their own ids. prefixlens can use it for models the hand-verified table does not list, and to notice when the table has gone stale. Its data is © 2025 models.dev, published under the [MIT licence](https://github.com/anomalyco/models.dev/blob/dev/LICENSE); thanks to its contributors. The file prefixlens writes carries the licence notice.
-
-Nothing is fetched unless you ask:
-
-```sh
-prefixlens pricing update                     # fetch https://models.dev/api.json, convert it, save it
-prefixlens pricing update --from api.json     # or convert a copy you saved (offline)
-prefixlens pricing show claude-opus-5-5       # which price a model gets, from which source and date
-prefixlens pricing check                      # where models.dev and the pricing table disagree (exit 1 if they do)
-```
-
-`update` fetches with a 30-second timeout and a 32 MB limit (the catalogue is about 6 MB), and fails with a clear message when offline. It prints what changed since the previous fetch (models added and removed, prices changed) and every disagreement with the pricing table. It saves only the converted prices, about 1 MB, to:
-
-| platform | file |
-|---|---|
-| Linux and others | `$XDG_CACHE_HOME/prefixlens/models.dev.json`, else `~/.cache/prefixlens/models.dev.json` |
-| macOS | `~/Library/Caches/prefixlens/models.dev.json` (or under `$XDG_CACHE_HOME` when set) |
-| Windows | `%LOCALAPPDATA%\prefixlens\Cache\models.dev.json` |
-
-Delete that file to stop using catalogue prices, or pass `--no-catalogue` to `report` or `pricing show`. The catalogue is not bundled with prefixlens: it changes daily and is mostly models no trace of yours will use. `pricing check` is meant for maintainers and a scheduled CI job: it fetches the catalogue (or reads `--from`), compares every entry of the pricing table in effect today with models.dev's entry for the same provider and id, and exits 1 when any shared figure differs.
-
-**Which price a call gets.**
-
-1. The pricing table (`--pricing`, else `PREFIXLENS_PRICING`, else the bundled one) wins for every model it lists, with every field: cache-write lifetimes, tiers, cache lifetime, minimum cacheable size, dated prices. A model it lists only on other days or with other parameters stays unpriced on the other days; the catalogue does not fill the gap.
-2. For a model in both, the shared figures (input, cache read, the default-lifetime cache write, output, prompt-size tiers, and Anthropic fast mode) are compared. A difference becomes a report note naming both figures and both dates, and the table's price is used.
-3. Only for a model the table does not list does the catalogue price the call, and the report says so in a note that names the models.dev entry, its last-updated date and the fetch date. Cache lifetime and minimum cacheable size then come from the table's `families` when one matches the id (a catalogue-priced GPT-5.6 model keeps writes 30 minutes), else from its provider defaults, since models.dev has neither.
-
-**Provider and model identity.** A trace's `provider` names whose caching rules apply, not who billed the call (a call through OpenRouter to Claude is `anthropic`). It maps to one models.dev provider: `anthropic` to `anthropic`, `openai` to `openai`, `gemini` to `google`, and any other id to the models.dev provider of the same id (`deepseek`, `openrouter`).
-
-Within that one provider, the model id is matched:
-
-1. exactly (lowercase, `.` and `@` read as `-`);
-2. then without leading `segment/` prefixes (`openrouter/anthropic/claude-x` → `anthropic/claude-x` → `claude-x`);
-3. then with the normalization the pricing table uses.
-
-When that last step finds several entries with different prices, such as a router's `vendor/model` ids or a cloud's regional ids (`us.anthropic.…` costs 10% more on Bedrock), the call gets no price and the note names the candidates.
-
-Another provider's price for a same-named model is never used, unless you opt in for models the table lacks:
-
-```sh
-prefixlens report run.trace.jsonl --catalogue-provider anthropic=openrouter,openai=openrouter
-```
-
-A model the table lists in `exclude` (the bundled table's `gemini-flash-latest` and the other `-latest` aliases Google repoints) gets no catalogue price either.
-
-**What models.dev does not have, and what the report does about it.** It has no 1-hour (Anthropic) or 12-hour (OpenAI) cache-write price, no cache lifetime or minimum cacheable size (the table's `families` and provider defaults stand in), no dates on which a promotional price ends, and no record of where a figure came from. A catalogue price is used only when it lists every price the call needs; otherwise the call is reported unpriced, with a note saying which price was missing, rather than priced at a guess:
-
-- no cache-read price: no call of that model is costed (a miss is costed against the cache-read price);
-- no cache-write price: calls that wrote to the cache are not costed; calls that wrote nothing are;
-- calls with 1-hour or 12-hour cache writes are not costed from the catalogue;
-- a prompt-size tier that leaves out a price the base lists does not borrow the base's;
-- a separate reasoning-token price: calls that report reasoning tokens are not costed;
-- request parameters that select one of models.dev's per-mode prices (`speed: "fast"`) use that price, and a mode with no price leaves the call unpriced. OpenAI's `service_tier` modes are not applied, as in the bundled table.
-
-## Trace format
-
-A trace is JSON Lines, one record per model call: provider, model, params, the canonical request as ordered blocks (tools, system, each message) with a SHA-256 hash per block, the response usage, a timestamp, and a fidelity flag (`full-request` or `usage-only`). To keep long sessions small, block content is written once per trace and referenced by hash afterwards, and each call can reuse the unchanged leading blocks of the previous call instead of listing them again. Content can also be left out entirely to redact it.
-
-[SPEC.md](SPEC.md) defines it precisely enough to emit from any language, with hash test vectors.
-
-## Library
-
-```ts
-import { wrap, createLens, startProxy } from "prefixlens"           // recording
-import { assertPrefixStable, explainPrefixDiff } from "prefixlens/test" // CI
-import { canonicalizeRequest, comparePrefix, parseTrace, analyze, renderTerminal } from "prefixlens"
-```
-
-Beyond recording, the main export has the building blocks the CLI uses: canonicalize a provider request body into blocks, compare two requests, read and write traces (`parseTrace`, `serializeTrace`, `openTraceWriter`), analyze a trace and render reports. The package runs on Node 22 or later and on Bun, ships its type declarations, and has no runtime dependencies. `startProxy(options)` resolves once the proxy is listening, to `{ url, hostname, port, upstream, trace, stop() }`.
-
-To write traces from your own harness that are identical to what the proxy records, call the proxy's own record builder:
-
-```ts
-import { buildRecord, readResponse, serializeTrace } from "prefixlens"
-
-const record = buildRecord({
-  api: "openai-responses",                          // or "anthropic-messages", "openai-chat"
-  body,                                             // the request body as sent
-  response: readResponse("openai-responses", raw),  // raw: the JSON body, the SSE text, or the parsed events
-  startedAt,                                        // Date, epoch ms or ISO string: when the request was sent
-  headers,                                          // optional; only session-id, anthropic-beta, anthropic-version, openai-beta are kept
-  session, lane: "main", recorder: "proxy",         // optional; lane defaults to "main", recorder to "library"
-})
-if (typeof record === "string") console.warn(`not recorded: ${record}`)  // the response reported no usage
-else trace.push(record)  // add hints (e.g. a prefix_break) before writing; serializeTrace(trace) writes the lines
-```
-
-Its signature is stable from the first release: inputs may gain optional fields, never lose or change one.
-
-## Changes
-
-See [CHANGELOG.md](CHANGELOG.md).
-
-## Security and privacy
-
-A trace contains, by design, the full content of every request it records: the full system prompt, every tool definition, the instruction files and memory the harness sends (`CLAUDE.md`, `AGENTS.md` and the like), your prompts, the contents of files the agent read, tool outputs, and earlier replies sent back as history. That usually includes working-directory paths and often your email address (harnesses put it in their system prompts and git context). **Treat a trace, and the HTML and JSON reports made from it, like source code plus personal data: keep it private and never commit it.**
-
-What prefixlens leaves out by default: request fields that identify a person, account, device or installation and are not model input (`metadata`, which holds Claude Code's account id, device id and session id in `metadata.user_id`; `user`; `safety_identifier`; Codex's `client_metadata`), and the bytes of base64 images, documents and audio, which are written as their SHA-256 and size (block hashes still cover the bytes, so a changed image is still seen). `--keep-identifiers` / `keepIdentifiers` and `--keep-binary` / `keepBinary` keep them. Kept on purpose because the analysis needs them: `prompt_cache_key` and the `session-id` header, the keys providers route requests to a cache by; a harness may derive them from a session or user id.
-
-Trace files that prefixlens creates (the proxy, `wrap`, `lens.fetch`, `lens.observe` with a trace path, `import -o`) and `report --html` files are readable and writable by you only (mode 0600), and directories it creates for them are 0700. A file that already exists keeps its permissions; the proxy and `import -o` warn when others can read it.
-
-What is never written: every request header except `session-id`, `anthropic-beta`, `anthropic-version` and `openai-beta`, so no `authorization`, `x-api-key`, `cookie`, organization, project or account header; and the content of responses (only their usage, id and model are kept). Error responses and calls that are not model calls are not written at all. The proxy, `wrap`, `lens.fetch`, `lens.observe` and `buildRecord` all build records with the same function, so this holds for each of them.
-
-The proxy forwards credentials to the provider unchanged, so it sees your API keys. It listens on `127.0.0.1` by default and has no authentication of its own: any process on the machine can send requests through it (with its own credentials) into your trace. It refuses requests whose `Host` is not a loopback name or the `--host` address (DNS rebinding) and requests with an `Origin` header (web pages), unless `--allow-origin` allows that origin. Binding it to another interface with `--host` sends your keys and prompts over plain HTTP and lets anyone who can reach the port send requests through it into your trace; so does an `http://` upstream on another machine. It warns at start-up in both cases.
-
-A trace holds whatever the agent read, so wherever prefixlens prints trace content to a terminal (the terminal report, the diff under a miss, a `PrefixBreakError` message, the proxy's line per call), control characters in it are written visibly, as `\x1b`, and cannot retitle the terminal or rewrite what is on screen.
-
-prefixlens has no telemetry. Its only network traffic is the proxy forwarding to the configured upstream, `wrap`/`lens.fetch` passing requests to the client's own fetch, and, only when you run `prefixlens pricing update` or `prefixlens pricing check` without `--from`, one HTTP GET to `https://models.dev/api.json` with no body, cookies or credentials. `report` and `pricing show` never fetch.
-
-Details, and how to report a vulnerability, are in [SECURITY.md](SECURITY.md).
-
-## Development
-
-```sh
-bun install
-bun test                                    # unit, adapter, CLI and privacy tests on Bun; fixtures are small and synthetic
-bun run typecheck
-bun run build                               # dist/: JavaScript and declarations, for Node and for the package
-node --test "test-node/*.test.mjs"          # the built package on Node: CLI, library, assertions, proxy (npm run test:node builds first)
-node scripts/check-package.mjs              # npm pack, install the tarball into temporary projects with npm and Bun, and use it there
-cd examples/ci-prefix-test && bun test      # the CI example, which imports src/ through tsconfig paths
-```
-
-The sources run on Bun as they are. What differs between the runtimes is kept in `src/runtime/`: the proxy's HTTP server (`Bun.serve` or `node:http`, each releasing every byte of a response, the last included, before the record is built; `test/stream-order.test.ts` and `test-node/proxy.test.mjs` check this on each) and read-only SQLite (`bun:sqlite` or `node:sqlite`). Files, hashing and compression use `node:` modules, which both runtimes provide.
-
-CI (`.github/workflows/ci.yml`), on pushes to `main` and on pull requests, is set up to run the Bun suite on Ubuntu and macOS with Bun 1.4.0, the Node suite and the package check on Node 22.0.0 and 26 on Ubuntu and macOS, and to fail if a trace, session log or credential is committed.
-
-Releases are published from a `v<version>` tag by `.github/workflows/release.yml`, with npm trusted publishing and provenance; the steps for the first release and for later ones, and the checklist of what to change when the repository becomes public, are in [docs/releasing.md](docs/releasing.md). Nothing is published while `package.json` is private.
-
-Test fixtures are hand-written. Never commit real session logs or traces: they contain secrets and private code.
+- [Assertions](https://github.com/parthg1901/prefixlens/blob/main/docs/assertions.md): `assertPrefixStable`, `explainPrefixDiff`, options, example failures.
+- [Proxy](https://github.com/parthg1901/prefixlens/blob/main/docs/proxy.md): options, the base URL to set, lanes and sessions.
+- [Library](https://github.com/parthg1901/prefixlens/blob/main/docs/library.md): `wrap`, `createLens`, `buildRecord`, `startProxy`, other exports.
+- [Reports](https://github.com/parthg1901/prefixlens/blob/main/docs/report.md): options, the JSON report, how verdicts are decided.
+- [Intentional breaks](https://github.com/parthg1901/prefixlens/blob/main/docs/intentional-breaks.md) and [pricing](https://github.com/parthg1901/prefixlens/blob/main/docs/pricing.md).
+- [Importers](https://github.com/parthg1901/prefixlens/blob/main/docs/adapters.md): for logs you already have, there are importers for OpenTelemetry GenAI spans and for the session logs of a few coding agents.
+- [Trace format](SPEC.md), [security and privacy](SECURITY.md), [changelog](CHANGELOG.md), [development](https://github.com/parthg1901/prefixlens/blob/main/docs/development.md).
 
 ## Licence
 
-MIT; see `LICENSE`.
+MIT; see [LICENSE](LICENSE).

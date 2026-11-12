@@ -1,5 +1,5 @@
-// What the recorders write and what they never write: the claims in SECURITY.md
-// and the README's "Security and privacy" section, one test each.
+// What the recorders write and what they never write: the claims in SECURITY.md,
+// one test each.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"

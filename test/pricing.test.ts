@@ -264,7 +264,7 @@ describe("report notes about prices", () => {
   test("says how old the table is once it is older than its threshold", () => {
     expect(priced(bundled, new Date("2027-01-11T00:00:00Z")).notes.some((note) => note.includes("days old"))).toBe(false) // 60 days
     expect(priced(bundled, new Date("2027-01-12T00:00:00Z")).notes).toContain(
-      "The pricing table is 61 days old (as of 2026-11-12) and prices change: update it or pass a current one with --pricing (see Pricing in the README).",
+      "The pricing table is 61 days old (as of 2026-11-12) and prices change: update it or pass a current one with --pricing (see docs/pricing.md in the repository).",
     )
     expect(priced(parsePricing({ ...bundledJson, stale_after_days: 5 }), new Date("2026-11-20T00:00:00Z")).notes.some((note) => note.includes("8 days old"))).toBe(true)
     const { as_of: _, ...undated } = bundledJson

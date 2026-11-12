@@ -748,7 +748,7 @@ function pricingNotes(pricing: PricingTable, now: Date, billing: Summary["billin
     ...(age === undefined
       ? ["The pricing table has no as_of date, so how current its prices are is unknown."]
       : age > limit
-        ? [`The pricing table is ${age} days old (as of ${pricing.as_of}) and prices change: update it or pass a current one with --pricing (see Pricing in the README).`]
+        ? [`The pricing table is ${age} days old (as of ${pricing.as_of}) and prices change: update it or pass a current one with --pricing (see docs/pricing.md in the repository).`]
         : []),
   ]
 }
