@@ -21,7 +21,8 @@ afterAll(() => {
 
 // Every value is unique, so finding it anywhere in a trace file means it was written.
 const SENSITIVE = {
-  authorization: "Bearer sk-synthetic-privacy-authorization",
+  // Assembled at runtime so secret scanners do not take the made-up value for a real token.
+  authorization: "Bearer " + "sk-synthetic-privacy-authorization",
   "x-api-key": "sk-synthetic-privacy-x-api-key",
   "proxy-authorization": "Basic c3ludGhldGljLXByaXZhY3k=",
   cookie: "session=synthetic-privacy-cookie",

@@ -170,7 +170,7 @@ describe("cli record", () => {
     for (const extra of [[], [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Hello." }] }]]) {
       const response = await fetch(`${base}/responses`, {
         method: "POST",
-        headers: { authorization: "Bearer sk-synthetic-cli-secret", "content-type": "application/json" },
+        headers: { authorization: "Bearer " + "sk-synthetic-cli-secret", "content-type": "application/json" },
         body: JSON.stringify({ model: "gpt-test-1", stream: true, instructions: "Synthetic.", input: [...input, ...extra] }),
       })
       await response.text()

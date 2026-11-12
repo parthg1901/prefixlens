@@ -105,7 +105,7 @@ test("the proxy streams through, forwards unchanged, records each API, and never
   assert.equal(rest, streamText("/v1/messages"))
 
   const chat = JSON.stringify({ model: "gpt-test-1", stream: true, stream_options: { include_usage: true }, messages: [{ role: "system", content: "Synthetic." }, { role: "user", content: "Hi." }] })
-  assert.equal(await (await fetch(`${proxy.url}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json", "content-encoding": "gzip", authorization: "Bearer sk-synthetic-node-secret" }, body: gzipSync(chat) })).text(), streamText("/v1/chat/completions"))
+  assert.equal(await (await fetch(`${proxy.url}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json", "content-encoding": "gzip", authorization: "Bearer " + "sk-synthetic-node-secret" }, body: gzipSync(chat) })).text(), streamText("/v1/chat/completions"))
   const responses = JSON.stringify({ model: "gpt-test-1", stream: true, instructions: "Synthetic.", input: "Hi." })
   assert.equal(await (await fetch(`${proxy.url}/v1/responses`, { method: "POST", headers: { "content-type": "application/json", "session-id": "synthetic-session" }, body: responses })).text(), streamText("/v1/responses"))
   for (let turn = 0; turn < 100 && records.length < 3; turn++) await new Promise((resolve) => setTimeout(resolve, 10))
