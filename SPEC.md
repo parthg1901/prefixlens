@@ -48,7 +48,7 @@ Readers MUST ignore fields they do not know. Writers MUST NOT put API keys, auth
 |---|---|---|---|
 | `input_tokens` | integer ≥ 0 | yes | Input tokens that were neither read from nor written to the cache (billed at the base input price). |
 | `cache_read_tokens` | integer ≥ 0 | yes | Input tokens read from the cache. |
-| `cache_write_tokens` | integer ≥ 0, or `null` | yes | Input tokens written to the cache. `null` when the provider does not report writes (implicit caching: OpenAI, Gemini). Use `0`, not `null`, when an explicit-caching provider wrote nothing. |
+| `cache_write_tokens` | integer ≥ 0, or `null` | yes | Input tokens written to the cache, as the provider reported them. `null` when the provider does not report writes (Gemini; OpenAI before GPT-5.6). Use `0`, not `null`, when an explicit-caching provider wrote nothing. A figure from an implicit-caching provider (OpenAI, Gemini) is a billing fact, not a measure of what was cached: section 8. |
 | `cache_write_1h_tokens` | integer ≥ 0 | no | The part of `cache_write_tokens` written with a 1-hour TTL (priced differently from 5-minute writes). |
 | `output_tokens` | integer ≥ 0 | yes | All billed output tokens, including reasoning. |
 | `reasoning_tokens` | integer ≥ 0 | no | The part of `output_tokens` spent on reasoning. |
@@ -61,11 +61,11 @@ How to fill it from each provider's response:
 | Provider | `input_tokens` | `cache_read_tokens` | `cache_write_tokens` | `output_tokens` |
 |---|---|---|---|---|
 | Anthropic Messages | `usage.input_tokens` (already excludes cache) | `usage.cache_read_input_tokens` | `usage.cache_creation_input_tokens`; `cache_write_1h_tokens` = `usage.cache_creation.ephemeral_1h_input_tokens` | `usage.output_tokens` |
-| OpenAI Chat Completions | `prompt_tokens − prompt_tokens_details.cached_tokens` | `prompt_tokens_details.cached_tokens` | `null` | `completion_tokens`; `reasoning_tokens` = `completion_tokens_details.reasoning_tokens` |
-| OpenAI Responses | `input_tokens − input_tokens_details.cached_tokens` | `input_tokens_details.cached_tokens` | `null` | `output_tokens`; `reasoning_tokens` = `output_tokens_details.reasoning_tokens` |
+| OpenAI Chat Completions | `prompt_tokens − prompt_tokens_details.cached_tokens − prompt_tokens_details.cache_write_tokens` | `prompt_tokens_details.cached_tokens` | `prompt_tokens_details.cache_write_tokens` when the response has the field (zero included), else `null` | `completion_tokens`; `reasoning_tokens` = `completion_tokens_details.reasoning_tokens` |
+| OpenAI Responses | `input_tokens − input_tokens_details.cached_tokens − input_tokens_details.cache_write_tokens` | `input_tokens_details.cached_tokens` | `input_tokens_details.cache_write_tokens` when the response has the field (zero included), else `null` | `output_tokens`; `reasoning_tokens` = `output_tokens_details.reasoning_tokens` |
 | Gemini | `promptTokenCount − cachedContentTokenCount` | `cachedContentTokenCount` | `null` | `candidatesTokenCount + thoughtsTokenCount` |
 
-Anthropic caches only up to explicit `cache_control` breakpoints and reports writes. OpenAI caches prompt prefixes automatically once the prompt is about 1024 tokens or longer, in 128-token steps, and reports only reads. Gemini's implicit caching also reports only reads.
+Anthropic caches only up to explicit `cache_control` breakpoints and reports writes; a response without `cache_creation_input_tokens` wrote nothing. OpenAI caches prompt prefixes automatically once the prompt is about 1024 tokens or longer, in 128-token steps; it reports reads, and from GPT-5.6 on, which bills cache writes, also writes. Some OpenAI backends report a write field that is always zero (the ChatGPT sign-in backend does, while caching normally); record it as reported. Gemini's implicit caching reports only reads.
 
 When a streamed response reports usage in several events, record the final totals.
 
@@ -222,7 +222,7 @@ For a call `c` with previous call `p` in the same lane:
 
 - `prompt(x) = input_tokens + cache_read_tokens + (cache_write_tokens ?? 0)`.
 - **Hit rate** of `c` = `cache_read_tokens / prompt(c)`. Trace hit rate = Σ reads / Σ prompts.
-- **Expected cached tokens**: what `p` left in the cache. With explicit caching (`p.cache_write_tokens` not null): `p.cache_read_tokens + p.cache_write_tokens`. With implicit caching: `prompt(p)` rounded down to a multiple of 128 tokens (the step OpenAI caches in) if it is at least the provider's minimum cacheable size, else 0. The minimum cacheable size (default 1024 tokens) and the default TTL (300 seconds) are set per provider in the pricing table's `providers` section. Capped at `prompt(c)`.
+- **Expected cached tokens**: what `p` left in the cache. With explicit caching (provider `anthropic`, or a provider other than `openai` and `gemini` whose `p.cache_write_tokens` is not null): `p.cache_read_tokens + p.cache_write_tokens`. With implicit caching (`openai`, `gemini`, or any provider with `p.cache_write_tokens` null): `prompt(p)` rounded down to a multiple of 128 tokens (the step OpenAI caches in) if it is at least the provider's minimum cacheable size, else 0; or `p.cache_read_tokens + p.cache_write_tokens` if that is larger. An implicit-caching provider's write figure can raise the expectation but never lower it: a reported zero does not mean the uncached part of `p` was left out of the cache. The minimum cacheable size (default 1024 tokens) and the default TTL (300 seconds) are set per provider in the pricing table's `providers` section. Capped at `prompt(c)`.
 - **Lost tokens** = `max(0, expected − c.cache_read_tokens)`.
 - **Status**: `cold` (first in lane); `uncached` (expected below the minimum cacheable size and nothing read); `hit` (lost ≤ tolerance, default 128 tokens); `miss` (read ≤ tolerance); otherwise `partial`.
 - **Intentional breaks**: a miss or partial miss excused by a declaration (section 6.1) is reported as an intentional break, counted and costed apart from misses. The **miss** count and miss cost of a trace cover only the others.

@@ -184,7 +184,7 @@ function analyzeTurn(
 
   const gap = (Date.parse(record.ts) - Date.parse(previous.ts)) / 1000
   if (gap < 0) warnings.push(`turn ${index + 1}: timestamp is earlier than the previous call in its lane`)
-  const expected = Math.min(prompt, expectedCached(previous.usage, facts.min_cacheable_tokens))
+  const expected = Math.min(prompt, expectedCached(previous, facts.min_cacheable_tokens))
   const lost = Math.max(0, expected - record.usage.cache_read_tokens)
   const status: Status =
     expected < facts.min_cacheable_tokens && record.usage.cache_read_tokens === 0
@@ -222,7 +222,7 @@ function analyzeTurn(
         { intentional: true, checked: false, note: "usage-only: where the prefix changed cannot be checked against the declaration" },
       )
     // With explicit caching the previous call cached only up to its last breakpoint, so a change after it cannot explain the loss.
-    const lastBreakpoint = previous.usage.cache_write_tokens === null ? -1 : previous.request!.blocks.findLastIndex((block) => block.breakpoint)
+    const lastBreakpoint = explicitCaching(previous) ? previous.request!.blocks.findLastIndex((block) => block.breakpoint) : -1
     const afterCached = change?.block_index !== undefined && lastBreakpoint !== -1 && change.block_index > lastBreakpoint
     const cause = confirmedCause(afterCached ? null : change, gap, ttl, previous.usage.cache_write_tokens ?? 0, [previous.headers?.["session-id"], record.headers?.["session-id"]])
     const verdict = judgeDeclared(declared, afterCached ? null : change, previous.request!.blocks)
@@ -235,14 +235,29 @@ function analyzeTurn(
 
 /**
  * What the previous call left in the cache. With explicit caching (Anthropic)
- * that is what it read plus what it wrote. With implicit caching (no write
- * figure) the provider caches the whole prompt once it is long enough.
+ * that is what it read plus what it wrote: nothing is cached without a
+ * breakpoint, and a reported zero means nothing was written. With implicit
+ * caching (OpenAI, Gemini) the provider caches the whole prompt once it is
+ * long enough, whatever write figure it reports: a reported zero (the ChatGPT
+ * sign-in backend always reports one) does not mean the uncached part of the
+ * prompt was left out of the cache, so it never lowers the expectation; a real
+ * write count can only raise it.
  */
-function expectedCached(previous: Usage, minimum: number): number {
-  if (previous.cache_write_tokens !== null) return previous.cache_read_tokens + previous.cache_write_tokens
-  const prompt = promptTokens(previous)
+function expectedCached(previous: TraceRecord, minimum: number): number {
+  const usage = previous.usage
+  const measured = usage.cache_read_tokens + (usage.cache_write_tokens ?? 0)
+  if (explicitCaching(previous)) return measured
+  const prompt = promptTokens(usage)
   // Implicit caches hold whole 128-token steps; the partial step at the end is never read back.
-  return prompt >= minimum ? Math.floor(prompt / IMPLICIT_STEP_TOKENS) * IMPLICIT_STEP_TOKENS : 0
+  return Math.max(measured, prompt >= minimum ? Math.floor(prompt / IMPLICIT_STEP_TOKENS) * IMPLICIT_STEP_TOKENS : 0)
+}
+
+/** Providers that cache prompt prefixes automatically. Their write figures are billing facts, not a measure of what was cached. */
+const IMPLICIT_CACHING = new Set(["openai", "gemini"])
+
+/** Explicit caching: a known explicit-caching provider (Anthropic), or any other provider that reports writes. */
+function explicitCaching(record: TraceRecord): boolean {
+  return record.usage.cache_write_tokens !== null && !IMPLICIT_CACHING.has(record.provider)
 }
 
 const IMPLICIT_STEP_TOKENS = 128

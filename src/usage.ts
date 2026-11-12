@@ -1,12 +1,19 @@
 // Normalizes provider usage objects into the trace Usage shape.
 //
 // Anthropic reports uncached input, cache writes and cache reads separately and
-// caches only up to explicit `cache_control` breakpoints. OpenAI and Gemini
-// cache prefixes automatically (OpenAI above ~1024 tokens) and report the
-// cached part of an input total that already includes it. Before GPT-5.6,
-// OpenAI reports no cache-write figure, and Gemini never does, so
-// cache_write_tokens is null for them. GPT-5.6 and later bill and report writes
-// (`cache_write_tokens` in the input details, also part of the input total).
+// caches only up to explicit `cache_control` breakpoints, so its write figure
+// is a measurement: zero means nothing was written (no breakpoint, or a prompt
+// below the minimum). A response without the field wrote nothing either.
+//
+// OpenAI and Gemini cache prefixes automatically and report the cached part of
+// an input total that already includes it. OpenAI bills writes from GPT-5.6 on
+// and then reports `cache_write_tokens` in the input details (also part of the
+// input total); older models, and Gemini always, report no write figure, which
+// is recorded as null. A reported OpenAI figure is recorded as reported, zero
+// included, but it is a billing figure, not a measure of what was cached: the
+// ChatGPT sign-in backend reports zero on every call while caching the prompt.
+// The analysis therefore never reads an implicit-caching provider's zero as
+// "nothing was cached" (analyze.ts, expectedCached).
 
 import { isRecord } from "./canonical.ts"
 import type { Usage } from "./trace.ts"
@@ -44,7 +51,8 @@ function fromOpenAI(raw: Record<string, unknown>): Usage {
     ? ((chat ? raw.completion_tokens_details : raw.output_tokens_details) as Record<string, unknown>)
     : {}
   const cached = Math.min(total, count(inputDetails.cached_tokens))
-  const writes = inputDetails.cache_write_tokens === undefined ? null : Math.min(total - cached, count(inputDetails.cache_write_tokens))
+  // Absent (or null) means not reported; zero is kept as the provider's figure.
+  const writes = inputDetails.cache_write_tokens == null ? null : Math.min(total - cached, count(inputDetails.cache_write_tokens))
   return {
     input_tokens: total - cached - (writes ?? 0),
     cache_read_tokens: cached,
