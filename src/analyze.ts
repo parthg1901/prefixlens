@@ -115,6 +115,8 @@ export interface Summary {
   interrupted: number[]
   /** Calls by how they were billed: per token, on a subscription (list prices are a comparison), or not stated in the trace. */
   billing: { per_token: number; subscription: number; unknown: number }
+  /** Implicit caches whose reads in this trace show a step other than 128 tokens, with the step learnt for each (SPEC 8). */
+  cache_steps?: { provider: string; model: string; tokens: number }[]
 }
 
 export interface Analysis {
@@ -130,7 +132,11 @@ export interface AnalyzeOptions {
   catalogue?: CatalogueTable
   /** Trace provider to models.dev provider, for opting in to a router's or cloud's prices (default: anthropic, openai, gemini to their own). */
   catalogueProviders?: Record<string, string>
-  /** Lost tokens at or below this count are treated as a hit. Default 128 (OpenAI caches in 128-token steps). */
+  /**
+   * Lost tokens at or below this count are treated as a hit. Default 128 (OpenAI caches in 128-token steps).
+   * Where the trace shows an implicit cache reading in larger steps, a request that exactly extends the
+   * previous one is also a hit when it falls short by less than one such step.
+   */
   toleranceTokens?: number
   /** The date the pricing table's age is measured against. Default: now. */
   now?: Date
@@ -142,13 +148,14 @@ export function analyze(records: TraceRecord[], options: AnalyzeOptions): Analys
   const last = new Map<string, number>()
   const sources: PriceSources = { table: options.pricing, ...(options.catalogue ? { catalogue: options.catalogue } : {}), ...(options.catalogueProviders ? { catalogueProviders: options.catalogueProviders } : {}) }
   const prices: PriceLog = new Map()
+  const steps = cacheSteps(records)
   const turns = records.map((record, index): TurnResult => {
     const lane = laneKey(record)
     const previousIndex = last.get(lane)
     last.set(lane, index)
-    return analyzeTurn(records, index, previousIndex, sources, prices, tolerance, warnings)
+    return analyzeTurn(records, index, previousIndex, sources, prices, tolerance, steps, warnings)
   })
-  return { version: 1, summary: summarize(turns, records, sources, prices, options.now ?? new Date()), turns, warnings }
+  return { version: 1, summary: summarize(turns, records, sources, prices, steps, options.now ?? new Date()), turns, warnings }
 }
 
 function analyzeTurn(
@@ -158,6 +165,7 @@ function analyzeTurn(
   sources: PriceSources,
   prices: PriceLog,
   tolerance: number,
+  steps: Map<string, number>,
   warnings: string[],
 ): TurnResult {
   const record = records[index]!
@@ -199,17 +207,9 @@ function analyzeTurn(
 
   const gap = (Date.parse(record.ts) - Date.parse(previous.ts)) / 1000
   if (gap < 0) warnings.push(`turn ${index + 1}: timestamp is earlier than the previous call in its lane`)
-  const expected = Math.min(prompt, expectedCached(previous, facts.min_cacheable_tokens))
+  const step = steps.get(stepKey(previous)) ?? IMPLICIT_STEP_TOKENS
+  const expected = Math.min(prompt, expectedCached(previous, facts.min_cacheable_tokens, step))
   const lost = Math.max(0, expected - record.usage.cache_read_tokens)
-  const status: Status =
-    expected < facts.min_cacheable_tokens && record.usage.cache_read_tokens === 0
-      ? "uncached"
-      : lost <= tolerance
-        ? "hit"
-        : record.usage.cache_read_tokens <= tolerance
-          ? "miss"
-          : "partial"
-  const missCost = rates && lost > 0 && (status === "miss" || status === "partial") ? (lost * Math.max(0, uncachedRate(record.usage, rates) - rates.cache_read)) / 1e6 : rates ? 0 : null
   const full = record.fidelity === "full-request" && previous.fidelity === "full-request" && record.request && previous.request
   // The prompt prefix of each request: deferred tools are recorded but not rendered into the prompt, so they are not compared.
   const before = full ? prefixBlocks(previous.request!.blocks) : []
@@ -217,6 +217,18 @@ function analyzeTurn(
   const change = full
     ? comparePrefix({ provider: previous.provider, model: previous.model, params: previous.params, blocks: before }, { provider: record.provider, model: record.model, params: record.params, blocks: sent, hints: record.hints })
     : null
+  // Where the trace shows an implicit cache reading in steps larger than 128 tokens, a request that exactly
+  // extends the previous one cannot be more than one step short through any fault of the harness.
+  const allowed = full && !change && step > IMPLICIT_STEP_TOKENS && !explicitCaching(previous) ? Math.max(tolerance, step - 1) : tolerance
+  const status: Status =
+    expected < facts.min_cacheable_tokens && record.usage.cache_read_tokens === 0
+      ? "uncached"
+      : lost <= allowed
+        ? "hit"
+        : record.usage.cache_read_tokens <= tolerance
+          ? "miss"
+          : "partial"
+  const missCost = rates && lost > 0 && (status === "miss" || status === "partial") ? (lost * Math.max(0, uncachedRate(record.usage, rates) - rates.cache_read)) / 1e6 : rates ? 0 : null
   const ttl = previous.cache_ttl_seconds ?? facts.cache_ttl_seconds
   const turn = {
     ...base,
@@ -284,13 +296,13 @@ function analyzeTurn(
  * prompt was left out of the cache, so it never lowers the expectation; a real
  * write count can only raise it.
  */
-function expectedCached(previous: TraceRecord, minimum: number): number {
+function expectedCached(previous: TraceRecord, minimum: number, step: number): number {
   const usage = previous.usage
   const measured = usage.cache_read_tokens + (usage.cache_write_tokens ?? 0)
   if (explicitCaching(previous)) return measured
   const prompt = promptTokens(usage)
-  // Implicit caches hold whole 128-token steps; the partial step at the end is never read back.
-  return Math.max(measured, prompt >= minimum ? Math.floor(prompt / IMPLICIT_STEP_TOKENS) * IMPLICIT_STEP_TOKENS : 0)
+  // Implicit caches hold whole steps; the partial step at the end is never read back.
+  return Math.max(measured, prompt >= minimum ? Math.floor(prompt / step) * step : 0)
 }
 
 /** Providers that cache prompt prefixes automatically. Their write figures are billing facts, not a measure of what was cached. */
@@ -306,7 +318,35 @@ function explicitCaching(record: TraceRecord): boolean {
   return record.usage.cache_write_tokens !== null && !IMPLICIT_CACHING.has(record.provider)
 }
 
+// The step OpenAI's cache reads in, and the one assumed for any implicit cache until a trace shows another.
 const IMPLICIT_STEP_TOKENS = 128
+// Reads needed before a step is learnt from them: fewer say too little about what they have in common.
+const STEP_SAMPLES = 4
+
+/**
+ * The step each implicit cache reads in, per provider and model, learnt from the trace: the greatest
+ * common divisor of the non-zero cached-read counts seen, never below 128. A gateway in front of a
+ * provider can read in other steps than the provider (1,088 tokens has been seen), and a call that
+ * exactly extends the previous one then reads less than a 128-step rule expects without anything
+ * being wrong. With fewer than four reads, or only one distinct value, the step stays 128.
+ */
+function cacheSteps(records: TraceRecord[]): Map<string, number> {
+  const reads = new Map<string, number[]>()
+  for (const record of records) {
+    if (record.usage.cache_read_tokens === 0 || explicitCaching(record)) continue
+    const seen = reads.get(stepKey(record))
+    if (seen) seen.push(record.usage.cache_read_tokens)
+    else reads.set(stepKey(record), [record.usage.cache_read_tokens])
+  }
+  const divisor = (a: number, b: number): number => (b === 0 ? a : divisor(b, a % b))
+  return new Map(
+    [...reads].map(([key, seen]) => [key, seen.length < STEP_SAMPLES || new Set(seen).size < 2 ? IMPLICIT_STEP_TOKENS : Math.max(IMPLICIT_STEP_TOKENS, seen.reduce(divisor))]),
+  )
+}
+
+function stepKey(record: TraceRecord): string {
+  return `${record.provider}\u0000${record.model}`
+}
 
 // A request sent this soon after the call that wrote the cache can miss with
 // nothing changed: the new entry is not always readable yet.
@@ -451,7 +491,7 @@ function fromChange(change: PrefixChange, confidence: Confidence): CauseInfo {
   }
 }
 
-function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSources, prices: PriceLog, now: Date): Summary {
+function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSources, prices: PriceLog, steps: Map<string, number>, now: Date): Summary {
   const pricing = sources.table
   const sum = (pick: (turn: TurnResult) => number) => turns.reduce((total, turn) => total + pick(turn), 0)
   const tokens = {
@@ -501,7 +541,14 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
     subscription: turns.filter((turn) => turn.billing === "subscription").length,
     unknown: turns.filter((turn) => turn.billing === undefined).length,
   }
+  const learnt = [...steps]
+    .filter(([, tokens]) => tokens !== IMPLICIT_STEP_TOKENS)
+    .map(([key, tokens]) => ({ provider: key.split("\u0000")[0]!, model: key.split("\u0000")[1]!, tokens }))
   const notes = [
+    ...learnt.map(
+      (step) =>
+        `Cache reads for ${step.model} come in steps of ${step.tokens.toLocaleString("en-US")} tokens in this trace (the greatest common divisor of the reads seen), not the usual 128: what a call is expected to read is counted in those steps, and a request that exactly extends the previous one is a hit when it is less than one step short.`,
+    ),
     ...(partlyUnknown > 0
       ? [
           `${partlyUnknown} of ${turns.length} calls were sent with a block whose content the log does not record (for Claude Code, the billing-attribution line it puts first in the system prompt), so their system prompt is partly unknown: a change confined to that block cannot be seen, and a miss it caused reads as one with the prefix intact. Every other block is compared as usual.`,
@@ -540,6 +587,7 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
     unpriced_models: unpriced,
     interrupted: cutOff,
     billing,
+    ...(learnt.length > 0 ? { cache_steps: learnt } : {}),
     notes,
   }
 }

@@ -190,6 +190,58 @@ describe("analyze", () => {
     expect(result.turns[1]!.cost!.total).toBeCloseTo((200 * 2 + 3000 * 0.5 + 50 * 8) / 1e6, 10)
   })
 
+  describe("an implicit cache that reads in steps other than 128 tokens", () => {
+    // A gateway that reads floor(previous prompt / 1,088) × 1,088 tokens and reports no write figure.
+    const STEP = 1088
+    const PROMPTS = [7732, 8529, 8729, 9016, 9298, 9391, 9541]
+    const calls = (prompts: number[], reads: Record<number, number> = {}) =>
+      prompts.map((prompt, index): TraceRecord => {
+        const read = reads[index] ?? (index === 0 ? 0 : Math.floor(prompts[index - 1]! / STEP) * STEP)
+        return { ...usageRecord("gpt-test", usage(prompt - read, read, null)), provider: "openai" }
+      })
+
+    test("the step is learnt from the reads in the trace, and a call that read every whole step is a hit", () => {
+      const result = run(calls(PROMPTS))
+      expect(result.turns.map((turn) => turn.status)).toEqual(["cold", "hit", "hit", "hit", "hit", "hit", "hit"])
+      // 9,298 tokens hold 8 steps of 1,088; a 128-step rule would expect 9,216 and call this 512 short.
+      expect(result.turns[5]).toMatchObject({ expected_cached_tokens: 8704, lost_tokens: 0, miss_cost: 0 })
+      expect(result.summary.cache_steps).toEqual([{ provider: "openai", model: "gpt-test", tokens: 1088 }])
+      expect(result.summary.notes[0]).toStartWith("Cache reads for gpt-test come in steps of 1,088 tokens in this trace")
+      expect(result.summary.headline).toBe("No cache misses after the first call in each lane.")
+    })
+
+    test("a read one whole step short is still a partial miss", () => {
+      const turn = run(calls(PROMPTS, { 5: 7616 })).turns[5]!
+      expect(turn).toMatchObject({ status: "partial", expected_cached_tokens: 8704, lost_tokens: 1088 })
+    })
+
+    test("with too few reads to learn from, the step stays 128", () => {
+      // Two reads: the second call after the cold one is 832 short of the 128-step prefix of 8,529 tokens.
+      const result = run(calls(PROMPTS.slice(0, 3)))
+      expect(result.turns[2]).toMatchObject({ status: "partial", expected_cached_tokens: 8448, lost_tokens: 832 })
+      expect(result.summary.cache_steps).toBeUndefined()
+    })
+
+    test("reads that are multiples of 128 only keep the 128-token rule: 512 short is a partial miss", () => {
+      const turn = run(calls(PROMPTS, { 1: 7680, 2: 8448, 3: 8704, 4: 8960, 5: 8704 })).turns[5]!
+      expect(turn).toMatchObject({ status: "partial", expected_cached_tokens: 9216, lost_tokens: 512 })
+    })
+
+    test("a request that exactly extends the previous one is a hit when less than one learnt step short", () => {
+      // This provider also reports writes, so the previous call is known to have left 9,298 tokens cached; the next reads 8 whole steps.
+      const history = [m1, m2, m3, [...m3, assistant("more"), user("go")], [...m3, assistant("more"), user("go"), assistant("and more"), user("on")]]
+      const openai = { provider: "openai", model: "gpt-test" }
+      const warm = [0, 7616, 7616, 8704].map((read, index) => fullRecord(body(history[index]!), usage(PROMPTS[index]! - read, read, 0), openai))
+      const last = (messages: unknown[]) => [...warm.slice(0, 3), fullRecord(body(history[3]!), usage(100, 8704, 594), openai), fullRecord(body(messages), usage(900, 8704, 0), openai)]
+      const extended = run(last(history[4]!)).turns[4]!
+      expect(extended).toMatchObject({ status: "hit", expected_cached_tokens: 9298, lost_tokens: 594 })
+      // The same shortfall with an edited message is a miss the harness caused.
+      const edited = run(last([user("task, edited"), ...history[4]!.slice(1)])).turns[4]!
+      expect(edited).toMatchObject({ status: "partial", lost_tokens: 594 })
+      expect(edited.cause?.cause).toBe("message_edited")
+    })
+  })
+
   test("implicit caching below the minimum prompt size is uncached", () => {
     const openai = (input: number): TraceRecord => ({ ...usageRecord("gpt-test", usage(input, 0, null)), provider: "openai" })
     expect(run([openai(500), openai(700)]).turns[1]!.status).toBe("uncached")
