@@ -54,7 +54,7 @@ export const ADAPTERS: Adapter[] = [
     description: "opencode local storage: opencode.db or opencode-<channel>.db (SQLite), or the legacy storage/ JSON directory.",
     defaultPath: "~/.local/share/opencode/opencode.db",
     diagnoses:
-      "Usage only: hit rates and costs per model call, with causes inferred from model changes, timing, compactions, agent switches and pruned tool outputs. opencode does not log the tool list, system prompt or history each call was sent with, so no block diffs; other misses are 'cause unknown'. Checked against opencode's table definitions and stored types in its source, not yet on a database a running opencode wrote. Calls opencode records only as events (title generation) are missed.",
+      "Usage only: hit rates and costs per model call, with causes inferred from model changes, timing, compactions, agent switches and pruned tool outputs. opencode does not store the tool list, system prompt or history each call was sent with, so no block diffs; other misses are 'cause unknown'. Checked on databases opencode 1.19.5 wrote: calls and tokens match a recording proxy. Title-generation calls are not stored by opencode and are missed (with a warning); record through the proxy to see them.",
     import: importOpencode,
     list: listOpencodeSessions,
   },
