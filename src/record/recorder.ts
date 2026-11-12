@@ -31,6 +31,18 @@ export interface RecorderOptions {
 export const LANE_HEADER = "x-prefixlens-lane"
 export const SESSION_HEADER = "x-prefixlens-session"
 
+/**
+ * Request headers with which harnesses name the conversation a call belongs to (`session`) and, for a
+ * subagent, the conversation that started it (`parent`). A call that carries one is recorded in that
+ * session, so separate conversations through one proxy never share a lane; a subagent's calls go in
+ * its root session, in lanes named `subagent:<its session id>`, as the importers name them. The
+ * headers are forwarded unchanged and not written to `headers`. `x-prefixlens-session`,
+ * `x-prefixlens-lane` and the recorder's own `session` and `lane` options take precedence.
+ */
+export const SESSION_HEADERS: readonly { harness: string; session: string; parent?: string }[] = [
+  { harness: "opencode", session: "x-opencode-session-id", parent: "x-opencode-parent-session-id" },
+]
+
 export interface Pending {
   /** Ends the call: builds and writes its record from the response body (SSE text, JSON text or object). */
   finish(response: unknown): Promise<TraceRecord | undefined>
@@ -53,6 +65,8 @@ export interface CallInput {
 interface Lane {
   name: string
   session?: string
+  /** Lanes of one subagent within its root session (`subagent:<id>`); undefined for the session's own. */
+  group?: string
   /** The cache key of its latest call: the session-id header, else prompt_cache_key. */
   cacheKey?: string
   blocks: Block[]
@@ -68,6 +82,8 @@ export class Recorder {
   private sequence = 0
   // Calls are prepared one after another, so lanes are assigned in the order calls began.
   private queue: Promise<unknown> = Promise.resolve()
+  // Each harness session seen with a parent header, to its parent's id, so nested subagents find their root.
+  private readonly parents = new Map<string, string>()
 
   constructor(private readonly options: RecorderOptions) {
     this.writer = options.trace === false || options.trace === undefined ? undefined : openTraceWriter(options.trace)
@@ -94,7 +110,7 @@ export class Recorder {
     const prepared = this.queue
       .then(() => canonicalizeRequestAsync(PROVIDER_OF[call.api], call.body))
       .then((canonical) => {
-        const lane = this.assignLane(canonical.blocks, call.session, call.forced, call.cacheKey, entry.began)
+        const lane = this.assignLane(canonical.blocks, call.session, call.forced, call.cacheKey, entry.began, call.group)
         lane.calls.push(entry)
         return { canonical, lane }
       })
@@ -122,7 +138,7 @@ export class Recorder {
     const call = this.read(input)
     if (!call) return undefined
     const canonical = canonicalizeRequest(PROVIDER_OF[call.api], call.body)
-    return this.write(call, canonical, this.assignLane(canonical.blocks, call.session, call.forced, call.cacheKey, ++this.sequence), response)
+    return this.write(call, canonical, this.assignLane(canonical.blocks, call.session, call.forced, call.cacheKey, ++this.sequence, call.group), response)
   }
 
   private read(input: CallInput) {
@@ -133,16 +149,32 @@ export class Recorder {
       if (pathApi) this.options.onSkip?.(`not recorded: the ${input.path} request body is not a JSON object`)
       return undefined
     }
+    const harness = this.harnessSession(input.headers)
     return {
       api: input.api ?? pathApi ?? apiFromBody(body),
       body,
       startedAt: input.startedAt ?? new Date(),
-      session: input.session ?? input.headers?.get(SESSION_HEADER) ?? this.options.session,
+      session: input.session ?? input.headers?.get(SESSION_HEADER) ?? this.options.session ?? harness?.session,
       forced: input.lane ?? input.headers?.get(LANE_HEADER) ?? this.options.lane,
+      group: harness?.group,
       cacheKey: input.headers?.get("session-id") ?? (typeof body.prompt_cache_key === "string" ? body.prompt_cache_key : undefined),
       headers: input.headers,
       recorder: input.recorder ?? this.options.name,
     }
+  }
+
+  /** The session and lane group a harness's own session headers give a call: its root session, and `subagent:<id>` for a subagent. */
+  private harnessSession(headers: Headers | undefined): { session: string; group?: string } | undefined {
+    for (const names of SESSION_HEADERS) {
+      const own = headers?.get(names.session)
+      if (!own) continue
+      const parent = names.parent ? headers?.get(names.parent) : null
+      if (parent) this.parents.set(own, parent)
+      let root = own
+      for (const seen = new Set([own]); this.parents.has(root) && !seen.has(this.parents.get(root)!); seen.add(root)) root = this.parents.get(root)!
+      return root === own ? { session: own } : { session: root, group: `subagent:${own}` }
+    }
+    return undefined
   }
 
   private write(call: NonNullable<ReturnType<Recorder["read"]>>, canonical: CanonicalRequest, lane: Lane, response: unknown): TraceRecord | undefined {
@@ -181,12 +213,12 @@ export class Recorder {
    * Rules 2 and 3 skip a lane whose cache key differs: a harness that names its
    * conversations (Codex sends its thread id as session-id) started another one.
    */
-  private assignLane(blocks: Block[], session: string | undefined, forced: string | undefined, cacheKey: string | undefined, began: number): Lane {
-    const candidates = this.lanes.filter((lane) => lane.session === session)
+  private assignLane(blocks: Block[], session: string | undefined, forced: string | undefined, cacheKey: string | undefined, began: number, group?: string): Lane {
+    const candidates = this.lanes.filter((lane) => lane.session === session && (forced !== undefined || lane.group === group))
     // Calls that ended before this one began can never be in flight for a later call either.
     for (const lane of candidates) lane.calls = lane.calls.filter((other) => other.ended === undefined || other.ended >= began)
     const chosen = forced !== undefined ? candidates.find((lane) => lane.name === forced) : pickLane(candidates, blocks, cacheKey, began)
-    const lane = chosen ?? this.newLane(forced, session)
+    const lane = chosen ?? this.newLane(forced, session, group)
     lane.blocks = blocks
     if (cacheKey === undefined) delete lane.cacheKey
     else lane.cacheKey = cacheKey
@@ -194,9 +226,10 @@ export class Recorder {
     return lane
   }
 
-  private newLane(name: string | undefined, session: string | undefined): Lane {
-    const count = this.lanes.filter((lane) => lane.session === session).length
-    const lane = { name: name ?? (count === 0 ? "main" : `lane-${count + 1}`), ...(session ? { session } : {}), blocks: [], calls: [], used: 0 }
+  private newLane(name: string | undefined, session: string | undefined, group: string | undefined): Lane {
+    const count = this.lanes.filter((lane) => lane.session === session && lane.group === group).length
+    const base = group ?? "main"
+    const lane = { name: name ?? (count === 0 ? base : group ? `${group}:${count + 1}` : `lane-${count + 1}`), ...(session ? { session } : {}), ...(group && !name ? { group } : {}), blocks: [], calls: [], used: 0 }
     this.lanes.push(lane)
     return lane
   }

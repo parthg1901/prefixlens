@@ -8,7 +8,7 @@ export { createLens, wrap }
 export type { Lens, LensOptions, Observation } from "./lens.ts"
 export { startProxy, UPSTREAMS } from "./proxy.ts"
 export type { ProxyOptions } from "./proxy.ts"
-export { LANE_HEADER, SESSION_HEADER } from "./record/recorder.ts"
+export { LANE_HEADER, SESSION_HEADER, SESSION_HEADERS } from "./record/recorder.ts"
 export { apiFromBody, apiFromPath, buildRecord, readResponse, sseEvents, RECORDED_HEADERS } from "./record/exchange.ts"
 export type { Api, ExchangeInput, RecordInput, ResponseSummary } from "./record/exchange.ts"
 
