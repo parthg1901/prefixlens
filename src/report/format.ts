@@ -70,8 +70,11 @@ export function missLine(turn: TurnResult): string {
 /** Facts under a miss line: tokens lost, baseline, lane, confidence, and for a declared break whether it was checked. */
 export function missFacts(turn: TurnResult, multiLane: boolean, lane: (name: string) => string = (name) => name): string[] {
   const declared = turn.declared_break
+  const abandoned = turn.cause?.detail?.abandoned_cached_tokens
   return [
     `lost ${exact(turn.lost_tokens)} of ${exact(turn.expected_cached_tokens)} cached tokens`,
+    // A compaction's loss is capped at the new prompt's size; the cache it gave up was larger.
+    typeof abandoned === "number" && abandoned > turn.expected_cached_tokens ? `the compaction gave up a cache of ${exact(abandoned)} tokens` : "",
     turn.baseline_turn ? `vs turn ${turn.baseline_turn}` : "",
     multiLane ? `lane ${lane(turn.lane)}` : "",
     turn.cause?.confidence ?? "",

@@ -243,8 +243,13 @@ function analyzeTurn(
   }
   if (status === "miss" || status === "partial") {
     const declared = declaredBreaks(record.hints)
+    // A compaction's loss is capped at the new, shorter prompt (a call cannot pay for more tokens than it sent),
+    // so the size of the cache it gave up is said beside it.
+    const abandoned = expectedCached(previous, facts.min_cacheable_tokens, step)
+    const sized = (result: TurnResult): TurnResult =>
+      result.cause?.cause === "compaction" ? { ...result, cause: { ...result.cause, detail: { ...result.cause.detail, abandoned_cached_tokens: abandoned } } } : result
     const withDeclared = (result: TurnResult, verdict: Omit<DeclaredBreakResult, "reasons" | "declarations"> | undefined): TurnResult =>
-      declared.length === 0 || !verdict ? result : { ...result, declared_break: { reasons: [...new Set(declared.map((entry) => entry.reason))], declarations: declared, ...verdict } }
+      declared.length === 0 || !verdict ? sized(result) : { ...sized(result), declared_break: { reasons: [...new Set(declared.map((entry) => entry.reason))], declarations: declared, ...verdict } }
     const lapse = `${duration(gap)} since the previous call, TTL ${duration(ttl)}`
     if (!full) {
       const cause = inferredCause(previous, record, gap, ttl, declared, status === "miss")

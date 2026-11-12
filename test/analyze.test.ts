@@ -265,6 +265,23 @@ describe("analyze", () => {
     expect(cold.turns[0]!.warm_start).toBeUndefined()
   })
 
+  test("a compaction's loss is priced on the new prompt, and the cache it gave up is said beside it", () => {
+    const long = Array.from({ length: 12 }, (_, index) => (index % 2 === 0 ? user(`u${index}`) : assistant(`a${index}`)))
+    const compacted = [user("What did we do so far?"), assistant("Summary of the conversation so far"), ...long.slice(-4), user("continue")]
+    // An 86,294-token prompt, 85,952 of it read; then an 11,896-token prompt after the compaction, nothing read.
+    const openai = { provider: "openai", model: "gpt-test" }
+    const result = run([fullRecord(body(long), usage(342, 85_952, null), openai), fullRecord(body(compacted), usage(11_896, 0, null), openai, 46)])
+    const turn = result.turns[1]!
+    expect(turn).toMatchObject({ status: "miss", expected_cached_tokens: 11_896, lost_tokens: 11_896 })
+    // The call cannot pay full price for more tokens than it sent: $2 input against $0.50 cache read, per million.
+    expect(turn.miss_cost).toBeCloseTo((11_896 * 1.5) / 1e6, 9)
+    // What the previous call left cached: its prompt in whole 128-token steps.
+    expect(turn.cause).toMatchObject({ cause: "compaction", group: "compaction", detail: { before: 12, after: 7, kept: 4, abandoned_cached_tokens: 86_272 } })
+    const report = renderTerminal(result)
+    expect(report).toContain("turn 2: miss, history compacted (12 → 7 messages from message #1), ~$0.02")
+    expect(report).toContain("lost 11,896 of 11,896 cached tokens · the compaction gave up a cache of 86,272 tokens · vs turn 1 · confirmed")
+  })
+
   test("lanes are compared separately", () => {
     const records = [
       fullRecord(body(m1), usage(10, 0, 5000), { lane: "main" }),
