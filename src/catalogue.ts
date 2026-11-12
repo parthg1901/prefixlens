@@ -260,14 +260,18 @@ function isPrice(value: unknown): value is number {
 // ---------------------------------------------------------------------------------------------
 // Storage
 
-/** Writes the table to `file` (default: the cache location), replacing any earlier one in a single rename. */
+/**
+ * Writes the table to `file` (default: the cache location), replacing any earlier one in a single rename.
+ * The data is public, but like every file prefixlens creates, the file is owner-only (0600), as is any
+ * directory created for it (0700); the rename replaces an earlier file, mode included.
+ */
 export async function writeCatalogue(table: CatalogueTable, file = cataloguePath()): Promise<string> {
-  await mkdir(path.dirname(file), { recursive: true })
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
   const { models, ...header } = table
   // One model per line keeps the file small and diffable.
   const text = `${JSON.stringify(header, null, 2).slice(0, -2)},\n  "models": [\n${models.map((model) => `    ${JSON.stringify(model)}`).join(",\n")}\n  ]\n}\n`
   const temporary = `${file}.${process.pid}.tmp`
-  await writeFile(temporary, text)
+  await writeFile(temporary, text, { mode: 0o600 })
   await rename(temporary, file)
   return file
 }

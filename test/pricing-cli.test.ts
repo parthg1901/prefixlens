@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, statSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { serializeTrace } from "../src/trace.ts"
@@ -43,6 +43,9 @@ describe("prefixlens pricing", () => {
     expect(result.stdout).toContain("compared with the bundled pricing.json (as of 2026-11-12): 7 model ids in both")
     expect(result.stdout).toContain("! anthropic claude-sonnet-5-5: input $2 vs $3 (table checked 2026-11-12; models.dev anthropic claude-sonnet-5-5, last updated 2026-10-01, fetched ")
     expect((await Bun.file(overlay).json()).source.licence).toBe("MIT")
+    // Public data, but owner-only like every file prefixlens creates, in an owner-only directory it created.
+    expect(statSync(overlay).mode & 0o777).toBe(0o600)
+    expect(statSync(path.dirname(overlay)).mode & 0o777).toBe(0o700)
   })
 
   test("a second update lists what changed since the first", async () => {

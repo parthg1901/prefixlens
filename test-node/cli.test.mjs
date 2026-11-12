@@ -105,4 +105,6 @@ test("pricing show, and pricing update from a saved catalogue", (t) => {
   const updated = run(["pricing", "update", "--from", path.join(fixtures, "catalogue", "api.json")], { cache })
   assert.equal(updated.code, 0, updated.stderr)
   assert.match(run(["pricing", "show", "claude-opus-5-5"], { cache }).stdout, /models\.dev/)
+  assert.equal(statSync(path.join(cache, "prefixlens", "models.dev.json")).mode & 0o777, 0o600)
+  assert.equal(statSync(path.join(cache, "prefixlens")).mode & 0o777, 0o700)
 })
