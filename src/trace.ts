@@ -399,7 +399,7 @@ function readHints(value: unknown, problems: string[], warnings: string[], line:
       typeof hint.reason !== "string" || hint.reason === ""
         ? "needs a non-empty string reason"
         : hint.after !== undefined && !isPosition(hint.after)
-          ? 'has an invalid after (use "start", "tools", "system", a block count, or {"message": n})'
+          ? 'has an invalid after (use "start", "tools", "system", a block count, {"system": n} or {"message": n})'
           : undefined
     if (problem) warnings.push(`line ${line}: hints[${index}] (prefix_break) ${problem}; ignored`)
     return problem === undefined

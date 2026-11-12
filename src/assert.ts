@@ -5,7 +5,7 @@
 // say whether the second one keeps the first one's cached prefix, and if not,
 // which block changed and how.
 
-import { changeStart, declaredBreaks, defaultAfter, describePosition, keptBlocks, type DeclaredBreak, type Position } from "./breaks.ts"
+import { changeStart, declaredBreaks, defaultAfter, describePosition, isPosition, keptBlocks, POSITIONS, type DeclaredBreak, type Position } from "./breaks.ts"
 import { canonicalizeRequest, type CanonicalRequest, type Provider } from "./canonical.ts"
 import { comparePrefix, type Cause, type PrefixChange } from "./diff.ts"
 import { apiFromBody, PROVIDER_OF } from "./record/exchange.ts"
@@ -91,6 +91,7 @@ export function explainPrefixDiff(prev: RequestLike, next: RequestLike, options:
   const before = comparable(prev, options)
   const after = comparable(next, options)
   const given = typeof options.allowBreak === "string" ? { reason: options.allowBreak } : options.allowBreak
+  if (given?.after !== undefined && !isPosition(given.after)) throw new TypeError(`prefixlens/test: allowBreak.after ${JSON.stringify(given.after)} is not a position; ${POSITIONS}`)
   const recordHints = isTraceRecord(next) ? (next.hints ?? []) : []
   const allowances: DeclaredBreak[] = [
     ...(given ? [{ reason: given.reason ?? "an intentional break", after: given.after ?? defaultAfter(given.reason ?? ""), kind: "allowBreak" }] : []),

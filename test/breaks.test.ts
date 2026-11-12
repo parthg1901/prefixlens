@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, test } from "bun:test"
 import { analyze } from "../src/analyze.ts"
 import { explainPrefixDiff } from "../src/assert.ts"
 import { canonicalizeAnthropic, canonicalizeOpenAI } from "../src/canonical.ts"
+import { describePosition, isPosition, keptBlocks, type Position } from "../src/breaks.ts"
 import { comparePrefix } from "../src/diff.ts"
 import { buildRecord } from "../src/index.ts"
 import { paramRule } from "../src/params.ts"
@@ -185,6 +186,58 @@ describe("declared intentional breaks", () => {
   })
 })
 
+describe("a break after the tools and the first system parts", () => {
+  // A harness that rewrites a later system part on purpose (working memory, recalled notes) and keeps the first.
+  const memory = (text: string) => [
+    { type: "text", text: "Be brief." },
+    { type: "text", text: `<working_memory>${text}</working_memory>` },
+  ]
+  const prev = body([user("Hello.")], { system: memory("The user likes tea.") })
+  const next = body([user("Hello."), assistant("Hi."), user("Go on.")], { system: memory("The user likes tea and short answers.") })
+
+  test("{ system: n } keeps the tools and n system parts, and says so", () => {
+    const blocks = canonicalizeAnthropic(prev).blocks
+    expect(isPosition({ system: 1 })).toBe(true)
+    // 3 tools + 1 system part; a count beyond the system prompt keeps all of it and nothing more.
+    expect(keptBlocks({ system: 1 }, blocks)).toBe(4)
+    expect(keptBlocks({ system: 0 }, blocks)).toBe(keptBlocks("tools", blocks))
+    expect(keptBlocks({ system: 9 }, blocks)).toBe(keptBlocks("system", blocks))
+    expect(describePosition({ system: 1 })).toBe("the tools and the first system part")
+    expect(describePosition({ system: 2 })).toBe("the tools and the first 2 system parts")
+  })
+
+  test("allows a rewritten later part, and not a change to a part it keeps", () => {
+    const allowed = explainPrefixDiff(prev, next, { allowBreak: { after: { system: 1 }, reason: "working memory" } })
+    expect(allowed).toMatchObject({ stable: false, ok: true, allowed: "working memory" })
+    expect(allowed.message).toBe("prefix changed at block 5, allowed (working memory): system prompt changed (part 2 of 2 edited)")
+    const edited = body([user("Hello.")], { system: [{ type: "text", text: "Be very brief." }, memory("The user likes tea.")[1]] })
+    const refused = explainPrefixDiff(prev, edited, { allowBreak: { after: { system: 1 }, reason: "working memory" } })
+    expect(refused.ok).toBe(false)
+    expect(refused.message).toContain("a break was allowed (working memory) only after block 4 (the tools and the first system part must stay), and this one is earlier")
+    // "system" still means the whole system prompt.
+    expect(explainPrefixDiff(prev, next, { allowBreak: { after: "system", reason: "working memory" } }).ok).toBe(false)
+  })
+
+  test("a prefix_break hint with it is read from a trace and excuses the miss in the report", () => {
+    const hints: Hint[] = [{ kind: "prefix_break", reason: "working memory", after: { system: 1 } }]
+    const records = [fullRecord(prev, usage(10, 0, 5000)), fullRecord(next, usage(10, 0, 5100), { hints })]
+    const parsed = parseTrace(serializeTrace(records))
+    expect(parsed.warnings).toEqual([])
+    expect(parsed.records[1]!.hints).toEqual(hints)
+    expect(run(parsed.records).turns[1]!.declared_break).toMatchObject({ reasons: ["working memory"], intentional: true, checked: true })
+  })
+
+  test("an object that is not a position is refused with the valid forms, never counted as NaN", () => {
+    const unknown = { systemParts: 1 } as unknown as Position
+    expect(isPosition(unknown)).toBe(false)
+    expect(isPosition({ system: 1, message: 1 })).toBe(false)
+    expect(isPosition({ system: -1 })).toBe(false)
+    const valid = 'use "start", "tools", "system", a block count, { system: n } or { message: n }'
+    expect(() => keptBlocks(unknown, canonicalizeAnthropic(prev).blocks)).toThrow(`prefixlens: {"systemParts":1} is not a position a break may start after; ${valid}`)
+    expect(() => explainPrefixDiff(prev, next, { allowBreak: { after: unknown, reason: "working memory" } })).toThrow(`prefixlens/test: allowBreak.after {"systemParts":1} is not a position; ${valid}`)
+  })
+})
+
 describe("reading declarations", () => {
   const line = (hints: unknown) => JSON.stringify({ v: 1, ts: "2026-01-01T10:00:00Z", provider: "openai", model: "m", fidelity: "usage-only", usage: usage(1, 0, null), hints })
 
@@ -200,7 +253,7 @@ describe("reading declarations", () => {
     expect(parsed.records.map((record) => record.hints)).toEqual([[{ kind: "prefix_break", reason: "revert", after: { message: 2 } }], [], []])
     expect(parsed.warnings).toEqual([
       "line 2: hints[0] (prefix_break) needs a non-empty string reason; ignored",
-      'line 3: hints[0] (prefix_break) has an invalid after (use "start", "tools", "system", a block count, or {"message": n}); ignored',
+      'line 3: hints[0] (prefix_break) has an invalid after (use "start", "tools", "system", a block count, {"system": n} or {"message": n}); ignored',
     ])
   })
 

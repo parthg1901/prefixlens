@@ -196,7 +196,7 @@ A harness sometimes breaks its prefix on purpose: it compacts history and rebuil
 |---|---|---|---|
 | `kind` | string | yes | `"prefix_break"`. |
 | `reason` | string | yes | Why. One of the reasons below, or another short word. |
-| `after` | `"start"`, `"tools"`, `"system"`, `{"message": n}`, or an integer ≥ 0 | no | The last part of the previous request that the break leaves unchanged: nothing (`"start"`), the tools, the tools and system prompt, those plus messages 1..n, or the first n blocks. Default: set by `reason`, below. |
+| `after` | `"start"`, `"tools"`, `"system"`, `{"system": n}`, `{"message": n}`, or an integer ≥ 0 | no | The last part of the previous request that the break leaves unchanged: nothing (`"start"`), the tools, the tools and system prompt, the tools and the first n system parts (`{"system": n}`, for a harness that rewrites a later system part on purpose, such as working memory; an n beyond the system prompt keeps all of it), the tools and system prompt plus messages 1..n, or the first n blocks. Default: set by `reason`, below. |
 | `detail` | string | no | Free text for people, e.g. `"high → low"`. |
 
 | `reason` | for | default `after` |
@@ -219,9 +219,9 @@ The older kinds keep working: a `compaction` hint declares `{"reason": "compacti
 
 **What a reader does with it.** An excused miss is still a miss of the cache: its status, lost tokens and cost are reported as for any other call. It is reported as an *intentional break* with its declared reason and the change found, and its cost is totalled separately from avoidable misses, so a declaration can move a cost from one total to the other but never hide it. A declaration that does not excuse the miss is reported with the miss, saying why.
 
-A malformed `prefix_break` hint (no `reason`, or an invalid `after`) MUST NOT excuse anything; prefixlens drops it with a warning.
+A malformed `prefix_break` hint (no `reason`, or an invalid `after`) MUST NOT excuse anything; prefixlens drops it with a warning. This is also what a reader older than a form of `after` does with it (`{"system": n}` was added after the first 1.2 readers): the miss is reported as one, never excused by a position the reader does not know.
 
-The same rules decide `assertPrefixStable`'s `allowBreak` option in `prefixlens/test`: `allowBreak: "revert"` allows exactly what a `{"kind": "prefix_break", "reason": "revert"}` hint excuses.
+The same rules decide `assertPrefixStable`'s `allowBreak` option in `prefixlens/test`: `allowBreak: "revert"` allows exactly what a `{"kind": "prefix_break", "reason": "revert"}` hint excuses, and `allowBreak: { after: { system: 1 }, reason: "working memory" }` what the same `after` on a hint does. An `after` there that is not one of the forms above is an error, not a break that allows nothing.
 
 ## 7. Lanes and comparison
 

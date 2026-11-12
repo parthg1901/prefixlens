@@ -17,6 +17,8 @@ export type Position =
   | "tools"
   /** Tools and system prompt (instructions) must stay. */
   | "system"
+  /** Tools and the first n system parts must stay; later system parts may change. */
+  | { system: number }
   /** Tools, system prompt and messages 1..n must stay. */
   | { message: number }
   /** The first n blocks must stay. */
@@ -72,9 +74,15 @@ export function keptBlocks(position: Position, blocks: Block[]): number {
   const lastOf = (kinds: Block["kind"][]) => blocks.findLastIndex((block) => kinds.includes(block.kind)) + 1
   if (position === "tools") return lastOf(["tool"])
   if (position === "system") return lastOf(["tool", "system"])
+  // Checked here as well as at the boundaries, so a position that is not one never turns into NaN and an allowance that silently allows nothing.
+  if (!isPosition(position)) throw new TypeError(`prefixlens: ${JSON.stringify(position)} is not a position a break may start after; ${POSITIONS}`)
+  if ("system" in position) return lastOf(["tool"]) + Math.min(position.system, blocks.filter((block) => block.kind === "system").length)
   const firstMessage = blocks.findIndex((block) => block.kind === "message")
   return (firstMessage === -1 ? blocks.length : firstMessage) + position.message
 }
+
+/** The valid positions, for error messages. */
+export const POSITIONS = 'use "start", "tools", "system", a block count, { system: n } or { message: n }'
 
 /**
  * Index of the first block of `prev` the change invalidates: 0 for a model
@@ -108,12 +116,17 @@ export function describePosition(position: Position): string {
   if (position === "tools") return "the tools"
   if (position === "system") return "the tools and system prompt"
   if (typeof position === "number") return `the first ${position} ${position === 1 ? "block" : "blocks"}`
+  if ("system" in position) return position.system === 1 ? "the tools and the first system part" : `the tools and the first ${position.system} system parts`
   return `the tools, system prompt and message${position.message === 1 ? "" : "s"} 1${position.message === 1 ? "" : `-${position.message}`}`
 }
 
-/** True for a valid `after` value: "start", "tools", "system", a block count, or `{ message: n }`. */
+/** True for a valid `after` value: "start", "tools", "system", a block count, `{ system: n }` or `{ message: n }`. */
 export function isPosition(value: unknown): value is Position {
   if (value === "start" || value === "tools" || value === "system") return true
   if (typeof value === "number") return Number.isInteger(value) && value >= 0
-  return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 1 && Number.isInteger((value as { message?: unknown }).message) && (value as { message: number }).message >= 0
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+  const [key, ...others] = Object.keys(value)
+  if (others.length > 0 || (key !== "message" && key !== "system")) return false
+  const count = (value as Record<string, unknown>)[key]
+  return typeof count === "number" && Number.isInteger(count) && count >= 0
 }
