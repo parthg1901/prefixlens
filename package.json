@@ -12,7 +12,7 @@
   "bugs": {
     "url": "https://github.com/parthg1901/prefixlens/issues"
   },
-  "description": "Explains prompt-cache hits and misses for LLM agent harnesses: import session logs, record through a local proxy or a wrapped SDK client, and assert prefix stability in CI.",
+  "description": "Explains prompt-cache hits and misses for any LLM agent, harness or framework: assert prefix stability in CI, record through a local proxy or a wrapped client, and see which request broke the cache, why, and what it cost.",
   "keywords": [
     "llm",
     "prompt-caching",
@@ -20,7 +20,7 @@
     "cache",
     "anthropic",
     "openai",
-    "claude",
+    "ai-agents",
     "agents",
     "harness",
     "observability",
