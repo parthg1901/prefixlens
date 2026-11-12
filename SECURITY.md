@@ -1,6 +1,6 @@
 # Security and privacy
 
-prefixlens sits between an agent harness and its model provider, or inside the harness's own process, and writes what it sees to a trace file. This page says exactly what it sees, what it writes, and what it never writes. Each statement about what is written, stripped or refused is checked by a test in `test/privacy.test.ts`, `test/record.test.ts`, `test/proxy-guard.test.ts`, `test/binary.test.ts` or `test/cli-private.test.ts`.
+prefixlens sits between an agent harness and its model provider, or inside the harness's own process, and writes what it sees to a trace file. This page says exactly what it sees, what it writes, and what it never writes. Each statement about what is written, stripped or refused is checked by a test in `test/privacy.test.ts`, `test/record.test.ts`, `test/proxy-guard.test.ts`, `test/binary.test.ts`, `test/cli-private.test.ts` or `test/printable.test.ts`.
 
 ## Reporting a vulnerability
 
@@ -25,6 +25,12 @@ The repository's `.gitignore` ignores `*.trace.jsonl`, `*.trace.html` and `*.rep
 
 Trace files prefixlens creates (the proxy, `wrap`, `lens.fetch`, `lens.observe` with a trace path, `prefixlens import -o`) and `report --html` reports are created readable and writable by their owner only (mode 0600), and directories it creates for them owner-only (0700). A file or directory that already exists keeps its permissions: prefixlens never changes a mode you set. The proxy and `import -o` print a warning when such a file is readable by other users. A report printed to stdout (`--json`, the terminal report) or a trace written to stdout by `import` gets whatever permissions you redirect it into.
 
+## Trace content on the terminal
+
+A trace holds whatever the agent read: web pages, file contents, tool output, tool names from third-party servers. Printed as it is, an escape sequence in that content could retitle your terminal, hide or recolour later output, or rewrite lines already printed. So what prefixlens prints from a trace for people to read has its control characters (C0 and C1, and DEL; newline and tab are kept) written visibly, as `\x1b`: the terminal report, the diff excerpt under a miss (in every report form), the message of a `PrefixBreakError` from `prefixlens/test`, which ends up in CI logs, and the proxy's line per call. The HTML report escapes the content it shows. The JSON report (`--json`) keeps the content as it was and prints every control character in it as a JSON escape (`\u001b`, `\u009b`), so it parses to the same values.
+
+A trace itself is not changed, and is not covered: it is JSON Lines, in which the C0 characters are escaped and DEL and the C1 characters are not. That includes a trace `prefixlens import` prints to stdout when `-o` is not given. If you print a trace with another tool (`cat`, `less -r`), that tool decides what reaches the terminal.
+
 ## What is never written
 
 From the request headers, only these four are written, under the record's `headers` field: `session-id`, `anthropic-beta`, `anthropic-version` and `openai-beta` (`RECORDED_HEADERS` in `src/record/exchange.ts`). They route a request to a cache or change what is cached. Every other header is dropped before the record is built, including `authorization`, `x-api-key`, `proxy-authorization`, `cookie`, `openai-organization`, `openai-project`, `chatgpt-account-id`, `user-agent` and any custom header. This holds for the proxy, `wrap`, `lens.fetch`, `lens.observe` and `buildRecord`, which all build records with the same function.
@@ -35,14 +41,24 @@ Nothing is written for calls that are not model calls (anything other than `POST
 
 ## The recording proxy
 
-`prefixlens record` forwards every request to the provider, credentials included and unchanged, and streams the response back. It sees everything the harness sends and receives, API keys included. It removes only hop-by-hop headers (`host`, `connection`, `keep-alive`, `content-length`, `transfer-encoding`) and its own `x-prefixlens-lane` and `x-prefixlens-session` before forwarding.
+`prefixlens record` forwards every request to the provider and streams the response back. It sees everything the harness sends and receives, API keys included. The method, path, query, body and credentials go upstream as the harness sent them. The headers and the framing are not byte for byte what the harness sent:
+
+- it removes the hop-by-hop headers (`host`, `connection`, `keep-alive`, `content-length`, `transfer-encoding`) and its own `x-prefixlens-lane` and `x-prefixlens-session` before forwarding;
+- it narrows the client's `accept-encoding` to the encodings the runtime's fetch can decode (this drops `zstd` on Node before 24), because it passes the response on decoded;
+- the runtime's fetch, which sends the request, sets the hop-by-hop headers again for its own connection and adds its defaults for headers the client did not send. With a client that sent none of them, the upstream received on Bun 1.4.0 `accept: */*`, `accept-encoding: gzip, deflate, br, zstd` and `user-agent: Bun/1.4.0`, and on Node 24 `accept: */*`, `accept-encoding: gzip, deflate`, `user-agent: node`, `accept-language: *` and `sec-fetch-mode: cors`. A header the client did send is forwarded with the client's value;
+- it reads each request body whole before forwarding it, so a request is not streamed to the provider as it arrives;
+- the response is streamed back chunk by chunk as it arrives, but decompressed, without the provider's `content-encoding` and `content-length`.
 
 It listens on `127.0.0.1:8787` by default, so only processes on the same machine can reach it. It has no authentication of its own: any local process can send requests through it (with its own credentials; the proxy adds none), and those requests are written to your trace.
 
 A web page in your browser can also send requests to a loopback port. The proxy refuses, with 403 and without forwarding:
 
 - a request whose `Host` header is not a loopback name (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`) or the address given with `--host`, which defeats DNS rebinding;
-- a request with an `Origin` header, which browsers send on cross-origin requests and harness CLIs do not, unless `--allow-origin` (`allowedOrigins`) names that origin.
+- a request with an `Origin` header, which harness CLIs do not send, unless `--allow-origin` (`allowedOrigins`) names that origin. Browsers send `Origin` on cross-origin `fetch` and XHR requests, on their preflights and on cross-origin `POST`s, which covers every request that could be recorded as a model call.
+
+What the `Origin` check does not cover: a browser sends no `Origin` on a plain `GET` navigation or on an image or script load. Such a `GET`, with a loopback `Host`, is forwarded to the upstream like any other `GET`. Nothing is recorded for it (only `POST`s to the model endpoints are), and the proxy adds no credentials to it.
+
+`--allow-origin` only stops the proxy refusing: the proxy adds no CORS response headers of its own and forwards a preflight upstream like any other request, so a page from an allowed origin can read the answer only if the upstream's CORS headers allow it. `Origin: null` is what every sandboxed frame and every page opened from a file sends, so allowing `null` allows all of them.
 
 This does not make the proxy safe to expose: it does not authenticate the client, and a local process is trusted.
 

@@ -19,17 +19,27 @@ There are four ways in:
 
 ## Status
 
-prefixlens 0.4 is unreleased. It has run on one machine, Linux arm64, with Bun 1.4.0 and Node 24.20. CI is set up to run the Bun suite on Linux and macOS and the Node suite on Node 22.0.0 (the minimum) and 26, on Linux and macOS, but it has not run yet: there is no public repository. So Node support has been tested on Linux only, with Node 24 only, and nothing has been run on macOS.
+prefixlens 0.5 is unreleased. It has run on one machine, Linux arm64, with Bun 1.4.0 and Node 24.20. CI is set up to run the Bun suite on Linux and macOS and the Node suite on Node 22.0.0 (the minimum) and 26, on Linux and macOS, but it has not run yet: there is no public repository. So Node support has been tested on Linux only, with Node 24 only, and nothing has been run on macOS.
 
 Checked on real traffic, all on that machine:
 
-- **The recording proxy**, with Claude Code (Anthropic Messages; five runs of Claude Code 2.1.322 on a Haiku model, ten model calls), Codex (OpenAI Responses with ChatGPT sign-in; Codex CLI 0.167.0, five `codex exec` runs, the same calls and token counts as Codex's own logs, no credential in the trace), another harness on the Responses API with ChatGPT sign-in, and opencode 1.19.5 with its free models (Chat Completions through opencode's gateway; the same calls and token counts as opencode's database, plus the title calls opencode does not store, no credential in the trace).
-- **The `claude-code` importer**, on real sessions and against the proxy's records of the same sessions: usage, tool hashes and message hashes identical on every call, and every rebuilt request matched the digest Claude Code logged of the request it built. The importer then places the one system block Claude Code adds without logging it, so every other block and every breakpoint lines up with what the proxy recorded. The streaming importer of 0.4 writes byte-identical traces to the one before it on eight real sessions of 7 to 102 MB.
+- **The recording proxy**, with:
+  - Claude Code (Anthropic Messages; five runs of Claude Code 2.1.322 on a Haiku model, ten model calls);
+  - Codex (OpenAI Responses with ChatGPT sign-in; Codex CLI 0.167.0, five `codex exec` runs, the same calls and token counts as Codex's own logs, no credential in the trace);
+  - another harness on the Responses API with ChatGPT sign-in;
+  - opencode 1.19.5 with its free models (Chat Completions through opencode's gateway; the same calls and token counts as opencode's database, plus the title calls opencode does not store, no credential in the trace).
+- **The `claude-code` importer**, on real sessions and against the proxy's records of the same sessions: usage, tool hashes and message hashes identical on every call, and every rebuilt request matched the digest Claude Code logged of the request it built. The importer then places the one system block Claude Code adds without logging it, so every other block and every breakpoint lines up with what the proxy recorded. The streaming importer writes byte-identical traces to the importer it replaced, on eight real sessions of 7 to 102 MB.
 - **The `codex` importer**, on real rollouts, whose per-response records match the proxy's calls one for one.
 - **The `opencode` importer**, on databases opencode 1.19.5 wrote (eight sessions, two free models): calls and tokens matched an independent recount and the recording proxy.
+- **Where the wrong verdicts fixed in 0.5 came from** (the fixes are listed under 0.5.0 in the [changelog](CHANGELOG.md)). They were first seen on real requests from four harnesses:
+  - Mastra: tests against the published `@mastra/core` 1.82.0 and `@mastra/memory` 1.41.0 with a recording fake provider. That gives the request bodies Mastra builds, and no real provider cache;
+  - opencode 1.19.5, through the recording proxy against its free-model gateway;
+  - Claude Code and Codex: a survey of imported session logs.
+- **One of those fixes, after it was made:** the Mastra sliding-window case was run again on real requests and now reports "oldest messages removed from the start of history".
 
 Not checked on real traffic:
 
+- the other verdict fixes of 0.5, after they were made: each fix is covered by a synthetic test, but apart from the Mastra sliding-window case none was run again on the traffic that had shown the wrong verdict;
 - the `otel` importer, tested only on synthetic fixtures;
 - `wrap(client)` and `lens.fetch` against the real APIs: they have run only against a simulated upstream (there was no API key);
 - cache expiry on real Anthropic traffic (Claude Code uses 1-hour lifetimes, so no expiry happened);
@@ -44,7 +54,19 @@ The prices in `pricing.json` have not been checked independently (see [Pricing](
 
 prefixlens is not on a package registry yet; use it from a clone, or pack the clone and install the tarball.
 
-Requirements: [Node.js](https://nodejs.org) 22 or later, or [Bun](https://bun.sh) 1.1 or later, on Linux or macOS. There are no runtime dependencies. Node 22 is the oldest Node line still supported upstream (Node 20 reached end of life in March 2026), and nothing in prefixlens needs a newer one except two features, which say so when they are missing instead of raising the minimum for everyone: reading an opencode SQLite database needs Node's built-in SQLite (Node 22.13 or later), and the proxy decodes zstd-compressed request bodies (Codex with ChatGPT sign-in sends them) only on Node 22.15 or later. Bun has both.
+Requirements, on Linux or macOS:
+
+- [Node.js](https://nodejs.org) 22 or later; or
+- [Bun](https://bun.sh). Only Bun 1.4.0 has been run. `package.json` accepts 1.1 or later, and no version before 1.4.0 has been tested.
+
+There are no runtime dependencies.
+
+Node 22 is the oldest Node line still supported upstream (Node 20 reached end of life in April 2026), and nothing in prefixlens needs a newer one except two features, which say so when they are missing instead of raising the minimum for everyone:
+
+- reading an opencode SQLite database needs Node's built-in SQLite (Node 22.13 or later);
+- the proxy decodes zstd-compressed request bodies (Codex with ChatGPT sign-in sends them) only on Node 22.15 or later.
+
+Bun has both.
 
 From a clone, with Bun (runs the TypeScript sources directly):
 
@@ -93,7 +115,7 @@ prefixlens report session.trace.jsonl --html     # writes session.trace.html, on
 
 `import` writes to stdout when `-o` is not given, so the two commands pipe: `prefixlens import opencode <db> | prefixlens report -`.
 
-Output on a small synthetic session:
+Output on a small synthetic session. This is the table, the misses and the headline; the two header lines above the table, the Totals block and the notes under the headline are left out here:
 
 ```
 turn  time (UTC)  lane      model            prompt   read  write  uncached  out    hit     cost  status
@@ -117,7 +139,7 @@ Long sessions hide the hit rows in the terminal (`--all` shows them); the HTML r
 
 | option | meaning |
 |---|---|
-| `--json` | Print the full analysis as JSON (summary, every call, causes, diffs). |
+| `--json` | Print the full analysis as JSON (summary, every call, causes, diffs). Its fields may still change between minor versions: see [The JSON report](#the-json-report). |
 | `--html [file]` | Write a self-contained HTML report (default `<trace>.html`). No external requests. |
 | `--pricing <file>` | Use another pricing table (also `PREFIXLENS_PRICING`). |
 | `--no-catalogue` | Do not use the models.dev prices that `prefixlens pricing update` fetched ([below](#a-second-source-modelsdev)). |
@@ -125,6 +147,22 @@ Long sessions hide the hit rows in the terminal (`--all` shows them); the HTML r
 | `--tolerance <tokens>` | Lost tokens still counted as a hit (default 128). Where a trace shows a cache reading in larger steps ([How it decides](#how-it-decides)), a request that exactly extends the previous one is also a hit when it is less than one such step short. |
 | `--all` | Show every row and every miss in the terminal. |
 | `--no-color` | Plain output (also when `NO_COLOR` is set or output is not a terminal). |
+
+### The JSON report
+
+`report --json` prints one JSON object. **Its fields are not a stable interface yet: until 1.0 a minor version may add, rename or remove them.** Such changes are listed in the [changelog](CHANGELOG.md). The top-level fields today:
+
+| field | holds |
+|---|---|
+| `report` | Always `"prefixlens"`. |
+| `trace` | The trace path as given on the command line (`"-"` for stdin). |
+| `pricing` | Where the prices came from: `source`, `as_of` when the table has one, and `catalogue` (`source`, `fetched_at`) when a models.dev file was loaded. |
+| `version` | `1`. It has not been raised for the fields added so far, so do not use it to detect a change before 1.0. |
+| `summary` | Totals for the trace: calls, lanes, tokens, hit rate, cost, calls by status, misses by cause group, intentional breaks, the headline and the notes. |
+| `turns` | One object per model call, in trace order: its usage, hit rate, cost, expected and lost cached tokens, status, and for a miss its `cause` (with `summary`, `confidence`, `detail` and a `diff` excerpt). |
+| `warnings` | What the trace reader and the analysis warned about. |
+
+Strings in it are the trace's content as it was, except the `diff` excerpts, in which control characters are written visibly (`\x1b`).
 
 ## Quickstart: record with the proxy
 
@@ -135,7 +173,16 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude                # in another term
 prefixlens report run.trace.jsonl
 ```
 
-The proxy forwards every request to the real API unchanged, credentials included, and streams each response back chunk by chunk as it arrives; it never buffers or rewrites a byte. When a model call ends, and only after the client has received every byte of the response, it appends one full-request record: the canonical request, the final usage, the request start time. Auth headers, cookies and API keys are never written, nor are identifying request fields or the bytes of images and documents (see [Security and privacy](#security-and-privacy)); the only headers kept are `session-id` (cache affinity on OpenAI's ChatGPT sign-in flow), `anthropic-beta`, `anthropic-version` and `openai-beta`. It prints one line per call, so you can watch the hit rate while you work:
+The proxy forwards every request to the real API with its method, path, query, body and credentials as the harness sent them, and streams each response back chunk by chunk as it arrives. It does not change the content of a request or a response. It is not a byte-for-byte relay, though:
+
+- it drops the hop-by-hop headers and its own two (`x-prefixlens-lane`, `x-prefixlens-session`), and narrows `accept-encoding` to what the runtime can decode;
+- the runtime's fetch adds its defaults for headers the harness did not send (`accept`, `accept-encoding`, `user-agent`; on Node also `accept-language` and `sec-fetch-mode`);
+- it reads each request body whole before forwarding it;
+- it passes the response on decompressed, without the provider's `content-encoding` and `content-length`.
+
+The exact list is in [SECURITY.md](SECURITY.md#the-recording-proxy).
+
+When a model call ends, and only after the client has received every byte of the response, the proxy appends one full-request record: the canonical request, the final usage, the request start time. Auth headers, cookies and API keys are never written, nor are identifying request fields or the bytes of images and documents (see [Security and privacy](#security-and-privacy)); the only headers kept are `session-id` (cache affinity on OpenAI's ChatGPT sign-in flow), `anthropic-beta`, `anthropic-version` and `openai-beta`. It prints one line per call, so you can watch the hit rate while you work:
 
 ```
 #2 main gpt-6-luna: prompt 2,987, cache read 2,816 (94%), output 9
@@ -148,14 +195,35 @@ The proxy forwards every request to the real API unchanged, credentials included
 | `--host <address>` | Listen address (default 127.0.0.1). |
 | `-o, --out <file>` | Trace to append to (default `prefixlens.trace.jsonl`). |
 | `--upstream <url>` | Forward somewhere else: a gateway, a regional endpoint. A path is prefixed to each request path. With `https://chatgpt.com` (Codex's ChatGPT sign-in backend) records are marked `"billing": "subscription"`. |
-| `--allow-origin <origins>` | Let web pages from these origins (comma-separated, or `*`) call the proxy. By default a request with an `Origin` header is refused (403). |
+| `--allow-origin <origins>` | Do not refuse requests whose `Origin` is one of these (comma-separated, or `*`). By default a request with an `Origin` header is refused (403). This alone does not make the proxy usable from a web page: it adds no CORS response headers and forwards the preflight upstream, so a page can read the answer only if the upstream's CORS headers allow it. |
 | `--keep-identifiers` | Keep `metadata`, `user`, `safety_identifier` and `client_metadata` in the recorded params (left out by default). |
 | `--keep-binary` | Keep base64 images, documents and audio in the trace instead of their SHA-256 and size. |
 | `--quiet` | No line per call. |
 
-Recorded: `POST …/messages` (Anthropic Messages), `…/chat/completions` and `…/responses` (OpenAI), streamed (SSE, with or without `[DONE]`, with `: keep-alive` comments) or not, and compressed request bodies (gzip, deflate, br, zstd). Everything else passes through unrecorded, as do error responses. WebSocket handshakes are answered `426 Upgrade Required` and never forwarded: the proxy relays HTTP only. A client that disconnects mid-stream is recorded only if the stream already reported usage (Anthropic does in its first event); the record is marked `"interrupted": true`, and the report shows the call as cut off, with its output and cost as lower bounds. A request whose `Host` is not a loopback name or the `--host` address, or that carries an `Origin` header (browsers send one, harness CLIs do not), is refused with 403 and not forwarded; this keeps a web page open in your browser from using the proxy. Chat Completions streams report usage only with `stream_options: {"include_usage": true}`; the proxy does not add it, since it never changes a request, so without it those calls are skipped with a note.
+What is recorded, and what is not:
 
-**Lanes.** One proxy often carries several conversations at once (subagents, title generation, side queries), and each call must be compared with the call it builds on. The proxy assigns lanes by shared prefix: a call joins the lane whose latest request it extends; else the lane it shares the most leading messages with, when it also shares the start of the request or that lane is idle with the same tools or system prompt (an edit, a mode switch); else an idle lane with the same tools and system prompt (a compaction); else it opens a new lane. A call that does not extend a lane joins it only when its cache key (the `session-id` header, else `prompt_cache_key`) matches, so a harness that names its conversations, as Codex does, gets a lane per conversation. A harness that names its sessions in a request header gets a session per conversation: the proxy reads the headers listed in `SESSION_HEADERS` (today opencode's `x-opencode-session-id`, and `x-opencode-parent-session-id` from a subagent), records each call in its session, and a subagent's calls in its root session as lane `subagent:<id>`, as `prefixlens import opencode` does; so two opencode sessions run one after the other through one proxy never share a lane. These headers are forwarded and not written. opencode's title call comes first in a new session and has its own instructions, so it opens the session's `main` lane and the conversation itself is `lane-2`. A harness that knows better can send `x-prefixlens-lane` (and `x-prefixlens-session`), which win over all of this; the proxy strips both before forwarding. A proxy started on a trace that already has records (`-o` with an existing file) reads the lanes the file holds and continues them, so a conversation carried over a restart is compared with its own previous call and new conversations get lane names the file does not use yet.
+- **Recorded.** `POST …/messages` (Anthropic Messages), `…/chat/completions` and `…/responses` (OpenAI), streamed (SSE, with or without `[DONE]`, with `: keep-alive` comments) or not, and compressed request bodies (gzip, deflate, br, zstd).
+- **Passed through.** Everything else passes through unrecorded, as do error responses.
+- **WebSockets.** Handshakes are answered `426 Upgrade Required` and never forwarded: the proxy relays HTTP only.
+- **Cut-off calls.** A client that disconnects mid-stream is recorded only if the stream already reported usage (Anthropic does in its first event); the record is marked `"interrupted": true`, and the report shows the call as cut off, with its output and cost as lower bounds.
+- **Refused.** A request whose `Host` is not a loopback name or the `--host` address, or that carries an `Origin` header, is refused with 403 and not forwarded. Browsers send `Origin` on the requests a page can make to an API (a cross-origin `fetch` or `POST`), and harness CLIs do not; this keeps a web page open in your browser from sending model calls through the proxy. A plain `GET` navigation or image load carries no `Origin` and is forwarded, unrecorded and without credentials ([SECURITY.md](SECURITY.md#the-recording-proxy)).
+- **Usage in streams.** Chat Completions streams report usage only with `stream_options: {"include_usage": true}`; the proxy does not add it, since it never changes a request body, so without it those calls are skipped with a note.
+
+**Lanes.** One proxy often carries several conversations at once (subagents, title generation, side queries), and each call must be compared with the call it builds on. The proxy assigns lanes by shared prefix. A call joins the first of these that applies:
+
+1. the lane whose latest request it extends;
+2. else the lane it shares the most leading messages with, when it also shares the start of the request or that lane is idle with the same tools or system prompt (an edit, a mode switch);
+3. else an idle lane with the same tools and system prompt (a compaction);
+4. else it opens a new lane.
+
+A call that does not extend a lane joins it only when its cache key (the `session-id` header, else `prompt_cache_key`) matches, so a harness that names its conversations, as Codex does, gets a lane per conversation.
+
+Sessions, overrides and restarts:
+
+- **Session headers.** A harness that names its sessions in a request header gets a session per conversation: the proxy reads the headers listed in `SESSION_HEADERS` (today opencode's `x-opencode-session-id`, and `x-opencode-parent-session-id` from a subagent), records each call in its session, and a subagent's calls in its root session as lane `subagent:<id>`, as `prefixlens import opencode` does; so two opencode sessions run one after the other through one proxy never share a lane. These headers are forwarded and not written.
+- **Title calls.** opencode's title call comes first in a new session and has its own instructions, so it opens the session's `main` lane and the conversation itself is `lane-2`.
+- **Explicit lanes.** A harness that knows better can send `x-prefixlens-lane` (and `x-prefixlens-session`), which win over all of this; the proxy strips both before forwarding.
+- **Restarts.** A proxy started on a trace that already has records (`-o` with an existing file) reads the lanes the file holds and continues them, so a conversation carried over a restart is compared with its own previous call and new conversations get lane names the file does not use yet.
 
 ### The base URL to set, per harness
 
@@ -169,7 +237,15 @@ Recorded: `POST …/messages` (Anthropic Messages), `…/chat/completions` and `
 | A harness on the Responses API with ChatGPT sign-in (requests to `https://api.openai.com/v1/responses`) | `--provider openai` | its base URL option: `http://127.0.0.1:8787/v1` |
 | opencode | `--provider openai --upstream https://opencode.ai/inference/openai` for its free `opencode/*` models; otherwise the provider you use | `"provider": { "opencode": { "options": { "baseURL": "http://127.0.0.1:8787/v1" } } }` in `~/.config/opencode/opencode.json` (another provider's id for others) |
 
-Checked here: the Codex ChatGPT sign-in row live (Codex CLI 0.167.0, five small `codex exec` runs through the proxy: every call recorded, the same calls and token counts as Codex's own rollout logs, no credential in the trace), and the other ChatGPT sign-in row live with another harness; the TypeScript SDK rows against a local stand-in for each API. Codex opens Responses over a WebSocket first; the proxy relays HTTP only and answers the handshake with 426, on which Codex switches to HTTP at once. A base URL ending in `/backend-api/codex` keeps the routes Codex uses only on its own backend (Codex's source decides this by that suffix). The Codex API-key row follows Codex's source (the same setting, with `https://api.openai.com/v1` as the default) and was not run. The opencode row was run live with opencode 1.19.5 and its free models, which need no sign-in: every call recorded, the same calls and token counts as opencode's database plus the title calls opencode does not store, no credential in the trace. The Claude Code row was run live too: five runs of Claude Code 2.1.322 on a Haiku model through the proxy, ten model calls recorded. The Python SDK rows follow those SDKs' documented settings and were not run through the proxy here.
+What was run for each row:
+
+- **Codex with ChatGPT sign-in:** live (Codex CLI 0.167.0, five small `codex exec` runs through the proxy: every call recorded, the same calls and token counts as Codex's own rollout logs, no credential in the trace). Codex opens Responses over a WebSocket first; the proxy relays HTTP only and answers the handshake with 426, on which Codex switches to HTTP at once. A base URL ending in `/backend-api/codex` keeps the routes Codex uses only on its own backend (Codex's source decides this by that suffix).
+- **The other ChatGPT sign-in row:** live, with another harness.
+- **Codex with an API key:** not run. The row follows Codex's source (the same setting, with `https://api.openai.com/v1` as the default).
+- **opencode:** run live with opencode 1.19.5 and its free models, which need no sign-in: every call recorded, the same calls and token counts as opencode's database plus the title calls opencode does not store, no credential in the trace.
+- **Claude Code:** run live, five runs of Claude Code 2.1.322 on a Haiku model through the proxy, ten model calls recorded.
+- **The TypeScript SDK rows:** against a local stand-in for each API.
+- **The Python SDK rows:** not run through the proxy here. They follow those SDKs' documented settings.
 
 ## Quickstart: wrap your SDK client
 
@@ -259,7 +335,7 @@ Some verdicts on history, as they are worded:
 | dropped the oldest messages and replayed the rest (a sliding window) | `2 oldest messages removed from the start of history (3 kept, 2 appended)` | drop history in chunks at a saved boundary, or keep history append-only |
 | replaced history with a summary, with or without a tail of recent messages kept word for word | `history compacted (25 → 12 messages from message #1)` | mark it with `allowBreak: { reason: "compaction" }` |
 | inserted a message before one already sent, which the SDK merged into it | `1 part inserted at the start of message #1 (user), ahead of content already sent; …` | append new messages at the end |
-| rendered a relative date again | `system prompt changed: a relative date value was updated (today → yesterday)` | keep clocks out of the system prompt; store and replay values rendered at send time |
+| rendered a relative date again | `system prompt changed: a relative date value was updated (today → yesterday)` | keep clocks and ids out of the system prompt: send them in a new message, or round them |
 
 [`examples/ci-prefix-test`](examples/ci-prefix-test) is a small project whose `bun test` suite catches the four common bugs: tools sorted differently each turn, a timestamp in the system prompt, an already-sent message rewritten, and the tool list changing on a mode switch. It also shows two legitimate changes passing: `tool_choice: "none"` on the last step, and a declared revert.
 
@@ -300,14 +376,87 @@ A declaration is not a way to make misses disappear:
 
 ## What each adapter can and can't diagnose
 
-Every adapter declares the fidelity it produces; `prefixlens adapters` prints this table.
+Every adapter declares the fidelity it produces. `prefixlens adapters` prints a shorter form of what follows: each adapter's fidelity, default location and a summary of what it can diagnose.
 
-| adapter | reads | fidelity | can diagnose | can't diagnose |
-|---|---|---|---|---|
-| `claude-code` | `~/.claude/projects/<project>/<session>.jsonl` and `<session>/subagents/*.jsonl` | **full-request** on recent Claude Code versions, whose logs record each request (its tools, system prompt, params, cache breakpoints, and messages by hash). prefixlens rebuilds every request and checks it against the SHA-256 digest Claude Code logged of the request as it built it; a rebuilt request that does not match is imported usage-only. That digest proves the tools, the logged system parts, the messages, the params and the breakpoints, not the bytes sent: Claude Code's transport then puts a first system block in front (a billing-attribution line that differs per session) that the log never contains, and sends the logged `betas` as the `anthropic-beta` header. The importer writes that block as an `unknown` block in its place, so every other block and breakpoint sits where it was sent, and `betas` as the header; the report says the system prompt is partly unknown. **usage-only** on older logs, which record responses only. A directory is imported with each model call once: a resumed or forked conversation starts its file with a copy of the earlier file's lines, and the copy in the file that starts earliest is kept (same call id and timestamp; a warning says how many copies were left out). One such file imported alone keeps the calls it copied. | Full: every cause, with the first changed block and a diff: tool list and order changes (e.g. an MCP server dropping out), system prompt edits, edited, appended or removed messages, rewinds, compaction, param changes, expiry against the logged TTL, and misses with every recorded block intact (reported as provider-side but *inferred*, since the billing-attribution block cannot be compared). Usage-only: hit rates, costs, model changes, likely expiry (TTL inferred from the 5-minute/1-hour write split), compaction from the transcript's compact boundaries. | Full: a change to the billing-attribution block (its content is unknown; a miss it caused reads as one with the prefix intact); changes the provider makes after the request leaves Claude Code (server-side context editing such as clearing old thinking, set by the `context_management` param), which show up as a miss with the prefix intact; and calls Claude Code bills but does not log one by one (compaction summaries, title and other side queries; the importer warns when Claude Code's own totals exceed the logged calls). Usage-only: no tool list, system prompt or history, so tool-list, tool-order, system-prompt and history changes cannot be told apart; such misses are reported as *cause unknown* rather than guessed. |
-| `opencode` | `~/.local/share/opencode/opencode.db` (`opencode-<channel>.db` on other channels; `opencode db path` prints it): the `session/message/part` tables released versions write (checked on 1.19.5), the `session_v2/session_message` tables of opencode's unreleased development code, or a legacy `storage/` JSON directory | **usage-only** | Per-call hit rates and costs (one record per model call), model changes, likely expiry, and inferred causes from opencode's records: compactions, agent switches (e.g. build → plan), pruned tool outputs. `input` excludes cached tokens and `output` excludes reasoning; on 1.19.5 every call's tokens matched the recording proxy. `ts` is the message's creation, 30–100 ms before the request (1–3 s on a prompt's first call). | Anything that needs the request: opencode stores the conversation and per-call usage, not the tool list, system prompt, parameters or replayed history, nor a request hash, and neither `opencode export` nor any log level records requests; use the proxy. Causes are *inferred*, no block diffs, unexplained misses are *cause unknown*. Title-generation calls are not stored and are missed, with a warning. Compaction was not exercised on 1.19.5. |
-| `codex` | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, one file or a directory of them. Each file is one thread; a subagent's file joins its root session as a lane (`subagent:<thread id>`), and `--session <id>` takes a root session with its subagents | **usage-only** | Per-response hit rates and costs, model changes, likely expiry, compactions (with the compaction call itself marked), collaboration-mode switches, and tool-list changes, from the hash Codex logs for each tool definition (`world_state`; tools added, removed or redefined; inferred). Calls made with ChatGPT sign-in, which Codex logs with the plan's rate limits, are marked `"billing": "subscription"`. Usage is the API's own: Codex copies it from each `response.completed`, so `input_tokens` includes cached and cache-write tokens and output includes reasoning (Codex's source); on real rollouts the per-response records add up exactly to Codex's own running totals, and on sessions recorded through the proxy they match the proxy's calls one for one, by response id and token counts. | The request. Newer rollouts (0.167) log every input item, tool declarations included, and on the sessions recorded through the proxy they rebuilt each request's input block for block; but no version logs a request hash or the full parameters, and older versions send the tool list outside the logged items, so a rebuilt request cannot be shown to be the one sent: no block diffs, and instruction and history changes are *cause unknown* (tool-list changes are named from the logged tool hashes when newer versions log them). Timestamps are response ends, not request starts (2–7 s after the proxy's request starts here). Logs with `token_count` events only (no `token_usage_record` lines) do not report compaction calls. |
-| `otel` | OpenTelemetry GenAI spans: an OTLP/JSON export, JSONL of exports, or a JSON array of spans | **usage-only** | Per-call hit rates and costs from `gen_ai.usage.*` (cache reads and writes included), model changes, likely expiry; `gen_ai.conversation.id` becomes the session. | The request: the content attributes are opt-in and not the exact request, so no block diffs. Follows the semantic conventions (`input_tokens` includes cached tokens); a span whose cache counts exceed its input is read as reporting input without cache, with a warning. |
+| adapter | fidelity |
+|---|---|
+| [`claude-code`](#claude-code) | full-request on recent Claude Code versions, usage-only on older logs |
+| [`opencode`](#opencode) | usage-only |
+| [`codex`](#codex) | usage-only |
+| [`otel`](#otel) | usage-only |
+
+### `claude-code`
+
+**Reads:** `~/.claude/projects/<project>/<session>.jsonl` and `<session>/subagents/*.jsonl`
+
+**Fidelity:**
+
+- **full-request** on recent Claude Code versions, whose logs record each request (its tools, system prompt, params, cache breakpoints, and messages by hash). prefixlens rebuilds every request and checks it against the SHA-256 digest Claude Code logged of the request as it built it; a rebuilt request that does not match is imported usage-only.
+- That digest proves the tools, the logged system parts, the messages, the params and the breakpoints, not the bytes sent: Claude Code's transport then puts a first system block in front (a billing-attribution line that differs per session) that the log never contains, and sends the logged `betas` as the `anthropic-beta` header. The importer writes that block as an `unknown` block in its place, so every other block and breakpoint sits where it was sent, and `betas` as the header; the report says the system prompt is partly unknown.
+- **usage-only** on older logs, which record responses only.
+- A directory is imported with each model call once: a resumed or forked conversation starts its file with a copy of the earlier file's lines, and the copy in the file that starts earliest is kept (same call id and timestamp; a warning says how many copies were left out). One such file imported alone keeps the calls it copied.
+
+**Can diagnose:**
+
+- Full: every cause, with the first changed block and a diff: tool list and order changes (e.g. an MCP server dropping out), system prompt edits, edited, appended or removed messages, rewinds, compaction, param changes, expiry against the logged TTL, and misses with every recorded block intact (reported as provider-side but *inferred*, since the billing-attribution block cannot be compared).
+- Usage-only: hit rates, costs, model changes, likely expiry (TTL inferred from the 5-minute/1-hour write split), compaction from the transcript's compact boundaries.
+
+**Can't diagnose:**
+
+- Full: a change to the billing-attribution block (its content is unknown; a miss it caused reads as one with the prefix intact); changes the provider makes after the request leaves Claude Code (server-side context editing such as clearing old thinking, set by the `context_management` param), which show up as a miss with the prefix intact; and calls Claude Code bills but does not log one by one (compaction summaries, title and other side queries; the importer warns when Claude Code's own totals exceed the logged calls).
+- Usage-only: no tool list, system prompt or history, so tool-list, tool-order, system-prompt and history changes cannot be told apart; such misses are reported as *cause unknown* rather than guessed.
+
+### `opencode`
+
+**Reads:** `~/.local/share/opencode/opencode.db` (`opencode-<channel>.db` on other channels; `opencode db path` prints it): the `session/message/part` tables released versions write (checked on 1.19.5), the `session_v2/session_message` tables of opencode's unreleased development code, or a legacy `storage/` JSON directory
+
+**Fidelity:** usage-only
+
+**Can diagnose:**
+
+- Per-call hit rates and costs (one record per model call), model changes, likely expiry, and inferred causes from opencode's records: compactions, agent switches (e.g. build → plan), pruned tool outputs.
+- `input` excludes cached tokens and `output` excludes reasoning; on 1.19.5 every call's tokens matched the recording proxy.
+- `ts` is the message's creation, 30–100 ms before the request (1–3 s on a prompt's first call).
+
+**Can't diagnose:**
+
+- Anything that needs the request: opencode stores the conversation and per-call usage, not the tool list, system prompt, parameters or replayed history, nor a request hash, and neither `opencode export` nor any log level records requests; use the proxy.
+- Causes are *inferred*, no block diffs, unexplained misses are *cause unknown*.
+- Title-generation calls are not stored and are missed, with a warning.
+- Compaction was not exercised on 1.19.5.
+
+### `codex`
+
+**Reads:** `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, one file or a directory of them. Each file is one thread; a subagent's file joins its root session as a lane (`subagent:<thread id>`), and `--session <id>` takes a root session with its subagents
+
+**Fidelity:** usage-only
+
+**Can diagnose:**
+
+- Per-response hit rates and costs, model changes, likely expiry, compactions (with the compaction call itself marked), collaboration-mode switches, and tool-list changes, from the hash Codex logs for each tool definition (`world_state`; tools added, removed or redefined; inferred).
+- Calls made with ChatGPT sign-in, which Codex logs with the plan's rate limits, are marked `"billing": "subscription"`.
+- Usage is the API's own: Codex copies it from each `response.completed`, so `input_tokens` includes cached and cache-write tokens and output includes reasoning (Codex's source); on real rollouts the per-response records add up exactly to Codex's own running totals, and on sessions recorded through the proxy they match the proxy's calls one for one, by response id and token counts.
+
+**Can't diagnose:**
+
+- The request. Newer rollouts (0.167) log every input item, tool declarations included, and on the sessions recorded through the proxy they rebuilt each request's input block for block; but no version logs a request hash or the full parameters, and older versions send the tool list outside the logged items, so a rebuilt request cannot be shown to be the one sent: no block diffs, and instruction and history changes are *cause unknown* (tool-list changes are named from the logged tool hashes when newer versions log them).
+- Timestamps are response ends, not request starts (2–7 s after the proxy's request starts here).
+- Logs with `token_count` events only (no `token_usage_record` lines) do not report compaction calls.
+
+### `otel`
+
+**Reads:** OpenTelemetry GenAI spans: an OTLP/JSON export, JSONL of exports, or a JSON array of spans
+
+**Fidelity:** usage-only
+
+**Can diagnose:** Per-call hit rates and costs from `gen_ai.usage.*` (cache reads and writes included), model changes, likely expiry; `gen_ai.conversation.id` becomes the session.
+
+**Can't diagnose:**
+
+- The request: the content attributes are opt-in and not the exact request, so no block diffs.
+- Follows the semantic conventions (`input_tokens` includes cached tokens); a span whose cache counts exceed its input is read as reporting input without cache, with a warning.
+
+### Reading the labels
 
 Usage-only traces always say so: hit rates and costs are exact, but a root-cause diff needs full requests. Each miss in a report is labelled *confirmed* (proven from two full requests), *inferred* (from timing, a model change or the harness's own log; also a miss with the recorded prefix intact when a block of the request could not be recorded) or *unknown*.
 
@@ -433,7 +582,17 @@ Delete that file to stop using catalogue prices, or pass `--no-catalogue` to `re
 2. For a model in both, the shared figures (input, cache read, the default-lifetime cache write, output, prompt-size tiers, and Anthropic fast mode) are compared. A difference becomes a report note naming both figures and both dates, and the table's price is used.
 3. Only for a model the table does not list does the catalogue price the call, and the report says so in a note that names the models.dev entry, its last-updated date and the fetch date. Cache lifetime and minimum cacheable size then come from the table's `families` when one matches the id (a catalogue-priced GPT-5.6 model keeps writes 30 minutes), else from its provider defaults, since models.dev has neither.
 
-**Provider and model identity.** A trace's `provider` names whose caching rules apply, not who billed the call (a call through OpenRouter to Claude is `anthropic`). It maps to one models.dev provider: `anthropic` to `anthropic`, `openai` to `openai`, `gemini` to `google`, and any other id to the models.dev provider of the same id (`deepseek`, `openrouter`). Within that one provider, the model id is matched exactly (lowercase, `.` and `@` read as `-`), then without leading `segment/` prefixes (`openrouter/anthropic/claude-x` → `anthropic/claude-x` → `claude-x`), then with the normalization the pricing table uses. When that last step finds several entries with different prices, such as a router's `vendor/model` ids or a cloud's regional ids (`us.anthropic.…` costs 10% more on Bedrock), the call gets no price and the note names the candidates. Another provider's price for a same-named model is never used, unless you opt in for models the table lacks:
+**Provider and model identity.** A trace's `provider` names whose caching rules apply, not who billed the call (a call through OpenRouter to Claude is `anthropic`). It maps to one models.dev provider: `anthropic` to `anthropic`, `openai` to `openai`, `gemini` to `google`, and any other id to the models.dev provider of the same id (`deepseek`, `openrouter`).
+
+Within that one provider, the model id is matched:
+
+1. exactly (lowercase, `.` and `@` read as `-`);
+2. then without leading `segment/` prefixes (`openrouter/anthropic/claude-x` → `anthropic/claude-x` → `claude-x`);
+3. then with the normalization the pricing table uses.
+
+When that last step finds several entries with different prices, such as a router's `vendor/model` ids or a cloud's regional ids (`us.anthropic.…` costs 10% more on Bedrock), the call gets no price and the note names the candidates.
+
+Another provider's price for a same-named model is never used, unless you opt in for models the table lacks:
 
 ```sh
 prefixlens report run.trace.jsonl --catalogue-provider anthropic=openrouter,openai=openrouter
@@ -483,7 +642,7 @@ if (typeof record === "string") console.warn(`not recorded: ${record}`)  // the 
 else trace.push(record)  // add hints (e.g. a prefix_break) before writing; serializeTrace(trace) writes the lines
 ```
 
-Its signature is stable from 0.3: inputs may gain optional fields, never lose or change one.
+Its signature is stable from the first release: inputs may gain optional fields, never lose or change one.
 
 ## Changes
 
@@ -500,6 +659,8 @@ Trace files that prefixlens creates (the proxy, `wrap`, `lens.fetch`, `lens.obse
 What is never written: every request header except `session-id`, `anthropic-beta`, `anthropic-version` and `openai-beta`, so no `authorization`, `x-api-key`, `cookie`, organization, project or account header; and the content of responses (only their usage, id and model are kept). Error responses and calls that are not model calls are not written at all. The proxy, `wrap`, `lens.fetch`, `lens.observe` and `buildRecord` all build records with the same function, so this holds for each of them.
 
 The proxy forwards credentials to the provider unchanged, so it sees your API keys. It listens on `127.0.0.1` by default and has no authentication of its own: any process on the machine can send requests through it (with its own credentials) into your trace. It refuses requests whose `Host` is not a loopback name or the `--host` address (DNS rebinding) and requests with an `Origin` header (web pages), unless `--allow-origin` allows that origin. Binding it to another interface with `--host` sends your keys and prompts over plain HTTP and lets anyone who can reach the port send requests through it into your trace; so does an `http://` upstream on another machine. It warns at start-up in both cases.
+
+A trace holds whatever the agent read, so wherever prefixlens prints trace content to a terminal (the terminal report, the diff under a miss, a `PrefixBreakError` message, the proxy's line per call), control characters in it are written visibly, as `\x1b`, and cannot retitle the terminal or rewrite what is on screen.
 
 prefixlens has no telemetry. Its only network traffic is the proxy forwarding to the configured upstream, `wrap`/`lens.fetch` passing requests to the client's own fetch, and, only when you run `prefixlens pricing update` or `prefixlens pricing check` without `--from`, one HTTP GET to `https://models.dev/api.json` with no body, cookies or credentials. `report` and `pricing show` never fetch.
 
@@ -519,9 +680,9 @@ cd examples/ci-prefix-test && bun test      # the CI example, which imports src/
 
 The sources run on Bun as they are. What differs between the runtimes is kept in `src/runtime/`: the proxy's HTTP server (`Bun.serve` or `node:http`, each releasing every byte of a response, the last included, before the record is built; `test/stream-order.test.ts` and `test-node/proxy.test.mjs` check this on each) and read-only SQLite (`bun:sqlite` or `node:sqlite`). Files, hashing and compression use `node:` modules, which both runtimes provide.
 
-CI (`.github/workflows/ci.yml`) runs the Bun suite on Ubuntu and macOS with Bun 1.4.0, the Node suite and the package check on Node 22.0.0 and 26 on Ubuntu and macOS, and fails if a trace, session log or credential is committed.
+CI (`.github/workflows/ci.yml`), on pushes to `main` and on pull requests, is set up to run the Bun suite on Ubuntu and macOS with Bun 1.4.0, the Node suite and the package check on Node 22.0.0 and 26 on Ubuntu and macOS, and to fail if a trace, session log or credential is committed.
 
-Releases are published from a `v<version>` tag by `.github/workflows/release.yml`, with npm trusted publishing and provenance; the one-time setup, the steps and the checklist are in [docs/releasing.md](docs/releasing.md). Nothing is published while `package.json` is private.
+Releases are published from a `v<version>` tag by `.github/workflows/release.yml`, with npm trusted publishing and provenance; the steps for the first release and for later ones, and the checklist of what to change when the repository becomes public, are in [docs/releasing.md](docs/releasing.md). Nothing is published while `package.json` is private.
 
 Test fixtures are hand-written. Never commit real session logs or traces: they contain secrets and private code.
 
