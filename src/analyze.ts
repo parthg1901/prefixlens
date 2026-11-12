@@ -57,6 +57,8 @@ export interface TurnResult {
   prefix_change?: CauseInfo
   /** On a miss or partial miss: the breaks the harness declared on this call (SPEC 6.1), and whether they excuse it. */
   declared_break?: DeclaredBreakResult
+  /** The response was cut off before it ended (SPEC 2, `interrupted`): input-side counts are final, output tokens and cost are lower bounds. */
+  interrupted?: true
 }
 
 export interface DeclaredBreakResult {
@@ -102,6 +104,8 @@ export interface Summary {
   headline: string
   unpriced_models: string[]
   notes: string[]
+  /** Turns whose response was cut off before it ended; their output tokens, and so the totals of output and cost, are lower bounds. */
+  interrupted: number[]
 }
 
 export interface Analysis {
@@ -170,6 +174,7 @@ function analyzeTurn(
     hit_rate: prompt === 0 ? 0 : record.usage.cache_read_tokens / prompt,
     cost,
     uncached_cost: cost ? cost.input + cost.cache_write : null,
+    ...(record.interrupted ? { interrupted: true as const } : {}),
     priced: cost ? resolution.source === "catalogue" ? ("catalogue" as const) : ("table" as const) : record.usage.reported_cost !== undefined ? ("reported" as const) : ("none" as const),
   }
   if (!previous)
@@ -422,7 +427,13 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
   for (const turn of turns) status[turn.status]++
   const usageOnly = turns.filter((turn) => turn.fidelity === "usage-only").length
   const unpriced = [...new Set(turns.filter((turn) => turn.cost === null).map((turn) => turn.model))]
+  const cutOff = turns.filter((turn) => turn.interrupted).map((turn) => turn.turn)
   const notes = [
+    ...(cutOff.length > 0
+      ? [
+          `${cutOff.length === 1 ? `Call ${cutOff[0]} was` : `Calls ${cutOff.join(", ")} were`} cut off before the response ended (the client disconnected): ${cutOff.length === 1 ? "its" : "their"} input and cache counts are final, so hit rates and misses are exact, but output tokens and cost are lower bounds.`,
+        ]
+      : []),
     ...(usageOnly > 0
       ? [
           `${usageOnly} of ${turns.length} calls are usage-only: hit rates and costs are exact, but root-cause diffs need full requests (causes shown are inferred from timing and harness hints).`,
@@ -449,6 +460,7 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
     intentional: { breaks: intentional.length, by_reason: byReason },
     headline: headline(missed.length, cost?.misses ?? null, byGroup, byReason, cost?.intentional ?? null),
     unpriced_models: unpriced,
+    interrupted: cutOff,
     notes,
   }
 }

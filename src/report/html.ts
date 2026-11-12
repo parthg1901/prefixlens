@@ -2,7 +2,7 @@
 // of inline script for filtering. No external requests.
 
 import type { Analysis, TurnResult } from "../analyze.ts"
-import { clock, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, spansDays, STATUS_LABEL, tokens } from "./format.ts"
+import { atLeast, clock, cutOffMark, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, spansDays, STATUS_LABEL, tokens } from "./format.ts"
 
 export interface HtmlOptions {
   title?: string
@@ -34,7 +34,7 @@ export function renderHtml(analysis: Analysis, options: HtmlOptions = {}): strin
 
 <section class="cards">
   ${card("Cache hit rate", percent(summary.hit_rate), `${tokens(summary.tokens.cache_read)} of ${tokens(summary.tokens.prompt)} prompt tokens read from cache`)}
-  ${card("Cost at list prices", summary.cost ? money(summary.cost.total) : "n/a", summary.cost ? `${money(summary.cost.uncached)} on uncached input and cache writes; API list prices, not what was paid` : "some models are not in the pricing table")}
+  ${card("Cost at list prices", summary.cost ? `${atLeast(summary.interrupted)}${money(summary.cost.total)}` : "n/a", summary.cost ? `${money(summary.cost.uncached)} on uncached input and cache writes; API list prices, not what was paid` : "some models are not in the pricing table")}
   ${card("Lost to misses", summary.cost ? money(summary.cost.misses) : "n/a", `${summary.misses} ${summary.misses === 1 ? "call" : "calls"} missed cached tokens unexpectedly`)}
   ${summary.intentional.breaks > 0 ? card("Intentional breaks", summary.cost ? money(summary.cost.intentional) : "n/a", `${summary.intentional.breaks} declared by the harness: ${summary.intentional.by_reason.map((reason) => `${reason.breaks} ${reason.reason}`).join(", ")}`, "intentional") : ""}
   ${card("Calls", exact(summary.turns), `${summary.status.cold} cold · ${summary.status.hit} hit · ${summary.misses} missed${summary.intentional.breaks > 0 ? ` · ${summary.intentional.breaks} intentional` : ""}`)}
@@ -121,7 +121,8 @@ function diffLine(line: string): string {
 
 function row(turn: TurnResult, multiLane: boolean, withDate: boolean): string {
   const intentional = isIntentional(turn)
-  const status = intentional ? `${intentionalLabel(turn)}: ${turn.cause?.summary ?? ""}` : isMiss(turn) ? `${STATUS_LABEL[turn.status]}: ${turn.cause?.summary ?? ""}` : STATUS_LABEL[turn.status]
+  const label = `${intentional ? intentionalLabel(turn) : STATUS_LABEL[turn.status]}${cutOffMark(turn)}`
+  const status = intentional || isMiss(turn) ? `${label}: ${turn.cause?.summary ?? ""}` : label
   const cost = turn.cost ? money(turn.cost.total) : turn.usage.reported_cost !== undefined ? `${money(turn.usage.reported_cost)}*` : "-"
   const statusCell = isMiss(turn) || intentional ? `<a href="#turn-${turn.turn}">${escape(status)}</a>` : escape(status)
   return `<tr class="${intentional ? "intentional" : turn.status}" data-status="${turn.status}"><td class="n">${turn.turn}</td><td>${clock(turn.ts, withDate)}</td>${multiLane ? `<td>${escape(turn.lane)}</td>` : ""}<td>${escape(turn.model)}</td><td class="n">${exact(turn.prompt_tokens)}</td><td class="n">${exact(turn.usage.cache_read_tokens)}</td><td class="n">${turn.usage.cache_write_tokens === null ? "-" : exact(turn.usage.cache_write_tokens)}</td><td class="n">${exact(turn.usage.input_tokens)}</td><td class="n">${exact(turn.usage.output_tokens)}</td><td class="n">${percent(turn.hit_rate)}</td><td class="n">${cost}</td><td>${statusCell}</td></tr>`

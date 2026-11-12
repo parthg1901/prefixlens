@@ -133,9 +133,10 @@ describe("recording proxy", () => {
     await reader.read().catch(() => undefined)
     upstream.release()
     await Bun.sleep(50)
-    // The first event carried the input usage, so the call is recorded as incomplete.
+    // The first event carried the input usage, so the call is recorded, marked as interrupted.
     expect(records.length).toBe(before + 1)
-    expect(records.at(-1)!.source).toMatchObject({ complete: false })
+    expect(records.at(-1)!.interrupted).toBe(true)
+    expect(records.at(-1)!.source).not.toHaveProperty("complete")
     const next = await send(anthropicBody([user("After the abort.")]))
     expect(await next.text()).toBe(await streamText("/v1/messages"))
     await settle()

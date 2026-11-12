@@ -194,7 +194,9 @@ export function buildRecord(input: RecordInput): TraceRecord | string {
     usage: normalizeUsage(provider, input.response.usage),
     ...(ttl ? { cache_ttl_seconds: ttl } : {}),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
-    source: { recorder: input.recorder ?? "library", api: input.api, version: pkg.version, ...(input.response.complete ? {} : { complete: false }) },
+    // A stream cut off after it reported usage (Anthropic reports the input side in its first event).
+    ...(input.response.complete ? {} : { interrupted: true }),
+    source: { recorder: input.recorder ?? "library", api: input.api, version: pkg.version },
   }
 }
 

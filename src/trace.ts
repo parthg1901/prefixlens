@@ -10,7 +10,7 @@ import { hashContent, isRecord } from "./canonical.ts"
 /** The `v` every record carries: the major version of the format. */
 export const TRACE_VERSION = 1
 /** The version of SPEC.md this reader implements. Minor versions only add optional fields, so every 1.x trace reads as `v: 1`. */
-export const TRACE_FORMAT_VERSION = "1.1"
+export const TRACE_FORMAT_VERSION = "1.2"
 
 export type Fidelity = "full-request" | "usage-only"
 export type BlockKind = "tool" | "system" | "message"
@@ -77,6 +77,12 @@ export interface TraceRecord {
   hints?: Hint[]
   /** Non-secret request headers that affect caching or routing, e.g. `session-id`. Never credentials. */
   headers?: Record<string, string>
+  /**
+   * True when the response ended before its final event (the client disconnected, the
+   * connection broke). The input-side usage is final; output tokens are a lower bound.
+   * Format 1.2. prefixlens also reads the `source.complete: false` its own recorders wrote before.
+   */
+  interrupted?: boolean
   source?: Record<string, unknown>
 }
 
@@ -233,6 +239,7 @@ function readRecord(value: unknown, problems: string[], warnings: string[], line
   if (value.params !== undefined && !isRecord(value.params)) problems.push("params must be an object")
   if (value.headers !== undefined && !(isRecord(value.headers) && Object.values(value.headers).every((header) => typeof header === "string")))
     problems.push("headers must be an object of strings")
+  if (value.interrupted !== undefined && typeof value.interrupted !== "boolean") problems.push("interrupted must be a boolean")
   if (value.cache_ttl_seconds !== undefined && !isCount(value.cache_ttl_seconds))
     problems.push("cache_ttl_seconds must be a non-negative integer")
   const usage = readUsage(value.usage, problems)
@@ -240,8 +247,11 @@ function readRecord(value: unknown, problems: string[], warnings: string[], line
   const blocks = value.fidelity === "full-request" && problems.length === 0 ? readBlocks(value.request, problems, warnings, line, state, lane) : undefined
   const hints = readHints(value.hints, problems, warnings, line)
   if (problems.length > 0) return undefined
+  // prefixlens 0.3's recorders marked a cut-off call in source rather than in a field of its own.
+  const legacyInterrupted = value.interrupted === undefined && isRecord(value.source) && value.source.complete === false && typeof value.source.recorder === "string"
   return {
     ...(value as unknown as TraceRecord),
+    ...(legacyInterrupted ? { interrupted: true } : {}),
     usage: usage!,
     ...(blocks ? { request: { blocks } } : {}),
     ...(hints ? { hints } : {}),

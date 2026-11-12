@@ -70,10 +70,21 @@ export function missFacts(turn: TurnResult, multiLane: boolean, lane: (name: str
     turn.baseline_turn ? `vs turn ${turn.baseline_turn}` : "",
     multiLane ? `lane ${lane(turn.lane)}` : "",
     turn.cause?.confidence ?? "",
+    turn.interrupted ? "response cut off: output and cost are lower bounds" : "",
     declared?.intentional
       ? `declared by the harness${details(turn)}; ${declared.checked ? "the change is where the declaration allows" : "not checked (usage-only)"}`
       : "",
   ].filter(Boolean)
+}
+
+/** " (cut off)" for a call whose response ended early, else "". */
+export function cutOffMark(turn: TurnResult): string {
+  return turn.interrupted ? " (cut off)" : ""
+}
+
+/** "≥ " before a total that includes cut-off calls, whose output is a lower bound. */
+export function atLeast(interrupted: number[]): string {
+  return interrupted.length > 0 ? "≥ " : ""
 }
 
 export function shortModel(model: string): string {

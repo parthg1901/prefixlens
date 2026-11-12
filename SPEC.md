@@ -1,11 +1,13 @@
-# prefixlens trace format, version 1.1
+# prefixlens trace format, version 1.2
 
 This document specifies the trace format that prefixlens reads. A harness in any language can write it directly; prefixlens's own log adapters write it too. The key words MUST, SHOULD and MAY are used as in RFC 2119.
 
 **Versions and compatibility.** Records carry the major version in `v`, which is `1` for every 1.x version of this document. A minor version only adds optional fields and hint kinds, so:
 
-- every 1.0 trace is a valid 1.1 trace and reads exactly as before;
-- a 1.0 reader reads a 1.1 trace, ignoring what it does not know (section 2, section 6). It will then report a declared intentional break (section 6.1) as an ordinary miss: the trace degrades to what it would have said without the declaration, never to something less safe.
+- every 1.0 and 1.1 trace is a valid 1.2 trace and reads exactly as before;
+- an older reader reads a newer trace, ignoring what it does not know (section 2, section 6). A 1.0 reader will then report a declared intentional break (section 6.1) as an ordinary miss: the trace degrades to what it would have said without the declaration, never to something less safe.
+
+Version 1.2 adds the optional `interrupted` record field (section 2).
 
 Version 1.1 adds the `prefix_break` hint (section 6.1), states the canonical form of every `cache_control` marker and of a non-string system prompt (section 4.3), and documents which request parameters each provider caches on (section 8.1).
 
@@ -24,7 +26,7 @@ A trace records the model calls an agent made, one record per call, so that each
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `v` | integer | yes | Major format version. Always `1` for this document (1.1); see "Versions and compatibility". |
+| `v` | integer | yes | Major format version. Always `1` for this document (1.2); see "Versions and compatibility". |
 | `ts` | string | yes | When the request was sent, as an RFC 3339 timestamp with a time zone, e.g. `"2026-01-01T10:00:00.000Z"`. Use the request start, not the response end: cache lifetimes run from the start of the request that wrote or read the entry. |
 | `provider` | string | yes | Whose caching rules apply: `"anthropic"`, `"openai"` or `"gemini"`. Other values are allowed (e.g. a gateway id); readers then fall back to defaults. For a model reached through a gateway or cloud (Bedrock, Vertex, OpenRouter), use the provider that built the model. |
 | `model` | string | yes | Model id as sent in the request, e.g. `"claude-opus-5-5"`. |
@@ -38,6 +40,7 @@ A trace records the model calls an agent made, one record per call, so that each
 | `cache_ttl_seconds` | integer | no | Cache lifetime that applied to the prefix this call wrote, in seconds. For Anthropic, the TTL of the last `cache_control` breakpoint: `300` for the default 5 minutes, `3600` for `"ttl": "1h"`. Omit when unknown; readers use the provider default. |
 | `hints` | array | no | Facts the harness knows about what happened before this call, including intentional breaks it declares. See section 6. |
 | `headers` | object of strings | no | Request headers that route the request to a cache or change what is cached, lowercase names, e.g. `{"session-id": "…"}` (OpenAI's ChatGPT sign-in flow routes its prompt cache by `session-id`), `anthropic-beta`, `anthropic-version`, `openai-beta`. Writers MUST write only headers known not to be credentials: never `authorization`, `x-api-key`, cookies or account ids. prefixlens reports a miss with the prefix intact and a changed `session-id` as a routing change, not a provider-side miss. |
+| `interrupted` | boolean | no | 1.2. `true` when the response ended before its final event: the client disconnected or the connection broke. `usage` then holds what the response reported before it ended; its input side (`input_tokens`, `cache_read_tokens`, `cache_write_tokens`) MUST be final, and `output_tokens` is a lower bound (Anthropic reports the input side in its first stream event, so a cut-off Anthropic call can be recorded; an OpenAI stream reports usage only at its end, so a cut-off one cannot). A writer that does not have final input-side counts MUST NOT write the record. Readers count the call in hit rates and miss arithmetic as usual and treat its output tokens and cost as lower bounds. Absent means `false`. |
 | `source` | object | no | Free-form provenance, e.g. `{"adapter": "claude-code", "version": "2.1.322"}` or `{"harness": "myagent", "version": "0.3.0"}`. Readers do not interpret it. |
 
 Readers MUST ignore fields they do not know. Writers MUST NOT put API keys, auth headers or other credentials in any field.

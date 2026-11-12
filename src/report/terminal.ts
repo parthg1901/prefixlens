@@ -1,7 +1,7 @@
 // Plain-text report for the terminal.
 
 import type { Analysis, TurnResult } from "../analyze.ts"
-import { clock, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, shortModel, spansDays, STATUS_LABEL, tokens } from "./format.ts"
+import { atLeast, clock, cutOffMark, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, shortModel, spansDays, STATUS_LABEL, tokens } from "./format.ts"
 
 export interface TerminalOptions {
   color?: boolean
@@ -82,11 +82,11 @@ export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}
   out.push(paint.bold("Totals"))
   const t = summary.tokens
   out.push(`  prompt tokens   ${exact(t.prompt)}  (read ${exact(t.cache_read)} · written ${exact(t.cache_write)} · uncached ${exact(t.input)})`)
-  out.push(`  output tokens   ${exact(t.output)}`)
+  out.push(`  output tokens   ${atLeast(summary.interrupted)}${exact(t.output)}`)
   out.push(`  cache hit rate  ${percent(summary.hit_rate)} of prompt tokens read from cache`)
   if (summary.cost)
     out.push(
-      `  cost            ${money(summary.cost.total)} at API list prices · ${money(summary.cost.uncached)} on uncached input and cache writes · ${money(summary.cost.misses)} lost to misses${summary.intentional.breaks > 0 ? ` · ${money(summary.cost.intentional)} on intentional breaks` : ""}`,
+      `  cost            ${atLeast(summary.interrupted)}${money(summary.cost.total)} at API list prices · ${money(summary.cost.uncached)} on uncached input and cache writes · ${money(summary.cost.misses)} lost to misses${summary.intentional.breaks > 0 ? ` · ${money(summary.cost.intentional)} on intentional breaks` : ""}`,
     )
   if (summary.reported_cost !== undefined) out.push(`  harness cost    ${money(summary.reported_cost)} as recorded by the harness`)
   out.push(
@@ -117,9 +117,9 @@ export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}
 }
 
 function statusText(turn: TurnResult): string {
-  if (isIntentional(turn)) return `${intentionalLabel(turn)}: ${turn.cause?.summary ?? "cause unknown"}`
-  if (!isMiss(turn)) return STATUS_LABEL[turn.status]
-  return `${STATUS_LABEL[turn.status]}: ${turn.cause?.summary ?? "cause unknown"}`
+  if (isIntentional(turn)) return `${intentionalLabel(turn)}${cutOffMark(turn)}: ${turn.cause?.summary ?? "cause unknown"}`
+  if (!isMiss(turn)) return `${STATUS_LABEL[turn.status]}${cutOffMark(turn)}`
+  return `${STATUS_LABEL[turn.status]}${cutOffMark(turn)}: ${turn.cause?.summary ?? "cause unknown"}`
 }
 
 function laneLabel(lane: string): string {
