@@ -4,7 +4,7 @@
 import { coveringBreaks, declaredBreaks, describePosition, keptBlocks, type DeclaredBreak } from "./breaks.ts"
 import { CAUSE_GROUP, comparePrefix, type Cause, type CauseGroup, type PrefixChange, type Region } from "./diff.ts"
 import { resolvePrice, type CatalogueTable, type PriceSources, type Resolution } from "./catalogue.ts"
-import { costOf, DEFAULT_STALE_AFTER_DAYS, pricedDays, pricingAge, providerFacts, ratesFor, uncachedRate, type Cost, type PricingTable } from "./pricing.ts"
+import { costOf, DEFAULT_STALE_AFTER_DAYS, findFamily, pricedDays, pricingAge, providerFacts, ratesFor, uncachedRate, type Cost, type PricingTable } from "./pricing.ts"
 import { laneKey, type Billing, type Block, type Fidelity, type TraceRecord, type Usage } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
 
@@ -161,7 +161,7 @@ function analyzeTurn(
   const resolution = resolvePrice(sources, record.provider, record.model, record.usage, { ts: record.ts, ...(record.params ? { params: record.params } : {}) })
   logPrice(prices, record, resolution)
   const price = resolution.source === "none" ? undefined : resolution.entry
-  const facts = providerFacts(sources.table, record.provider, price)
+  const facts = providerFacts(sources.table, record.provider, price, record.model)
   const rates = price ? ratesFor(price, prompt) : undefined
   const cost = rates ? costOf(record.usage, rates) : null
   const base = {
@@ -540,10 +540,11 @@ const MISSING_FIELD: Record<string, string> = {
   cache_read: "cache-read price",
   cache_write: "cache-write price",
   cache_write_1h: "1-hour cache-write price",
+  cache_write_12h: "12-hour cache-write price",
   reasoning: "way to apply its separate reasoning-token price",
 }
 
-// Why a model the catalogue has is still unpriced: a price the calls need is not listed, or the id is ambiguous.
+// Why a model is still unpriced beyond not being in the table: a price the calls need is not listed in the catalogue, the table excludes it, or the id is ambiguous.
 function catalogueGap(logged: LoggedPrice | undefined): string | undefined {
   if (!logged) return undefined
   if (logged.missing.size > 0) {
@@ -552,9 +553,8 @@ function catalogueGap(logged: LoggedPrice | undefined): string | undefined {
     const fields = [...logged.missing].map((field) => MISSING_FIELD[field] ?? `price for its ${field.replace(/_mode$/, "")} mode`)
     return `models.dev lists ${id} with no ${fields.join(" or ")}, which these calls need; they are not costed rather than priced at a guess`
   }
-  const alias = logged.resolutions.find((resolution) => resolution.source === "none" && resolution.alias)
-  if (alias?.source === "none" && alias.alias)
-    return `models.dev ${alias.alias.provider} ${alias.alias.id} is an alias the provider repoints at other models, so its catalogue price is not used`
+  const excluded = logged.resolutions.find((resolution) => resolution.source === "none" && resolution.excluded)
+  if (excluded?.source === "none" && excluded.excluded) return `left unpriced on purpose by the pricing table: ${excluded.excluded.reason}`
   const ambiguous = logged.resolutions.find((resolution) => resolution.source === "none" && resolution.ambiguous)
   if (ambiguous?.source === "none" && ambiguous.ambiguous)
     return `models.dev ${ambiguous.ambiguous[0]!.provider} lists ${ambiguous.ambiguous.map((entry) => entry.id).join(", ")} at different prices; use the full model id`
@@ -575,8 +575,9 @@ function sourceNotes(sources: PriceSources, prices: PriceLog, now: Date): string
       : [
           `Priced from the models.dev catalogue (fetched ${fetched}), not the hand-verified pricing table: ${used
             .map(({ entry, resolution }) => {
-              const facts = providerFacts(sources.table, entry.provider)
-              return `${entry.model} as models.dev ${resolution.catalogue.provider} ${resolution.catalogue.id}${resolution.mode ? ` (${resolution.mode} mode)` : ""}${resolution.catalogue.last_updated ? `, last updated ${resolution.catalogue.last_updated}` : ""}; cache lifetime ${facts.cache_ttl_seconds} s and minimum ${facts.min_cacheable_tokens.toLocaleString("en-US")} tokens are ${entry.provider} defaults`
+              const facts = providerFacts(sources.table, entry.provider, undefined, entry.model)
+              const family = findFamily(sources.table, entry.provider, entry.model)
+              return `${entry.model} as models.dev ${resolution.catalogue.provider} ${resolution.catalogue.id}${resolution.mode ? ` (${resolution.mode} mode)` : ""}${resolution.catalogue.last_updated ? `, last updated ${resolution.catalogue.last_updated}` : ""}; cache lifetime ${facts.cache_ttl_seconds} s and minimum ${facts.min_cacheable_tokens.toLocaleString("en-US")} tokens are ${family ? `the pricing table's for the ${family.prefixes[0]} family` : `${entry.provider} defaults`}`
             })
             .join("; ")}. models.dev is community-maintained; check a price with prefixlens pricing show <model>.`,
         ]

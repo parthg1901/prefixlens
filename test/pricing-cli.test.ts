@@ -79,7 +79,7 @@ describe("prefixlens pricing", () => {
   test("show: a catalogue price, a disagreement, a missing price and an unknown model", () => {
     const zeta = run(["pricing", "show", "claude-zeta-1"]).stdout
     expect(zeta).toMatch(/source {7}models\.dev anthropic claude-zeta-1 \(last updated 2026-10-20, fetched \d{4}-\d{2}-\d{2}\): community-maintained, not hand-verified/)
-    expect(zeta).toContain("1 hour: not in models.dev, calls with 1-hour writes are not costed")
+    expect(zeta).toContain("1 hour and 12 hours: not in models.dev, calls with such writes are not costed")
     expect(zeta).toContain("cache        lifetime 300 s, minimum 1,024 tokens (provider defaults: models.dev has neither)")
     expect(run(["pricing", "show", "claude-sonnet-5-5"]).stdout).toContain("DISAGREES: input $2 vs $3; the pricing table's figures are used")
     expect(run(["pricing", "show", "claude-zeta-noread"]).stdout).toContain("cache read   not listed: calls with this model are not costed")

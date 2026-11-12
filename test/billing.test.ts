@@ -92,3 +92,25 @@ describe("billing", () => {
     expect(analyze(records("subscription"), { pricing }).summary.billing).toEqual({ per_token: 0, subscription: 2, unknown: 0 })
   })
 })
+
+describe("pricing 12-hour writes", () => {
+  const rates = { input: 2, cache_read: 0.2, cache_write: 2.5, cache_write_12h: 5, output: 10 }
+  const call = (write: number, twelve?: number) => ({ input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: write, ...(twelve === undefined ? {} : { cache_write_12h_tokens: twelve }), output_tokens: 0 })
+
+  test("12-hour writes are charged at cache_write_12h and the rest at cache_write", async () => {
+    const { costOf } = await import("../src/pricing.ts")
+    // 6,000 30-minute writes at $2.5 and 4,000 12-hour writes at $5 per million.
+    expect(costOf(call(10_000, 4000), rates).cache_write).toBeCloseTo((6000 * 2.5 + 4000 * 5) / 1e6, 12)
+    expect(costOf(call(10_000), rates).cache_write).toBeCloseTo((10_000 * 2.5) / 1e6, 12)
+    // A count above the writes is capped at the writes; without a 12-hour price they are charged at cache_write.
+    expect(costOf(call(1000, 5000), rates).cache_write).toBeCloseTo((1000 * 5) / 1e6, 12)
+    expect(costOf(call(10_000, 4000), { ...rates, cache_write_12h: undefined }).cache_write).toBeCloseTo((10_000 * 2.5) / 1e6, 12)
+  })
+
+  test("a catalogue price does not cost 12-hour writes: models.dev has no such price", async () => {
+    const { catalogueRates } = await import("../src/catalogue.ts")
+    const entry = { provider: "openai", id: "gpt-zeta", input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 }
+    expect(catalogueRates(entry, call(10_000, 4000)).missing).toEqual(["cache_write_12h"])
+    expect(catalogueRates(entry, call(10_000)).missing).toEqual([])
+  })
+})

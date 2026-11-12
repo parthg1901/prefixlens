@@ -101,6 +101,8 @@ Long sessions hide the hit rows in the terminal (`--all` shows them); the HTML r
 | `--json` | Print the full analysis as JSON (summary, every call, causes, diffs). |
 | `--html [file]` | Write a self-contained HTML report (default `<trace>.html`). No external requests. |
 | `--pricing <file>` | Use another pricing table (also `PREFIXLENS_PRICING`). |
+| `--no-catalogue` | Do not use the models.dev prices that `prefixlens pricing update` fetched ([below](#a-second-source-modelsdev)). |
+| `--catalogue-provider <trace>=<models.dev>[,...]` | Price a trace provider's models that the table lacks from another models.dev provider, e.g. `anthropic=openrouter`. Default: each provider's own. |
 | `--tolerance <tokens>` | Lost tokens still counted as a hit (default 128). |
 | `--all` | Show every row and every miss in the terminal. |
 | `--no-color` | Plain output (also when `NO_COLOR` is set or output is not a terminal). |
@@ -317,7 +319,7 @@ Any parameter not in the table is assumed to count, so a change is never silentl
 
 Prices live in [`pricing.json`](pricing.json), not in code. The bundled table has the pay-as-you-go API list prices of Anthropic, OpenAI and Gemini text models, standard tier, as published on the providers' own pricing pages and model pages on the table's `as_of` date. Its `sources` section lists every page used and when it was checked, and its `notes` say what is left out.
 
-**Costs are list prices, not your bill.** A report's costs are what the calls would cost billed per token at those prices. Calls made on a subscription (a Claude plan, ChatGPT sign-in, Codex) are not billed per token at all. For them the numbers say what each miss would have cost on an API key, which is still the right scale for comparing misses. Negotiated discounts, Batch and Flex, OpenAI and Gemini priority tiers, data-residency uplifts and per-modality (audio) prices are not applied. A trace does not record how a call was billed, so every report says this in a note.
+**Costs are list prices, not your bill.** A report's costs are what the calls would cost billed per token at those prices. Calls made on a subscription (a Claude plan, ChatGPT sign-in, Codex) are not billed per token at all. For them the numbers say what each miss would have cost on an API key, which is still the right scale for comparing misses. Negotiated discounts, Batch and Flex, OpenAI and Gemini priority tiers, data-residency uplifts and per-modality (audio) prices are not applied. A trace records how a call was billed when its writer knows (`"billing"`, trace format 1.2: the proxy for the ChatGPT sign-in upstream, the Codex importer for ChatGPT sign-in), and a report words its cost lines accordingly; when no record says, the report notes that costs are list prices.
 
 What an entry holds:
 
@@ -327,11 +329,17 @@ What an entry holds:
 | `input`, `cache_read`, `output` | Per million tokens. Required. |
 | `cache_write` | Write price for the default cache lifetime: Anthropic 5 minutes, OpenAI 30 minutes (GPT-5.6 and later; earlier OpenAI models and Gemini charge no writes). |
 | `cache_write_1h` | Anthropic's 1-hour write price, applied to `cache_write_1h_tokens`. |
-| `cache_write_12h` | OpenAI's 12-hour write price. Recorded only: a trace cannot yet say which OpenAI writes were 12-hour, so all of them are priced at `cache_write`. |
+| `cache_write_12h` | OpenAI's 12-hour write price, applied to `cache_write_12h_tokens` (the writes a trace records as 12-hour, format 1.2); the other writes are priced at `cache_write`. |
 | `tiers` | Higher prices for the whole request when its prompt (uncached + read + written) is above `above_prompt_tokens`: Claude Haiku 5.5 above 100,000, OpenAI above 272,000, Gemini Pro above 200,000. |
 | `from`, `until` | First and last UTC day a price applies, for promotions that end on a set date. Calls are priced by the day they were sent. |
 | `when_params` | Request parameters that select the price. Anthropic fast mode is `{"speed": "fast"}`. |
 | `cache_ttl_seconds`, `min_cacheable_tokens` | This model's cache lifetime and minimum cacheable prompt, overriding the provider's. They decide when a miss is called expiry and when a prompt is too short to cache. |
+| `unverified` | Fields the provider's pages do not print, e.g. `["cache_read"]` where OpenAI shows "-" for a pro model's cached input (the table then charges cached tokens at the input price). Informational. |
+
+Two more lists sit beside `models`:
+
+- `exclude`: models left unpriced on purpose, each with a `reason`, such as the `-latest` aliases Google repoints at newer models. They get no price from the table or from models.dev, and the report gives the reason.
+- `families`: cache facts by model-id prefix (`{"provider": "openai", "prefixes": ["gpt-5.6", "gpt-6"], "cache_ttl_seconds": 1800}`), for models no entry lists, such as ones priced from models.dev. An entry's own facts win, then the longest matching family, then the provider's.
 
 **How a model is matched.** The trace's model id and each name are compared after lowercasing and removing these parts:
 
@@ -342,7 +350,7 @@ What an entry holds:
 So `anthropic/claude-sonnet-4.5`, `claude-haiku-4-5@20251001` and `us.anthropic.claude-opus-4-1-20250805-v1:0` find their models. Matching then works like this:
 
 - An entry that lists the id wins. Among those, one whose `when_params` match the request beats one without.
-- Nothing else matches. A family name (`gpt-6`), an effort suffix (`gpt-6-luna-high`), a `-fast` suffix the provider does not document, or a hot-swapped alias (`gemini-flash-latest`) gets no price rather than a neighbour's.
+- Nothing else matches. A family name (`gpt-6`), an effort suffix (`gpt-6-luna-high`) or a `-fast` suffix the provider does not document gets no price rather than a neighbour's, and so does a hot-swapped alias (`gemini-flash-latest`), which the bundled table lists in `exclude`.
 - A model with no price, or none on the day of the call, is reported with its token counts and the note `No price for <model>: add it to the pricing table to get costs.` The rest of the report is unchanged.
 - Your own table may also use glob patterns in a `match` field. They are tried only when no entry lists the id exactly.
 - Two entries that list the same id for overlapping days and the same parameters are an error.
@@ -384,7 +392,7 @@ Delete that file to stop using catalogue prices, or pass `--no-catalogue` to `re
 
 1. The pricing table (`--pricing`, else `PREFIXLENS_PRICING`, else the bundled one) wins for every model it lists, with every field: cache-write lifetimes, tiers, cache lifetime, minimum cacheable size, dated prices. A model it lists only on other days or with other parameters stays unpriced on the other days; the catalogue does not fill the gap.
 2. For a model in both, the shared figures (input, cache read, the default-lifetime cache write, output, prompt-size tiers, and Anthropic fast mode) are compared. A difference becomes a report note naming both figures and both dates, and the table's price is used.
-3. Only for a model the table does not list does the catalogue price the call, and the report says so in a note that names the models.dev entry, its last-updated date and the fetch date. Cache lifetime and minimum cacheable size then come from the table's provider defaults, since models.dev has neither.
+3. Only for a model the table does not list does the catalogue price the call, and the report says so in a note that names the models.dev entry, its last-updated date and the fetch date. Cache lifetime and minimum cacheable size then come from the table's `families` when one matches the id (a catalogue-priced GPT-5.6 model keeps writes 30 minutes), else from its provider defaults, since models.dev has neither.
 
 **Provider and model identity.** A trace's `provider` names whose caching rules apply, not who billed the call (a call through OpenRouter to Claude is `anthropic`). It maps to one models.dev provider: `anthropic` to `anthropic`, `openai` to `openai`, `gemini` to `google`, and any other id to the models.dev provider of the same id (`deepseek`, `openrouter`). Within that one provider, the model id is matched exactly (lowercase, `.` and `@` read as `-`), then without leading `segment/` prefixes (`openrouter/anthropic/claude-x` → `anthropic/claude-x` → `claude-x`), then with the normalization the pricing table uses. When that last step finds several entries with different prices, such as a router's `vendor/model` ids or a cloud's regional ids (`us.anthropic.…` costs 10% more on Bedrock), the call gets no price and the note names the candidates. Another provider's price for a same-named model is never used, unless you opt in for models the table lacks:
 
@@ -392,13 +400,13 @@ Delete that file to stop using catalogue prices, or pass `--no-catalogue` to `re
 prefixlens report run.trace.jsonl --catalogue-provider anthropic=openrouter,openai=openrouter
 ```
 
-Aliases that a provider repoints at other models (`gemini-flash-latest`, any id ending in `latest`) get no catalogue price, as in the bundled table.
+A model the table lists in `exclude` (the bundled table's `gemini-flash-latest` and the other `-latest` aliases Google repoints) gets no catalogue price either.
 
-**What models.dev does not have, and what the report does about it.** It has no 1-hour (Anthropic) or 12-hour (OpenAI) cache-write price, no cache lifetime or minimum cacheable size, no dates on which a promotional price ends, and no record of where a figure came from. A catalogue price is used only when it lists every price the call needs; otherwise the call is reported unpriced, with a note saying which price was missing, rather than priced at a guess:
+**What models.dev does not have, and what the report does about it.** It has no 1-hour (Anthropic) or 12-hour (OpenAI) cache-write price, no cache lifetime or minimum cacheable size (the table's `families` and provider defaults stand in), no dates on which a promotional price ends, and no record of where a figure came from. A catalogue price is used only when it lists every price the call needs; otherwise the call is reported unpriced, with a note saying which price was missing, rather than priced at a guess:
 
 - no cache-read price: no call of that model is costed (a miss is costed against the cache-read price);
 - no cache-write price: calls that wrote to the cache are not costed; calls that wrote nothing are;
-- calls with 1-hour cache writes are not costed from the catalogue;
+- calls with 1-hour or 12-hour cache writes are not costed from the catalogue;
 - a prompt-size tier that leaves out a price the base lists does not borrow the base's;
 - a separate reasoning-token price: calls that report reasoning tokens are not costed;
 - request parameters that select one of models.dev's per-mode prices (`speed: "fast"`) use that price, and a mode with no price leaves the call unpriced. OpenAI's `service_tier` modes are not applied, as in the bundled table.

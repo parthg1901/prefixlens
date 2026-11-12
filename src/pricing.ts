@@ -15,7 +15,7 @@ export interface Rates {
   cache_write?: number
   /** Anthropic's 1-hour-lifetime write price. */
   cache_write_1h?: number
-  /** OpenAI's 12-hour-lifetime write price. Recorded for reference: traces cannot yet say which writes used it (see README "Pricing"). */
+  /** OpenAI's 12-hour-lifetime write price, applied to `cache_write_12h_tokens` (trace format 1.2). */
   cache_write_12h?: number
 }
 
@@ -34,6 +34,31 @@ export interface PriceEntry extends Rates {
   /** Model-specific cache facts, overriding the provider's. */
   cache_ttl_seconds?: number
   min_cacheable_tokens?: number
+  /** Fields the provider's pages do not print (e.g. `["cache_read"]` when a cached-input price is shown as "-"). Informational. */
+  unverified?: string[]
+}
+
+/**
+ * Models the table leaves unpriced on purpose, such as aliases a provider repoints at other models
+ * (`gemini-flash-latest`): they get no price from the table and none from the models.dev catalogue.
+ */
+export interface Exclusion {
+  provider?: string
+  /** Exact model ids, compared as entry names are. */
+  names: string[]
+  /** Why, for the report's note. */
+  reason: string
+}
+
+/**
+ * Cache facts for a family of models, by id prefix, for models no entry gives facts for, chiefly
+ * those the catalogue prices: GPT-5.6 and later keep writes 30 minutes, not OpenAI's older default.
+ */
+export interface Family extends ProviderFacts {
+  provider: string
+  /** Id prefixes, compared after normalization (`gpt-5.6` matches `gpt-5.6`, `gpt-5.6-mini`, `gpt-5-6-luna-2026-10-01`). */
+  prefixes: string[]
+  note?: string
 }
 
 export interface ProviderFacts {
@@ -52,6 +77,8 @@ export interface PricingTable {
   /** Where each provider's prices came from and the day they were checked. */
   sources?: Record<string, { checked?: string; urls?: string[]; notes?: string[] }>
   models: PriceEntry[]
+  exclude?: Exclusion[]
+  families?: Family[]
 }
 
 /** What about a call, besides its model, selects a price: the day it was sent and its request parameters. */
@@ -86,8 +113,21 @@ export function parsePricing(value: unknown): PricingTable {
   if (value.unit !== undefined && value.unit !== "per_million_tokens") throw new Error('pricing unit must be "per_million_tokens"')
   if (value.as_of !== undefined && !isDay(value.as_of)) throw new Error("pricing as_of must be a YYYY-MM-DD date")
   value.models.forEach((entry, index) => checkEntry(entry, `pricing models[${index}]`))
+  checkList(value.exclude, "exclude", (exclusion, at) => {
+    if (!isRecord(exclusion) || !isNames(exclusion.names) || typeof exclusion.reason !== "string" || exclusion.reason === "") throw new Error(`pricing ${at} needs names (model ids) and a reason`)
+  })
+  checkList(value.families, "families", (family, at) => {
+    if (!isRecord(family) || typeof family.provider !== "string" || !isNames(family.prefixes)) throw new Error(`pricing ${at} needs a provider and prefixes`)
+    for (const field of ["cache_ttl_seconds", "min_cacheable_tokens"])
+      if (family[field] !== undefined && !(isRate(family[field]) && (family[field] as number) > 0)) throw new Error(`pricing ${at}.${field} must be a positive number`)
+  })
   const table = { version: 1, currency: "USD", unit: "per_million_tokens", ...(value as object) } as PricingTable
   checkDuplicates(table)
+  // A model both priced and excluded would make the table contradict itself.
+  for (const exclusion of table.exclude ?? [])
+    for (const name of exclusion.names)
+      if (table.models.some((entry) => (exclusion.provider === undefined || entry.provider === undefined || entry.provider === exclusion.provider) && (entry.names ?? []).some((other) => normalizeModelId(other) === normalizeModelId(name))))
+        throw new Error(`pricing: ${name} is both priced in models and listed in exclude`)
   return table
 }
 
@@ -160,14 +200,20 @@ export interface Cost {
   output: number
 }
 
+/**
+ * What a call cost at `rates`. Writes are priced by lifetime: Anthropic's 1-hour writes at
+ * `cache_write_1h`, OpenAI's 12-hour writes at `cache_write_12h`, the rest at `cache_write`; a
+ * lifetime without its own price is charged at `cache_write` (and a missing `cache_write` at input).
+ */
 export function costOf(usage: Usage, rates: Rates): Cost {
   const write = usage.cache_write_tokens ?? 0
   const oneHour = Math.min(write, usage.cache_write_1h_tokens ?? 0)
+  const twelve = Math.min(write - oneHour, usage.cache_write_12h_tokens ?? 0)
   const writeRate = rates.cache_write ?? rates.input
   const cost = {
     input: (usage.input_tokens * rates.input) / 1e6,
     cache_read: (usage.cache_read_tokens * rates.cache_read) / 1e6,
-    cache_write: ((write - oneHour) * writeRate + oneHour * (rates.cache_write_1h ?? writeRate)) / 1e6,
+    cache_write: ((write - oneHour - twelve) * writeRate + oneHour * (rates.cache_write_1h ?? writeRate) + twelve * (rates.cache_write_12h ?? writeRate)) / 1e6,
     output: (usage.output_tokens * rates.output) / 1e6,
   }
   return { ...cost, total: cost.input + cost.cache_read + cost.cache_write + cost.output }
@@ -182,13 +228,33 @@ export function uncachedRate(usage: Usage, rates: Rates): number {
   return ((cost.input + cost.cache_write) * 1e6) / tokens
 }
 
-/** Cache facts for a call: the model's own, else its provider's, else the table default. */
-export function providerFacts(table: PricingTable, provider: string, entry?: PriceEntry): Required<ProviderFacts> {
+/**
+ * Cache facts for a call: the model's own entry's, else its family's (by `model`, from `families`),
+ * else its provider's, else the table default.
+ */
+export function providerFacts(table: PricingTable, provider: string, entry?: PriceEntry, model?: string): Required<ProviderFacts> {
   const facts = { ...(table.providers?.default ?? {}), ...(table.providers?.[provider] ?? {}) }
+  const family = model === undefined ? undefined : findFamily(table, provider, model)
   return {
-    cache_ttl_seconds: entry?.cache_ttl_seconds ?? facts.cache_ttl_seconds ?? 300,
-    min_cacheable_tokens: entry?.min_cacheable_tokens ?? facts.min_cacheable_tokens ?? 1024,
+    cache_ttl_seconds: entry?.cache_ttl_seconds ?? family?.cache_ttl_seconds ?? facts.cache_ttl_seconds ?? 300,
+    min_cacheable_tokens: entry?.min_cacheable_tokens ?? family?.min_cacheable_tokens ?? facts.min_cacheable_tokens ?? 1024,
   }
+}
+
+/** The family a model id belongs to, if the table defines one for its provider. The longest matching prefix wins. */
+export function findFamily(table: PricingTable, provider: string, model: string): Family | undefined {
+  const id = normalizeModelId(model)
+  return (table.families ?? [])
+    .filter((family) => family.provider === provider)
+    .flatMap((family) => family.prefixes.map((prefix) => ({ family, prefix: normalizeModelId(prefix) })))
+    .filter(({ prefix }) => id === prefix || id.startsWith(`${prefix}-`))
+    .sort((a, b) => b.prefix.length - a.prefix.length)[0]?.family
+}
+
+/** The exclusion that leaves `model` unpriced on purpose, if any. */
+export function findExclusion(table: PricingTable, provider: string, model: string): Exclusion | undefined {
+  const id = normalizeModelId(model)
+  return (table.exclude ?? []).find((exclusion) => (exclusion.provider === undefined || exclusion.provider === provider) && exclusion.names.some((name) => normalizeModelId(name) === id))
 }
 
 /** Whole days from the table's as_of date to `now`, or undefined when the table has no date. */
@@ -214,6 +280,16 @@ function paramsMatch(entry: PriceEntry, params: Record<string, unknown> | undefi
 
 function patterns(entry: PriceEntry): string[] {
   return entry.match === undefined ? [] : Array.isArray(entry.match) ? entry.match : [entry.match]
+}
+
+function checkList(value: unknown, field: string, check: (item: unknown, at: string) => void) {
+  if (value === undefined) return
+  if (!Array.isArray(value)) throw new Error(`pricing ${field} must be an array`)
+  value.forEach((item, index) => check(item, `${field}[${index}]`))
+}
+
+function isNames(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0 && value.every((name) => typeof name === "string" && name.length > 0)
 }
 
 function checkEntry(entry: unknown, at: string) {

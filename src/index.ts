@@ -25,8 +25,27 @@ export type { BreakReason, DeclaredBreak, Position } from "./breaks.ts"
 export type { Cause, CauseGroup, Comparable, PrefixChange, Region } from "./diff.ts"
 export { analyze } from "./analyze.ts"
 export type { Analysis, AnalyzeOptions, CauseInfo, DeclaredBreakResult, ReasonTotal, Status, Summary, TurnResult } from "./analyze.ts"
-export { costOf, findPrice, loadPricing, parsePricing } from "./pricing.ts"
-export type { PricingTable, PriceEntry, Rates } from "./pricing.ts"
+export { costOf, findExclusion, findFamily, findPrice, loadPricing, normalizeModelId, parsePricing, providerFacts } from "./pricing.ts"
+export type { Exclusion, Family, PricingTable, PriceEntry, ProviderFacts, Rates } from "./pricing.ts"
+export {
+  CATALOGUE_URL,
+  catalogueDir,
+  cataloguePath,
+  catalogueProvider,
+  catalogueRates,
+  compareCatalogues,
+  compareTables,
+  convertCatalogue,
+  fetchCatalogue,
+  findCatalogueEntry,
+  loadCatalogue,
+  parseProviderMapping,
+  readCatalogueFile,
+  resolvePrice,
+  writeCatalogue,
+} from "./catalogue.ts"
+export type { CatalogueEntry, CatalogueTable, PriceSources, Resolution } from "./catalogue.ts"
+export { providerFamily } from "./provider.ts"
 export { ADAPTERS, findAdapter } from "./adapters/index.ts"
 export type { Adapter, ImportOptions, ImportResult } from "./adapters/index.ts"
 export { renderHtml } from "./report/html.ts"

@@ -2,7 +2,7 @@
 // update and check do, with one GET to CATALOGUE_URL (or none with --from).
 
 import os from "node:os"
-import { providerFamily } from "./adapters/opencode.ts"
+import { providerFamily } from "./provider.ts"
 import {
   CATALOGUE_URL,
   catalogueProvider,
@@ -21,7 +21,7 @@ import {
   type FieldDifference,
   type TableComparison,
 } from "./catalogue.ts"
-import { loadPricing, providerFacts, type PriceEntry, type PricingTable } from "./pricing.ts"
+import { findFamily, loadPricing, providerFacts, type PriceEntry, type PricingTable } from "./pricing.ts"
 
 export interface PricingOptions {
   /** A saved copy of api.json to read instead of fetching. */
@@ -104,7 +104,7 @@ async function show(model: string | undefined, options: PricingOptions): Promise
   if (resolution.source === "table") {
     const checked = table.sources?.[resolution.entry.provider ?? provider]?.checked ?? table.as_of
     out.push(`  source       ${tableLabel(options.pricing)}${checked ? `, checked ${checked}` : ""}${resolution.entry.provider ? ` (${resolution.entry.provider} entry)` : ""}`)
-    out.push(...entryLines(resolution.entry, providerFacts(table, provider, resolution.entry)))
+    out.push(...entryLines(resolution.entry, providerFacts(table, provider, resolution.entry, model)))
     const own = catalogueProvider(resolution.entry.provider ?? provider)
     const compared = catalogue ? findCatalogueEntry(catalogue, own, model) : undefined
     if (!catalogue) out.push("  models.dev   not fetched (prefixlens pricing update)")
@@ -117,11 +117,12 @@ async function show(model: string | undefined, options: PricingOptions): Promise
   if (resolution.source === "catalogue" || resolution.catalogue) {
     const entry = resolution.source === "catalogue" ? resolution.catalogue : resolution.catalogue!
     out.push(`  source       models.dev ${describe(entry)} (${updated(entry)}${fetched}): community-maintained, not hand-verified`)
-    out.push(...catalogueLines(entry, providerFacts(table, provider)))
+    const family = findFamily(table, provider, model)
+    out.push(...catalogueLines(entry, providerFacts(table, provider, undefined, model), family ? `the pricing table's ${family.prefixes[0]} family` : "provider defaults: models.dev has neither"))
     return print(out)
   }
   if (resolution.listed) out.push(`  no price on ${day}: the pricing table lists ${model} only on other days or with other parameters, and the catalogue is not used for a model it lists`)
-  else if (resolution.alias) out.push(`  no price: models.dev ${describe(resolution.alias)} is an alias the provider repoints at other models; its catalogue price is not used`)
+  else if (resolution.excluded) out.push(`  no price: left unpriced on purpose by ${tableLabel(options.pricing)} (${resolution.excluded.reason}); the catalogue is not used for it either`)
   else if (resolution.ambiguous) out.push(`  no price: models.dev ${resolution.ambiguous[0]!.provider} lists ${resolution.ambiguous.map((entry) => entry.id).join(", ")} at different prices; give the full id`)
   else if (!catalogue) out.push(`  no price: not in ${tableLabel(options.pricing)}, and no models.dev catalogue has been fetched (prefixlens pricing update)`)
   else out.push(`  no price: not in ${tableLabel(options.pricing)}, and models.dev ${catalogueProvider(provider, options.catalogueProviders)} has no ${model} (other providers' prices are used only with --catalogue-provider)`)
@@ -162,15 +163,15 @@ function entryLines(entry: PriceEntry, facts: { cache_ttl_seconds: number; min_c
   ]
 }
 
-function catalogueLines(entry: CatalogueEntry, facts: { cache_ttl_seconds: number; min_cacheable_tokens: number }): string[] {
+function catalogueLines(entry: CatalogueEntry, facts: { cache_ttl_seconds: number; min_cacheable_tokens: number }, factsFrom: string): string[] {
   return [
     `  input        ${money(entry.input)}`,
     `  cache read   ${entry.cache_read === undefined ? "not listed: calls with this model are not costed" : money(entry.cache_read)}`,
-    `  cache write  ${entry.cache_write === undefined ? "not listed: calls that write to the cache are not costed" : money(entry.cache_write)} · 1 hour: not in models.dev, calls with 1-hour writes are not costed`,
+    `  cache write  ${entry.cache_write === undefined ? "not listed: calls that write to the cache are not costed" : money(entry.cache_write)} · 1 hour and 12 hours: not in models.dev, calls with such writes are not costed`,
     `  output       ${money(entry.output)}   (USD per million tokens)${entry.reasoning !== undefined ? ` · reasoning ${money(entry.reasoning)}: calls reporting reasoning tokens are not costed` : ""}`,
     ...(entry.tiers ?? []).map((tier) => `  above ${tier.above_prompt_tokens.toLocaleString("en-US")}  ${rateText(tier)}`),
     ...(entry.modes ?? []).map((mode) => `  ${mode.name} mode  ${JSON.stringify(mode.when_params)}: ${mode.input === undefined ? "no price listed, such calls are not costed" : rateText(mode)}${"service_tier" in mode.when_params ? " (not applied, as in the pricing table)" : ""}`),
-    `  cache        lifetime ${facts.cache_ttl_seconds} s, minimum ${facts.min_cacheable_tokens.toLocaleString("en-US")} tokens (provider defaults: models.dev has neither)`,
+    `  cache        lifetime ${facts.cache_ttl_seconds} s, minimum ${facts.min_cacheable_tokens.toLocaleString("en-US")} tokens (${factsFrom})`,
     ...(entry.status ? [`  status       ${entry.status}`] : []),
   ]
 }

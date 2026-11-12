@@ -10,9 +10,11 @@
     "Matching: the trace's model id and each name are compared after lowercasing, dropping 'provider/' or 'models/' prefixes, Bedrock region and vendor prefixes and '-v1:0' suffixes, and reading '@' and '.' as '-'. An entry that lists the exact id in names wins; there are no wildcards in this file. A glob 'match' field is still accepted in your own tables and is tried only when no entry names the id.",
     "from/until are inclusive UTC days: a call is priced by the day its request was sent. A model with no entry for a call's day has no price for that call.",
     "when_params selects a price by request parameter: Anthropic fast mode is a request with speed: \"fast\". Fast cache prices are derived from Anthropic's documented multipliers (cache prices stack on the fast input price).",
-    "cache_write is the write price for the provider's default lifetime (Anthropic 5 minutes, OpenAI 30 minutes); cache_write_1h is Anthropic's 1-hour write price. cache_write_12h is OpenAI's 12-hour write price, recorded but not yet applied: the trace format cannot say which OpenAI writes were 12-hour, so all OpenAI writes are priced at the 30-minute rate.",
+    "cache_write is the write price for the provider's default lifetime (Anthropic 5 minutes, OpenAI 30 minutes); cache_write_1h is Anthropic's 1-hour write price. cache_write_12h is OpenAI's 12-hour write price, applied to the writes a trace records as 12-hour (usage.cache_write_12h_tokens, trace format 1.2); the rest are priced at cache_write.",
     "tiers apply to a whole request when its prompt (uncached + cache read + cache write) is above above_prompt_tokens. OpenAI's '272K' is read as 272,000 tokens and Gemini's '200k' as 200,000.",
     "cache_ttl_seconds and min_cacheable_tokens on an entry override the provider's for that model; they decide when a miss is called expiry and when a prompt is too short to cache.",
+    "families gives cache facts (lifetime, minimum) by model-id prefix, for models no entry lists, such as ones priced from the models.dev catalogue.",
+    "exclude lists models left unpriced on purpose, with the reason: they get no price from this table or from the models.dev catalogue.",
     "unverified lists fields not printed on the provider's pages. OpenAI shows no cached-input price ('-') for its pro models; this table charges cached tokens at the input price for them."
   ],
   "sources": {
@@ -62,7 +64,7 @@
         "Gemini 4 and 3.6/3.8 Flash prices are promotional until the dates given and double after them; both periods are listed.",
         "gemini-2.5-pro calls from 2026-12-01 are routed to gemini-3.8-flash and billed at its rates; gemini-2.5-flash calls from 2026-12-01 are billed at gemini-3.5-flash-lite rates, which are the same as its own.",
         "Text, image and video input prices are used; audio input costs more on several models and is not told apart.",
-        "Not applied: Batch and Flex (50%), Priority. 'latest' aliases such as gemini-flash-latest are left out: Google hot-swaps the model behind them.",
+        "Not applied: Batch and Flex (50%), Priority. 'latest' aliases such as gemini-flash-latest are listed in exclude: Google hot-swaps the model behind them.",
         "Gemini 3 Flash Preview's $3.00 output price is on the Gemini API pricing page; the Google Cloud page does not show that row."
       ]
     }
@@ -73,6 +75,14 @@
     "gemini": { "cache_ttl_seconds": 300, "min_cacheable_tokens": 1024 },
     "default": { "cache_ttl_seconds": 300, "min_cacheable_tokens": 1024 }
   },
+  "families": [
+    { "provider": "openai", "prefixes": ["gpt-5.6", "gpt-6"], "cache_ttl_seconds": 1800, "min_cacheable_tokens": 1024,
+      "note": "GPT-5.6 and later keep cache writes for at least 30 minutes and cache prompts from 1,024 tokens (OpenAI prompt-caching guide). Used for models of these families that no entry below lists, such as ones priced from models.dev." }
+  ],
+  "exclude": [
+    { "provider": "gemini", "names": ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest"],
+      "reason": "an alias Google repoints at newer models without notice, so no one price applies" }
+  ],
   "models": [
     { "provider": "anthropic", "names": ["claude-fable-5-2", "claude-mythos-5-2"], "input": 8, "cache_read": 0.2, "cache_write": 10, "cache_write_1h": 16, "output": 40, "min_cacheable_tokens": 512 },
     { "provider": "anthropic", "names": ["claude-fable-5-2", "claude-mythos-5-2"], "when_params": { "speed": "fast" }, "input": 16, "cache_read": 0.4, "cache_write": 20, "cache_write_1h": 32, "output": 80, "min_cacheable_tokens": 512 },
@@ -116,7 +126,7 @@
       "tiers": [{ "above_prompt_tokens": 272000, "input": 0.4, "cache_read": 0.04, "cache_write": 0.5, "cache_write_12h": 1, "output": 1.8 }] },
     { "provider": "openai", "names": ["gpt-5.5", "gpt-5.5-2026-04-23"], "input": 5, "cache_read": 0.5, "output": 30,
       "tiers": [{ "above_prompt_tokens": 272000, "input": 10, "cache_read": 1, "output": 45 }] },
-    { "provider": "openai", "names": ["gpt-5.5-pro", "gpt-5.5-pro-2026-04-23"], "input": 30, "cache_read": 30, "output": 180,
+    { "provider": "openai", "names": ["gpt-5.5-pro", "gpt-5.5-pro-2026-04-23"], "unverified": ["cache_read"], "input": 30, "cache_read": 30, "output": 180,
       "tiers": [{ "above_prompt_tokens": 272000, "input": 60, "cache_read": 60, "output": 270 }] },
     { "provider": "openai", "names": ["gpt-5.4", "gpt-5.4-2026-03-05"], "input": 2.5, "cache_read": 0.25, "output": 15,
       "tiers": [{ "above_prompt_tokens": 272000, "input": 5, "cache_read": 0.5, "output": 22.5 }] },

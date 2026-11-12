@@ -12,7 +12,6 @@ import {
   convertCatalogue,
   fetchCatalogue,
   findCatalogueEntry,
-  isMovingAlias,
   loadCatalogue,
   parseProviderMapping,
   readCatalogueFile,
@@ -21,7 +20,7 @@ import {
   type CatalogueEntry,
   type PriceSources,
 } from "../src/catalogue.ts"
-import { loadPricing, parsePricing } from "../src/pricing.ts"
+import { loadPricing, parsePricing, providerFacts } from "../src/pricing.ts"
 import type { Usage } from "../src/trace.ts"
 import { usage, usageRecord } from "./helpers.ts"
 
@@ -200,12 +199,20 @@ describe("provider and model identity", () => {
     expect(resolution.source === "table" && resolution.differences).toBeFalsy()
   })
 
-  test("aliases the provider repoints, such as -latest, are not priced from the catalogue", () => {
-    expect(isMovingAlias("gemini-flash-latest")).toBe(true)
-    expect(isMovingAlias("anthropic/claude-latest")).toBe(true)
-    expect(isMovingAlias("gpt-latestish")).toBe(false)
-    const resolution = resolvePrice(sources(), "anthropic", "claude-zeta-latest", none, DAY)
-    expect(resolution.source === "none" && resolution.alias?.id).toBe("claude-zeta-latest")
+  test("a model the table excludes on purpose gets no catalogue price; one it does not exclude does, whatever its name", () => {
+    const excluding = { ...bundled, exclude: [{ provider: "anthropic", names: ["claude-zeta-latest"], reason: "an alias the provider repoints" }] }
+    const resolution = resolvePrice(sources({ table: excluding }), "anthropic", "claude-zeta-latest", none, DAY)
+    expect(resolution.source === "none" && resolution.excluded?.reason).toBe("an alias the provider repoints")
+    expect(resolvePrice(sources(), "anthropic", "claude-zeta-latest", none, DAY).source).toBe("catalogue")
+    // The bundled table excludes Google's hot-swapped aliases by name.
+    expect(resolvePrice(sources(), "gemini", "gemini-flash-latest", none, DAY)).toMatchObject({ source: "none", excluded: { provider: "gemini" } })
+  })
+
+  test("a catalogue-priced model takes its family's cache facts from the table, else the provider's", () => {
+    expect(providerFacts(bundled, "openai", undefined, "gpt-5.6-mini").cache_ttl_seconds).toBe(1800)
+    expect(providerFacts(bundled, "openai", undefined, "openai/gpt-6.2-nova-2027-01-01").cache_ttl_seconds).toBe(1800)
+    expect(providerFacts(bundled, "openai", undefined, "gpt-5.5-mini").cache_ttl_seconds).toBe(300)
+    expect(providerFacts(bundled, "openai", undefined, "gpt-60").cache_ttl_seconds).toBe(300)
   })
 
   test("--catalogue-provider mappings are parsed and checked", () => {

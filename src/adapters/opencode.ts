@@ -31,6 +31,7 @@
 import { readdir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
 import { isRecord } from "../canonical.ts"
+import { providerFamily } from "../provider.ts"
 import { openReadonly } from "../runtime/sqlite.ts"
 import type { Hint, TraceRecord, Usage } from "../trace.ts"
 import type { ImportOptions, ImportResult, SessionSummary } from "./index.ts"
@@ -361,16 +362,6 @@ function usageOf(call: Call): Usage {
     ...(reasoning > 0 ? { reasoning_tokens: reasoning } : {}),
     ...(call.cost !== undefined ? { reported_cost: call.cost } : {}),
   }
-}
-
-/** Maps an opencode provider id to the provider whose caching rules apply. */
-export function providerFamily(provider: string, model: string): string {
-  const id = provider.toLowerCase()
-  const name = model.toLowerCase()
-  if (id === "anthropic" || id.includes("bedrock") || id.includes("vertex-anthropic") || name.includes("claude")) return "anthropic"
-  if (id === "openai" || id === "azure" || name.startsWith("gpt-") || /^o\d/.test(name)) return "openai"
-  if (id.startsWith("google") || name.startsWith("gemini")) return "gemini"
-  return id
 }
 
 function parse(text: string): Json {

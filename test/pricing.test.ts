@@ -277,3 +277,35 @@ describe("report notes about prices", () => {
     expect(summary.notes).toContain("No price for gpt-5.6-sol on 2026-12-03 (priced until 2026-11-30): add it to the pricing table to get costs.")
   })
 })
+
+describe("exclusions and families in the table", () => {
+  const base = { version: 1, currency: "USD", unit: "per_million_tokens", models: [{ provider: "openai", names: ["gpt-zeta-1"], input: 1, cache_read: 0.1, output: 2 }] }
+
+  test("exclude and families are checked at the boundary", () => {
+    expect(() => parsePricing({ ...base, exclude: [{ names: ["gpt-zeta-latest"] }] })).toThrow("exclude[0] needs names (model ids) and a reason")
+    expect(() => parsePricing({ ...base, exclude: [{ provider: "openai", names: ["gpt-zeta-1"], reason: "alias" }] })).toThrow("gpt-zeta-1 is both priced in models and listed in exclude")
+    expect(() => parsePricing({ ...base, families: [{ provider: "openai", prefixes: [] }] })).toThrow("families[0] needs a provider and prefixes")
+    expect(() => parsePricing({ ...base, families: [{ provider: "openai", prefixes: ["gpt-zeta"], cache_ttl_seconds: 0 }] })).toThrow("families[0].cache_ttl_seconds must be a positive number")
+  })
+
+  test("an entry's facts beat its family's, which beat the provider's; the longest prefix wins", () => {
+    const table = parsePricing({
+      ...base,
+      providers: { openai: { cache_ttl_seconds: 300 } },
+      families: [
+        { provider: "openai", prefixes: ["gpt-zeta"], cache_ttl_seconds: 1800 },
+        { provider: "openai", prefixes: ["gpt-zeta-mini"], cache_ttl_seconds: 600 },
+      ],
+    })
+    expect(providerFacts(table, "openai", undefined, "gpt-zeta-2").cache_ttl_seconds).toBe(1800)
+    expect(providerFacts(table, "openai", undefined, "gpt-zeta-mini-2").cache_ttl_seconds).toBe(600)
+    expect(providerFacts(table, "openai", { ...table.models[0]!, cache_ttl_seconds: 60 }, "gpt-zeta-1").cache_ttl_seconds).toBe(60)
+    expect(providerFacts(table, "anthropic", undefined, "gpt-zeta-2").cache_ttl_seconds).toBe(300)
+  })
+
+  test("a report names an excluded model's reason instead of guessing a price", () => {
+    const table = parsePricing({ ...base, exclude: [{ provider: "openai", names: ["gpt-zeta-latest"], reason: "an alias that moves" }] })
+    const analysis = analyze([usageRecord("gpt-zeta-latest", usage(100, 2000, null), { provider: "openai" })], { pricing: table })
+    expect(analysis.summary.notes.join("\n")).toContain("No price for gpt-zeta-latest (left unpriced on purpose by the pricing table: an alias that moves)")
+  })
+})

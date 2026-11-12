@@ -11,7 +11,7 @@ import { readFile } from "node:fs/promises"
 import { isRecord } from "../canonical.ts"
 import type { TraceRecord, Usage } from "../trace.ts"
 import type { ImportOptions, ImportResult } from "./index.ts"
-import { providerFamily } from "./opencode.ts"
+import { providerFamily } from "../provider.ts"
 
 type Json = Record<string, unknown>
 type Attributes = Record<string, unknown>

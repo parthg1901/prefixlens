@@ -7,7 +7,7 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { isRecord } from "./canonical.ts"
-import { findPrice, listsModel, normalizeModelId, type PriceContext, type PriceEntry, type PricingTable } from "./pricing.ts"
+import { findExclusion, findPrice, listsModel, normalizeModelId, type Exclusion, type PriceContext, type PriceEntry, type PricingTable } from "./pricing.ts"
 import type { Usage } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
 
@@ -379,7 +379,7 @@ export interface FieldDifference {
 export type Resolution =
   | { source: "table"; entry: PriceEntry; differences?: FieldDifference[]; compared?: CatalogueEntry }
   | { source: "catalogue"; entry: PriceEntry; catalogue: CatalogueEntry; mode?: string }
-  | { source: "none"; catalogue?: CatalogueEntry; missing?: string[]; ambiguous?: CatalogueEntry[]; alias?: CatalogueEntry; listed?: boolean }
+  | { source: "none"; catalogue?: CatalogueEntry; missing?: string[]; ambiguous?: CatalogueEntry[]; excluded?: Exclusion; listed?: boolean }
 
 /**
  * The price for one call. The pricing table wins for every model it lists, even on a day it gives
@@ -387,8 +387,11 @@ export type Resolution =
  * differences are returned for the report to note. The catalogue prices only models the table
  * does not list, and only from the catalogue provider the trace provider maps to. A catalogue
  * price is used only when it lists every price the call needs; otherwise the call has no price.
+ * A model the table's `exclude` lists has no price from either.
  */
 export function resolvePrice(sources: PriceSources, provider: string, model: string, usage: Usage, context: PriceContext = {}): Resolution {
+  const excluded = findExclusion(sources.table, provider, model)
+  if (excluded) return { source: "none", excluded }
   const entry = findPrice(sources.table, provider, model, context)
   if (entry) {
     // The table's entries are first-party list prices, so they are compared with the first-party catalogue entry, whatever the user maps the provider to.
@@ -400,27 +403,17 @@ export function resolvePrice(sources: PriceSources, provider: string, model: str
   const match = findCatalogueEntry(sources.catalogue, catalogueProvider(provider, sources.catalogueProviders), model)
   if (!match) return { source: "none" }
   if ("ambiguous" in match) return { source: "none", ambiguous: match.ambiguous }
-  if (isMovingAlias(match.entry.id)) return { source: "none", alias: match.entry }
   const priced = catalogueRates(match.entry, usage, context.params)
   if (priced.missing.length > 0) return { source: "none", catalogue: match.entry, missing: priced.missing }
   return { source: "catalogue", entry: priced.entry!, catalogue: match.entry, ...(priced.mode ? { mode: priced.mode } : {}) }
 }
 
 /**
- * True for ids such as `gemini-flash-latest` that a provider repoints at another model without
- * notice. The pricing table leaves them unpriced on purpose, so the catalogue's price for one
- * (whichever model it pointed at when someone last edited it) is not used either.
- */
-export function isMovingAlias(id: string): boolean {
-  return /(^|[-/.:])latest$/i.test(id.trim())
-}
-
-/**
  * A price entry for one call from a catalogue entry: the mode its parameters select, then the
  * prompt-size tier. Lists the prices the call needs and the catalogue does not give: the cache-read
  * price always (a miss is costed against it), the write price when the call wrote to the cache,
- * the 1-hour write price when it wrote with a 1-hour lifetime (models.dev has none), and a separate
- * reasoning price when the call reports reasoning tokens.
+ * the 1-hour and 12-hour write prices when it wrote with those lifetimes (models.dev has neither),
+ * and a separate reasoning price when the call reports reasoning tokens.
  */
 export function catalogueRates(entry: CatalogueEntry, usage: Usage, params?: Record<string, unknown>): { entry?: PriceEntry; missing: string[]; mode?: string } {
   // OpenAI's service tiers are left out, as in the pricing table: a request's service_tier does not say which tier billed it.
@@ -430,13 +423,15 @@ export function catalogueRates(entry: CatalogueEntry, usage: Usage, params?: Rec
   const rates: CatalogueRates = mode ?? tier ?? entry
   const writes = usage.cache_write_tokens ?? 0
   const oneHour = Math.min(writes, usage.cache_write_1h_tokens ?? 0)
+  const twelve = Math.min(writes - oneHour, usage.cache_write_12h_tokens ?? 0)
   if (mode && (mode.input === undefined || mode.output === undefined)) return { missing: [`${mode.name}_mode`], mode: mode.name }
   const missing = [
     ...(rates.input === undefined ? ["input"] : []),
     ...(rates.output === undefined ? ["output"] : []),
     ...(rates.cache_read === undefined ? ["cache_read"] : []),
-    ...(writes - oneHour > 0 && rates.cache_write === undefined ? ["cache_write"] : []),
+    ...(writes - oneHour - twelve > 0 && rates.cache_write === undefined ? ["cache_write"] : []),
     ...(oneHour > 0 ? ["cache_write_1h"] : []),
+    ...(twelve > 0 ? ["cache_write_12h"] : []),
     ...(rates.reasoning !== undefined && (usage.reasoning_tokens ?? 0) > 0 ? ["reasoning"] : []),
   ]
   if (missing.length > 0) return { missing, ...(mode ? { mode: mode.name } : {}) }
