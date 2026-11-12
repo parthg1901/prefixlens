@@ -563,6 +563,8 @@ class DigestChecker {
     }
     // Latest first: the longest shared history is tried first.
     this.saved.set(request.id as string, { lead, hashes, points: [...points, ...(resume ? [resume] : [])] })
+    // A request almost always extends one of the last few; older states are let go so memory does not grow with the session.
+    if (this.saved.size > 64) this.saved.delete(this.saved.keys().next().value!)
     state.update(`]${afterKeys.length > 0 ? `,${after}` : ""}}`)
     return state.digest("hex") === request.requestDigest ? "verified" : "mismatch"
   }
