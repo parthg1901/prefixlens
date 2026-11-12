@@ -75,8 +75,11 @@ export interface PrefixExplanation {
 
 export class PrefixBreakError extends Error {
   override name = "PrefixBreakError"
-  constructor(readonly explanation: PrefixExplanation) {
+  readonly explanation: PrefixExplanation
+
+  constructor(explanation: PrefixExplanation) {
     super(explanation.message)
+    this.explanation = explanation
   }
 }
 

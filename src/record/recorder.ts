@@ -84,8 +84,10 @@ export class Recorder {
   private queue: Promise<unknown> = Promise.resolve()
   // Each harness session seen with a parent header, to its parent's id, so nested subagents find their root.
   private readonly parents = new Map<string, string>()
+  private readonly options: RecorderOptions
 
-  constructor(private readonly options: RecorderOptions) {
+  constructor(options: RecorderOptions) {
+    this.options = options
     this.writer = options.trace === false || options.trace === undefined ? undefined : openTraceWriter(options.trace)
   }
 

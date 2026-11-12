@@ -240,11 +240,13 @@ class FileMessages {
   private readonly sources = new Map<string, Source>()
   // The few messages read last: a request's newest messages are read for its digest and again for its block.
   private readonly recent = new Map<string, unknown>()
+  readonly path: string
+  private readonly onBlock: (blockHash: string, hash: string, owner: FileMessages) => void
 
-  constructor(
-    readonly path: string,
-    private readonly onBlock: (blockHash: string, hash: string, owner: FileMessages) => void,
-  ) {}
+  constructor(path: string, onBlock: (blockHash: string, hash: string, owner: FileMessages) => void) {
+    this.path = path
+    this.onBlock = onBlock
+  }
 
   /** A logged wire message. It wins over a transcript message with the same hash, as the log intends. */
   addBlob(hash: string, message: unknown, at: Location) {
@@ -330,8 +332,11 @@ function asParts(message: Entry): Entry {
 class TranscriptIndex {
   private readonly turns = new Map<string, { hash: JoinedHash; at: Location[] }>()
   private run: { hash: JoinedHash; at: Location[] } | undefined
+  private readonly store: FileMessages
 
-  constructor(private readonly store: FileMessages) {}
+  constructor(store: FileMessages) {
+    this.store = store
+  }
 
   add(entry: Entry, at: Location) {
     if (!isRecord(entry.message)) return
@@ -513,8 +518,11 @@ class DigestChecker {
   private readonly saved = new Map<string, { lead: string; hashes: string[]; points: { count: number; marks: string; state: Hash }[] }>()
   // The serialized fields after the messages (system, tools, the later params) for the last few shapes and marks.
   private readonly tails = new Map<string, string | typeof MISMATCH>()
+  private readonly store: FileMessages
 
-  constructor(private readonly store: FileMessages) {}
+  constructor(store: FileMessages) {
+    this.store = store
+  }
 
   verify(request: Entry, params: Entry, shape: Entry, hashes: string[]): "verified" | "mismatch" | "unverifiable" {
     if (typeof request.requestDigest !== "string") return "unverifiable"
