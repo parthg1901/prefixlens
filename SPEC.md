@@ -7,7 +7,7 @@ This document specifies the trace format that prefixlens reads. A harness in any
 - every 1.0 and 1.1 trace is a valid 1.2 trace and reads exactly as before;
 - an older reader reads a newer trace, ignoring what it does not know (section 2, section 6). A 1.0 reader will then report a declared intentional break (section 6.1) as an ordinary miss: the trace degrades to what it would have said without the declaration, never to something less safe.
 
-Version 1.2 adds the optional `interrupted` and `billing` record fields (section 2), binary-data elision with the block's `elided` field (section 4.5), the optional `cache_write_12h_tokens` usage field (section 3), and the `tools_changed` hint (section 6).
+Version 1.2 adds the optional `interrupted` and `billing` record fields (section 2), the block fields `unknown` (section 4.1) and `elided` (binary-data elision, section 4.5), the optional `cache_write_12h_tokens` usage field (section 3), and the `tools_changed` hint (section 6).
 
 Version 1.1 adds the `prefix_break` hint (section 6.1), states the canonical form of every `cache_control` marker and of a non-string system prompt (section 4.3), and documents which request parameters each provider caches on (section 8.1).
 
@@ -88,6 +88,7 @@ A full request is a list of blocks in the order the provider assembles the promp
 | `key` | string | no | The tool name for tools; the role for messages (`"user"`, `"assistant"`, `"tool"`, ...). Used in explanations only; not hashed. |
 | `breakpoint` | boolean | no | `true` when a cache breakpoint (Anthropic `cache_control`) was set on this block or on a part inside it. |
 | `elided` | boolean | no | 1.2. `true` when binary data inside `content` was replaced by its digest and size (section 4.5). `hash` is then still that of the content as sent, and is required. |
+| `unknown` | boolean | no | 1.2. `true` when the writer knows that a block was sent at this position but not what it held. `hash` is then a placeholder rather than a SHA-256 (e.g. `"unknown:claude-code-billing-attribution"`), the same on every record for which the writer cannot tell the block apart, and `content` MUST be absent; `key` MAY name what the block is. Placing it keeps every other block, and every breakpoint, at the position it was sent at, so a trace from this writer and one from a recorder of the same call agree on every block but this one. A change confined to an unknown block cannot be seen: a miss it caused reads as one with the prefix intact. |
 
 ### 4.2 Order
 
@@ -159,7 +160,7 @@ Even with content deduplicated, listing every block's hash on every line makes a
 
 ## 5. Fidelity
 
-- **`"full-request"`**: `request.blocks` lists every tool, system part and message the provider received, in order. With two consecutive full-request records in a lane, a reader can prove whether the earlier request is an unchanged prefix of the later one and name the first block that differs. A writer that rebuilds requests from a log, rather than recording the request it sent, SHOULD write `"full-request"` only when it can show the rebuild is exact (prefixlens's Claude Code importer matches the request digest Claude Code logs), and `"usage-only"` otherwise. Changes a provider makes after receiving the request, such as server-side context editing, are outside the trace.
+- **`"full-request"`**: `request.blocks` lists every tool, system part and message the provider received, in order. With two consecutive full-request records in a lane, a reader can prove whether the earlier request is an unchanged prefix of the later one and name the first block that differs. A writer that rebuilds requests from a log, rather than recording the request it sent, SHOULD write `"full-request"` only when it can show the rebuild is exact, marking any block it knows was sent but cannot rebuild as `unknown` (section 4.1), and `"usage-only"` otherwise. prefixlens's Claude Code importer matches the digest Claude Code logs of each request as Claude Code built it, which proves the tools, the logged system parts, the messages, the parameters and the breakpoints; Claude Code's transport then adds a first system block it does not log (a billing-attribution line that differs per session), which the importer writes as an unknown block, and sends the logged `betas` parameter as the `anthropic-beta` header, which the importer writes in `headers`. Changes a provider makes after receiving the request, such as server-side context editing, are outside the trace.
 - **`"usage-only"`**: only the response usage is known (plus `model`, `ts` and optionally `params` and `hints`). Hit rates, lost tokens and costs are exact. The cause of a miss cannot be proven; readers may infer one from a model change, the time gap against the TTL, and hints, and MUST label such causes as inferred.
 
 A trace may mix both. A comparison between a full-request record and a usage-only record is treated as usage-only.

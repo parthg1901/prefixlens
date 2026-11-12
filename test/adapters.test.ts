@@ -24,10 +24,12 @@ describe("claude-code adapter", () => {
     const result = await importClaudeCode(path.join(fixtures, "claude-code-session.jsonl"), { subagents: false })
     expect(result.records.map((record) => record.fidelity)).toEqual(["full-request", "full-request", "full-request"])
     const [first, second, third] = result.records
-    expect(first!.request!.blocks.map((block) => block.kind)).toEqual(["tool", "tool", "system", "message"])
+    // The first system block is the billing-attribution line Claude Code sends but does not log.
+    expect(first!.request!.blocks.map((block) => block.kind)).toEqual(["tool", "tool", "system", "system", "message"])
+    expect(first!.request!.blocks[2]).toEqual({ kind: "system", key: "billing-attribution", hash: "unknown:claude-code-billing-attribution", unknown: true })
     expect(second!.request!.blocks.filter((block) => block.kind === "message").map((block) => block.key)).toEqual(["user", "assistant", "user"])
-    // Every message was resolved to content, none left as a bare hash.
-    expect(third!.request!.blocks.every((block) => block.content !== undefined)).toBe(true)
+    // Every logged block was resolved to content, none left as a bare hash.
+    expect(third!.request!.blocks.every((block) => block.content !== undefined || block.unknown)).toBe(true)
     expect(third!.request!.blocks.filter((block) => block.kind === "tool").map((block) => block.key)).toEqual(["list_dir", "read_file", "web_fetch"])
     expect(result.warnings).toEqual(["main: 1 logged requests had no response (errors or interruptions); skipped"])
   })
@@ -103,7 +105,7 @@ describe("claude-code adapter", () => {
     const text = serializeTrace(records)
     const lines = text.trim().split("\n").map((line) => JSON.parse(line))
     // Call 2 reuses call 1's tools, system prompt and first message, then lists only its new messages.
-    expect(lines[1].request.reuse).toBe(4)
+    expect(lines[1].request.reuse).toBe(5)
     expect(lines[1].request.blocks.map((block: { key?: string }) => block.key)).toEqual(["assistant", "user"])
     // Call 3 changed the tool list, so it reuses the first two tools only; the system block is written by hash.
     expect(lines[2].request.reuse).toBe(2)

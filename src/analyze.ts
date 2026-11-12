@@ -436,12 +436,18 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
   const usageOnly = turns.filter((turn) => turn.fidelity === "usage-only").length
   const unpriced = [...new Set(turns.filter((turn) => turn.cost === null).map((turn) => turn.model))]
   const cutOff = turns.filter((turn) => turn.interrupted).map((turn) => turn.turn)
+  const partlyUnknown = records.filter((record) => record.request?.blocks.some((block) => block.unknown)).length
   const billing = {
     per_token: turns.filter((turn) => turn.billing === "per_token").length,
     subscription: turns.filter((turn) => turn.billing === "subscription").length,
     unknown: turns.filter((turn) => turn.billing === undefined).length,
   }
   const notes = [
+    ...(partlyUnknown > 0
+      ? [
+          `${partlyUnknown} of ${turns.length} calls were sent with a block whose content the log does not record (for Claude Code, the billing-attribution line it puts first in the system prompt), so their system prompt is partly unknown: a change confined to that block cannot be seen, and a miss it caused reads as one with the prefix intact. Every other block is compared as usual.`,
+        ]
+      : []),
     ...(cutOff.length > 0
       ? [
           `${cutOff.length === 1 ? `Call ${cutOff[0]} was` : `Calls ${cutOff.join(", ")} were`} cut off before the response ended (the client disconnected): ${cutOff.length === 1 ? "its" : "their"} input and cache counts are final, so hit rates and misses are exact, but output tokens and cost are lower bounds.`,

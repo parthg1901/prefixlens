@@ -11,6 +11,15 @@
 // messages rebuilt from transcript records (sha256 of key-sorted JSON).
 // Responses are the transcript's `assistant` records, linked by `requestRef`.
 //
+// What the log does not have: Claude Code's transport adds a first system block
+// to every request, a billing-attribution line that changes per session, after
+// the request is logged, and sends `params.betas` as the `anthropic-beta`
+// header. The logged digest is of the request before that, so it proves the
+// tools, the logged system parts, the messages, the params and the breakpoints,
+// not the bytes sent. The adapter writes the missing block as an `unknown`
+// placeholder in its place (SPEC 4.1), so every other block, and every
+// breakpoint, sits where it was sent, and `betas` as the header.
+//
 // Older logs have no api-request records; for them the adapter falls back to
 // usage-only records, one per assistant message id.
 
@@ -140,7 +149,9 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
   const shapeBlocks = (hash: string, shape: Entry | undefined) => {
     const known = shapeMemo.get(hash)
     if (known) return known
-    const blocks = canonicalizeAnthropic({ tools: shape?.tools, system: shape?.system, messages: [] }).blocks.map(withoutBreakpoint)
+    const logged = canonicalizeAnthropic({ tools: shape?.tools, system: shape?.system, messages: [] }).blocks.map(withoutBreakpoint)
+    const tools = logged.filter((block) => block.kind === "tool")
+    const blocks = [...tools, ATTRIBUTION_BLOCK, ...logged.slice(tools.length)]
     shapeMemo.set(hash, blocks)
     return blocks
   }
@@ -194,7 +205,8 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
         ts,
         provider: "anthropic",
         model: typeof message.model === "string" ? message.model : String(params.model ?? ""),
-        params: withoutIdentifiers(canonicalizeAnthropic({ ...params, messages: [] }).params),
+        params: withoutIdentifiers(canonicalizeAnthropic({ ...withoutBetas(params), messages: [] }).params),
+        ...(betasHeader(params) ? { headers: { "anthropic-beta": betasHeader(params)! } } : {}),
         fidelity: "full-request",
         request: { blocks },
         usage: normalizeUsage("anthropic", message.usage),
@@ -343,9 +355,28 @@ function sortKeys(value: unknown): unknown {
   )
 }
 
-/** Applies the logged cache_control positions (paths into the request) as breakpoints. */
+/**
+ * The system block Claude Code sends first and does not log: its billing-attribution line. Its
+ * content and real hash are unknown, so it is a placeholder that stays the same across calls.
+ */
+const ATTRIBUTION_BLOCK: Block = { kind: "system", key: "billing-attribution", hash: "unknown:claude-code-billing-attribution", unknown: true }
+
+// Claude Code logs the beta flags with the params; it sends them as the anthropic-beta header.
+function withoutBetas(params: Entry): Entry {
+  const { betas, ...rest } = params
+  return rest
+}
+
+function betasHeader(params: Entry): string | undefined {
+  return Array.isArray(params.betas) && params.betas.length > 0 && params.betas.every((beta) => typeof beta === "string") ? params.betas.join(",") : undefined
+}
+
+/**
+ * Applies the logged cache_control positions as breakpoints. The paths are into the request as
+ * logged, whose system prompt lacks the attribution block, so system positions start after it.
+ */
 function applyBreakpoints(blocks: Block[], cacheControl: unknown): Block[] {
-  const toolCount = blocks.filter((block) => block.kind === "tool").length
+  const toolCount = blocks.filter((block) => block.kind === "tool").length + blocks.filter((block) => block.unknown).length
   const headCount = blocks.filter((block) => block.kind !== "message").length
   const marked = new Set<number>()
   for (const mark of Array.isArray(cacheControl) ? cacheControl : []) {
