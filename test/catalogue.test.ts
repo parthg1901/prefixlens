@@ -85,10 +85,11 @@ describe("converting the models.dev catalogue", () => {
 
 describe("where the catalogue lives", () => {
   test("follows each platform's cache convention, and XDG_CACHE_HOME when set", () => {
-    expect(catalogueDir({}, "linux", "/home/u")).toBe("/home/u/.cache/prefixlens")
-    expect(catalogueDir({}, "darwin", "/Users/u")).toBe("/Users/u/Library/Caches/prefixlens")
+    // Synthetic home directories: CI's hygiene check rejects real-looking /home/<user>/ and /Users/<user>/ paths.
+    expect(catalogueDir({}, "linux", "/synthetic-home")).toBe("/synthetic-home/.cache/prefixlens")
+    expect(catalogueDir({}, "darwin", "/synthetic-home")).toBe("/synthetic-home/Library/Caches/prefixlens")
     expect(catalogueDir({ LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local" }, "win32", "C:\\Users\\u")).toBe(path.join("C:\\Users\\u\\AppData\\Local", "prefixlens", "Cache"))
-    expect(catalogueDir({ XDG_CACHE_HOME: "/tmp/cache" }, "darwin", "/Users/u")).toBe("/tmp/cache/prefixlens")
+    expect(catalogueDir({ XDG_CACHE_HOME: "/tmp/cache" }, "darwin", "/synthetic-home")).toBe("/tmp/cache/prefixlens")
   })
 
   test("is written and read back, and a missing file means no catalogue", async () => {
