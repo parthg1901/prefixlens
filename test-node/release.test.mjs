@@ -41,6 +41,6 @@ test("writes the version's changelog section as the release notes", (t) => {
   const result = check(dir, `v${version}`)
   assert.equal(result.code, 0, result.stderr)
   const notes = readFileSync(path.join(dir, "notes.md"), "utf8")
-  assert.match(notes, /^### /)
+  assert.match(notes, /^### Added$/m)
   assert.doesNotMatch(notes, /^## \[/m)
 })
