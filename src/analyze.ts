@@ -250,7 +250,9 @@ function analyzeTurn(
     // cause, and a change found as well is reported beside it. A partial miss read part of the cache, so the cache
     // was still there and the change is what cost the rest. A model change stays first: the new model never had that cache.
     const expired = status === "miss" && gap > ttl && found !== null && found.region !== "model"
-    const cause = confirmedCause(expired ? null : found, gap, ttl, previous.usage.cache_write_tokens ?? 0, [previous.headers?.["session-id"], record.headers?.["session-id"]])
+    // A block the writer could not record (SPEC 4.1) compares equal whatever it held, so "nothing changed" is not proven.
+    const hidden = [sent, before].flatMap((blocks) => blocks.flatMap((block, index) => (block.unknown ? [`block ${index + 1}${block.key ? `, ${block.key}` : ""}`] : [])))[0]
+    const cause = confirmedCause(expired ? null : found, gap, ttl, previous.usage.cache_write_tokens ?? 0, [previous.headers?.["session-id"], record.headers?.["session-id"]], hidden)
     if (expired)
       return withDeclared(
         {
@@ -267,7 +269,7 @@ function analyzeTurn(
     const verdict = judgeDeclared(declared, found, before)
     if (!afterCached) return withDeclared({ ...turn, cause }, verdict)
     const where = `cached prefix unchanged (the first change, at block ${change!.block_index! + 1}, is after the previous call's last cache breakpoint)`
-    return withDeclared({ ...turn, cause: { ...cause, summary: cause.summary.replace(/^prefix unchanged/, where) }, prefix_change: fromChange(change!, "confirmed") }, verdict)
+    return withDeclared({ ...turn, cause: { ...cause, summary: cause.summary.replace(/^(recorded )?prefix unchanged/, where) }, prefix_change: fromChange(change!, "confirmed") }, verdict)
   }
   return change ? { ...turn, prefix_change: fromChange(change, "confirmed") } : turn
 }
@@ -329,7 +331,7 @@ function judgeDeclared(declared: DeclaredBreak[], change: PrefixChange | null, p
   }
 }
 
-function confirmedCause(change: PrefixChange | null, gap: number, ttl: number, previousWrite: number, sessionIds: (string | undefined)[]): CauseInfo {
+function confirmedCause(change: PrefixChange | null, gap: number, ttl: number, previousWrite: number, sessionIds: (string | undefined)[], hidden?: string): CauseInfo {
   if (change) return fromChange(change, "confirmed")
   // Past the cache lifetime nothing else needs to have happened for the call to miss.
   if (gap > ttl)
@@ -351,6 +353,16 @@ function confirmedCause(change: PrefixChange | null, gap: number, ttl: number, p
       detail: { header: "session-id", from: before, to: after },
     }
   const fresh = previousWrite > 0 && gap <= FRESH_WRITE_SECONDS
+  const detail = { gap_seconds: gap, ttl_seconds: ttl, ...(fresh ? { fresh_write: true } : {}) }
+  // With a block that could not be compared, the harness is not cleared: that block may be what changed.
+  if (hidden)
+    return {
+      cause: "provider_side",
+      group: CAUSE_GROUP.provider_side,
+      summary: `${fresh ? `recorded prefix unchanged, sent ${duration(gap)} after the call that wrote the cache, which may not have been readable yet` : `recorded prefix unchanged and within TTL (${duration(gap)} < ${duration(ttl)})`}: a provider-side miss, or a change in the block the trace does not record (${hidden})`,
+      confidence: "inferred",
+      detail: { ...detail, unrecorded_block: hidden },
+    }
   return {
     cause: "provider_side",
     group: CAUSE_GROUP.provider_side,
@@ -358,7 +370,7 @@ function confirmedCause(change: PrefixChange | null, gap: number, ttl: number, p
       ? `prefix unchanged, provider-side miss: sent ${duration(gap)} after the call that wrote the cache, which may not have been readable yet; not caused by the harness`
       : `prefix unchanged and within TTL (${duration(gap)} < ${duration(ttl)}): provider-side miss, not caused by the harness`,
     confidence: "confirmed",
-    detail: { gap_seconds: gap, ttl_seconds: ttl, ...(fresh ? { fresh_write: true } : {}) },
+    detail,
   }
 }
 

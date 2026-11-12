@@ -109,6 +109,23 @@ describe("analyze", () => {
     expect(analysis.summary.headline).toBe("1 miss cost $0.06 at list prices; 1 from provider-side misses")
   })
 
+  test("a miss with the recorded prefix intact does not clear the harness when a block could not be recorded", () => {
+    // The placeholder an importer writes for a block it knows was sent but cannot see (SPEC 4.1), first in the system prompt.
+    const withUnknown = (record: TraceRecord): TraceRecord => {
+      const blocks = record.request!.blocks
+      return { ...record, request: { blocks: [...blocks.slice(0, TOOLS.length), { kind: "system", key: "billing-attribution", hash: "unknown:synthetic-attribution", unknown: true }, ...blocks.slice(TOOLS.length)] } }
+    }
+    const pair = (gapSeconds: number) => run([withUnknown(fullRecord(body(m1), usage(10, 0, 5000))), withUnknown(fullRecord(body(m2), usage(10, 0, 5300), {}, gapSeconds))]).turns[1]!
+    const turn = pair(30)
+    expect(turn.cause).toMatchObject({ cause: "provider_side", group: "provider-side misses", confidence: "inferred", detail: { unrecorded_block: "block 4, billing-attribution" } })
+    expect(turn.cause!.summary).toBe("recorded prefix unchanged and within TTL (30s < 5m): a provider-side miss, or a change in the block the trace does not record (block 4, billing-attribution)")
+    expect(pair(2).cause!.summary).toBe(
+      "recorded prefix unchanged, sent 2s after the call that wrote the cache, which may not have been readable yet: a provider-side miss, or a change in the block the trace does not record (block 4, billing-attribution)",
+    )
+    // Expiry needs no change to explain it, so it stays confirmed.
+    expect(pair(6 * 60).cause).toMatchObject({ cause: "cache_expired", confidence: "confirmed" })
+  })
+
   test("a change after the previous call's last cache breakpoint is not blamed for a miss", () => {
     // Only the prefix through message 1 was cached; message 3 is edited, which cannot cost that cache.
     const marked = { role: "user", content: [{ type: "text", text: "task", cache_control: { type: "ephemeral" } }] }
