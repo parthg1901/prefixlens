@@ -11,11 +11,20 @@ export interface ImportOptions {
   session?: string
   /** Include subagent sessions as separate lanes. Default true. */
   subagents?: boolean
+  /**
+   * Leave message content in the harness's files: records list such blocks by hash only, and the
+   * result's `content` reads each back, for `serializeTrace` or `createTraceEncoder`. Keeps an
+   * import's memory bounded by the largest request rather than the session. Default false: every
+   * block carries its content. Only the claude-code adapter has content to leave.
+   */
+  contentOnDemand?: boolean
 }
 
 export interface ImportResult {
   records: TraceRecord[]
   warnings: string[]
+  /** With `contentOnDemand`: the content of a block the records list by hash only, read back from the harness's files. */
+  content?: (hash: string) => unknown
 }
 
 export interface SessionSummary {

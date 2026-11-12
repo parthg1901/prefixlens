@@ -2,7 +2,7 @@
 // prefixlens command line: import harness logs into traces, and report on traces.
 
 import { realpathSync } from "node:fs"
-import { readFile as readText, stat } from "node:fs/promises"
+import { open, readFile as readText, stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { text as streamText } from "node:stream/consumers"
@@ -14,7 +14,7 @@ import { loadPricing } from "./pricing.ts"
 import { renderHtml } from "./report/html.ts"
 import { renderJson } from "./report/json.ts"
 import { renderTerminal } from "./report/terminal.ts"
-import { parseTrace, readableByOthers, serializeTrace, writePrivateFile } from "./trace.ts"
+import { createTraceEncoder, parseTrace, readableByOthers, writePrivateFile } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
 import { VERSION } from "./version.ts"
 
@@ -165,20 +165,37 @@ async function runImport(args: string[], flags: Flags): Promise<number> {
   const result = await adapter.import(source, {
     ...(typeof flags.session === "string" ? { session: flags.session } : {}),
     subagents: flags["no-subagents"] !== true,
+    contentOnDemand: true,
   })
   for (const warning of result.warnings) console.error(`warning: ${warning}`)
   if (result.records.length === 0) return fail(`no model calls with usage found in ${input}; nothing written`)
-  const text = serializeTrace(result.records)
+  // Line by line, each block's content read back from the harness's files as it is first written.
+  const encoder = createTraceEncoder(result.content ? { content: result.content } : {})
+  const records = result.records
+  const lines = (function* () {
+    for (const record of records) yield `${encoder.encode(record)}\n`
+  })()
   if (typeof flags.out === "string") {
     const shared = readableByOthers(flags.out)
-    writePrivateFile(flags.out, text)
+    await writeLines(flags.out, lines)
     if (shared) console.error(`warning: ${flags.out} already existed and other users can read it; its permissions were kept (chmod 600 to make it private)`)
     const full = result.records.filter((record) => record.fidelity === "full-request").length
     const verified = result.records.filter((record) => record.source?.request === "verified").length
     const check = verified > 0 ? `; ${verified} matched the digest the harness logged of the request it built` : ""
     console.error(`wrote ${result.records.length} records (${full} full-request, ${result.records.length - full} usage-only${check}) to ${flags.out}`)
-  } else process.stdout.write(text)
+  } else for (const line of lines) if (!process.stdout.write(line)) await new Promise((resolve) => process.stdout.once("drain", resolve))
   return 0
+}
+
+/** Writes lines to a new private file (or replaces one, keeping its mode) as they are produced. */
+async function writeLines(file: string, lines: Iterable<string>) {
+  writePrivateFile(file, "")
+  const handle = await open(file, "w")
+  try {
+    for (const line of lines) await handle.write(line)
+  } finally {
+    await handle.close()
+  }
 }
 
 async function runReport(args: string[], flags: Flags): Promise<number> {

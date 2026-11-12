@@ -135,9 +135,21 @@ export function parseTrace(text: string): ParseResult {
  *   with that hash carry the hash alone.
  * With `compact: false` every record lists every block with its content.
  */
-export function serializeTrace(records: TraceRecord[], options: { compact?: boolean } = {}): string {
+export function serializeTrace(records: TraceRecord[], options: TraceEncoderOptions = {}): string {
   const encoder = createTraceEncoder(options)
   return records.map((record) => encoder.encode(record) + "\n").join("")
+}
+
+export interface TraceEncoderOptions {
+  /** Default true. `false` lists every block with its content on every line. */
+  compact?: boolean
+  /** Records already in the file being appended to, so new lines can reuse what they carried. */
+  after?: TraceRecord[]
+  /**
+   * Content for blocks that carry only a hash (an importer's `content`, with `contentOnDemand`):
+   * asked for each such block the first time its hash is written. Undefined leaves the block hash-only.
+   */
+  content?: (hash: string) => unknown
 }
 
 /**
@@ -145,7 +157,7 @@ export function serializeTrace(records: TraceRecord[], options: { compact?: bool
  * remembering what earlier lines already carried. Seed it with the records of
  * an existing file to append to that file.
  */
-export function createTraceEncoder(options: { compact?: boolean; after?: TraceRecord[] } = {}) {
+export function createTraceEncoder(options: TraceEncoderOptions = {}) {
   const compact = options.compact ?? true
   const written = new Set<string>()
   const last = new Map<string, Block[]>()
@@ -154,17 +166,31 @@ export function createTraceEncoder(options: { compact?: boolean; after?: TraceRe
     last.set(laneKey(record), record.request.blocks)
     for (const block of record.request.blocks) if (block.content !== undefined) written.add(block.hash)
   }
+  // A hash-only block whose content can be read back gets it the first time; the content is not kept.
+  const filled = (block: Block): Block => {
+    if (block.content !== undefined || block.unknown || !options.content || written.has(block.hash)) return block
+    const content = options.content(block.hash)
+    if (content === undefined) return block
+    written.add(block.hash)
+    return withContent(block, content)
+  }
   for (const record of options.after ?? []) remember(record)
   return {
     /** One JSONL line, without the newline. */
     encode(record: TraceRecord): string {
-      if (!compact || !record.request) return JSON.stringify(record)
+      if (!record.request) return JSON.stringify(record)
+      if (!compact) {
+        const read = options.content
+        if (!read) return JSON.stringify(record)
+        const blocks = record.request.blocks.map((block) => (block.content !== undefined || block.unknown ? block : withContent(block, read(block.hash))))
+        return JSON.stringify({ ...record, request: { ...record.request, blocks } })
+      }
       const all = record.request.blocks
       const previous = last.get(laneKey(record)) ?? []
       let reuse = 0
       while (reuse < previous.length && reuse < all.length && sameBlock(previous[reuse]!, all[reuse]!)) reuse++
       const blocks = all.slice(reuse).map((block) => {
-        if (block.content === undefined) return block
+        if (block.content === undefined) return filled(block)
         if (written.has(block.hash)) {
           const { content, ...rest } = block
           return rest
@@ -176,6 +202,13 @@ export function createTraceEncoder(options: { compact?: boolean; after?: TraceRe
       return JSON.stringify({ ...record, request: { ...(reuse > 0 ? { reuse } : {}), blocks } })
     },
   }
+}
+
+// Content goes where a block built with it has it, so the line is the same either way.
+function withContent(block: Block, content: unknown): Block {
+  if (content === undefined) return block
+  const { kind, key, hash, ...rest } = block
+  return { kind, ...(key === undefined ? {} : { key }), hash, content, ...rest }
 }
 
 /**

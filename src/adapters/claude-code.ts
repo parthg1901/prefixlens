@@ -22,9 +22,21 @@
 //
 // Older logs have no api-request records; for them the adapter falls back to
 // usage-only records, one per assistant message id.
+//
+// Memory. A long session's log is hundreds of megabytes, almost all of it
+// message content, and every request repeats the history before it. The log is
+// read line by line, once, keeping only what is small (requests, usage, shapes)
+// and, for each message, where in the file it is and its hash; content is read
+// back from the file when a request needs it. Each request's digest is checked
+// by hashing on from the state its base request left at its first breakpoint,
+// so a long conversation is hashed about once, not once per request. With
+// `contentOnDemand` the records carry message blocks by hash and `content`
+// reads them back for the trace writer, so memory grows with the largest
+// request, not with the session.
 
-import { createHash } from "node:crypto"
-import { readdir, readFile, stat } from "node:fs/promises"
+import { createHash, type Hash } from "node:crypto"
+import { closeSync, openSync, readSync } from "node:fs"
+import { open, readdir, stat } from "node:fs/promises"
 import path from "node:path"
 import { canonicalizeAnthropic, elideBinary, isRecord } from "../canonical.ts"
 import type { Block, Hint, TraceRecord } from "../trace.ts"
@@ -37,21 +49,18 @@ type Entry = Record<string, unknown>
 export async function importClaudeCode(input: string, options: ImportOptions): Promise<ImportResult> {
   const files = await sessionFiles(input, options.subagents ?? true)
   const warnings: string[] = []
+  const store = new MessageStore()
+  const records: TraceRecord[] = []
   let costState: Entry | undefined
-  const records = (
-    await Promise.all(
-      files.map(async (file, index) => {
-        const entries = parseLines(await readFile(file.path, "utf8"), file.path, warnings)
-        if (index === 0) costState = entries.findLast((entry) => entry.type === "cost-state")
-        return entries.some((entry) => entry.type === "api-request")
-          ? fullRecords(entries, file.lane, warnings)
-          : usageRecords(entries, file.lane, warnings)
-      }),
-    )
-  ).flat()
+  // One file at a time: its small parts are read, its records built, and only the records kept.
+  for (const [index, file] of files.entries()) {
+    const log = await readLog(file.path, store.file(file.path), warnings)
+    if (index === 0) costState = log.costState
+    records.push(...(log.requests.length > 0 ? fullRecords(log, file.lane, store.file(file.path), options.contentOnDemand === true, warnings) : usageRecords(log, file.lane, warnings)))
+  }
   records.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
   if (costState && (options.subagents ?? true)) warnings.push(...compareCostState(costState, records))
-  return { records, warnings }
+  return { records, warnings, ...(options.contentOnDemand ? { content: (hash: string) => store.content(hash) } : {}) }
 }
 
 /**
@@ -99,33 +108,286 @@ function laneName(file: string): string {
   return path.basename(file, ".jsonl")
 }
 
-function parseLines(text: string, file: string, warnings: string[]): Entry[] {
-  let bad = 0
-  const entries = text.split("\n").flatMap((line) => {
-    if (line.trim() === "") return []
-    try {
-      const value = JSON.parse(line)
-      return isRecord(value) ? [value] : []
-    } catch {
-      bad++
-      return []
-    }
-  })
-  if (bad > 0) warnings.push(`${path.basename(file)}: skipped ${bad} unreadable lines`)
-  return entries
+// ---------------------------------------------------------------------------------------------
+// Reading a log
+
+/** What one log file holds, without its message content (that stays in the file; see MessageStore). */
+interface Log {
+  requests: Entry[]
+  shapes: Map<string, Entry>
+  /** One response per API call: the last assistant record carrying its usage (model, usage, timestamp only). */
+  responses: Map<string, Entry>
+  /** Assistant records with usage, grouped by message id, for logs without api-request records. */
+  legacy: Map<string, { first: Entry; last: Entry }>
+  boundaries: number[]
+  costState?: Entry
 }
 
-function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceRecord[] {
-  const shapes = new Map<string, Entry>()
-  const blobs = new Map<string, unknown>()
-  const requests: Entry[] = []
-  for (const entry of entries) {
-    if (entry.type === "api-request-shape" && typeof entry.shapeHash === "string" && isRecord(entry.shape)) shapes.set(entry.shapeHash, entry.shape)
-    if (entry.type === "api-request-blob" && typeof entry.hash === "string") blobs.set(entry.hash, wireForm(entry.hash, entry.message))
-    if (entry.type === "api-request" && typeof entry.id === "string") requests.push(entry)
+async function readLog(file: string, store: FileMessages, warnings: string[]): Promise<Log> {
+  const log: Log = { requests: [], shapes: new Map(), responses: new Map(), legacy: new Map(), boundaries: [] }
+  const transcript = new TranscriptIndex(store)
+  let bad = 0
+  for await (const line of lines(file)) {
+    const entry = parseLine(line.text)
+    if (entry === undefined) {
+      bad++
+      continue
+    }
+    if (entry === null) continue
+    const at = { offset: line.offset, length: line.length }
+    if (entry.type === "cost-state") log.costState = entry
+    if (entry.type === "api-request-shape" && typeof entry.shapeHash === "string" && isRecord(entry.shape)) log.shapes.set(entry.shapeHash, entry.shape)
+    if (entry.type === "api-request-blob" && typeof entry.hash === "string") store.addBlob(entry.hash, entry.message, at)
+    if (entry.type === "api-request" && typeof entry.id === "string") log.requests.push(entry)
+    if (entry.type === "system" && entry.subtype === "compact_boundary" && typeof entry.timestamp === "string") log.boundaries.push(Date.parse(entry.timestamp))
+    if (entry.type === "assistant" && isRecord(entry.message) && isRecord(entry.message.usage) && entry.message.model !== "<synthetic>") {
+      const summary = { timestamp: entry.timestamp, sessionId: entry.sessionId, version: entry.version, isSidechain: entry.isSidechain, message: { model: entry.message.model, usage: entry.message.usage } }
+      if (typeof entry.requestRef === "string") log.responses.set(entry.requestRef, summary)
+      const key = String(entry.message.id ?? entry.requestId ?? entry.uuid)
+      const group = log.legacy.get(key)
+      if (group) group.last = summary
+      else log.legacy.set(key, { first: summary, last: summary })
+    }
+    transcript.add(entry, at)
   }
-  const responses = responsesByRequest(entries)
-  const transcript = transcriptMessages(entries)
+  transcript.finish()
+  log.boundaries.sort((a, b) => a - b)
+  if (bad > 0) warnings.push(`${path.basename(file)}: skipped ${bad} unreadable lines`)
+  return log
+}
+
+// undefined: not JSON; null: JSON but not an object, or a blank line.
+function parseLine(text: string): Entry | null | undefined {
+  if (text.trim() === "") return null
+  try {
+    const value: unknown = JSON.parse(text)
+    return isRecord(value) ? value : null
+  } catch {
+    return undefined
+  }
+}
+
+/** The lines of a file with their byte offsets, read a megabyte at a time. */
+async function* lines(file: string): AsyncGenerator<{ text: string; offset: number; length: number }> {
+  const handle = await open(file, "r")
+  try {
+    const buffer = Buffer.alloc(1 << 20)
+    let pending: Buffer[] = []
+    let start = 0
+    let position = 0
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position)
+      if (bytesRead === 0) break
+      let from = 0
+      for (let newline = buffer.indexOf(10, 0); newline !== -1 && newline < bytesRead; newline = buffer.indexOf(10, from)) {
+        const piece = buffer.subarray(from, newline)
+        const bytes = pending.length > 0 ? Buffer.concat([...pending, piece]) : piece
+        yield { text: bytes.toString("utf8"), offset: start, length: bytes.length }
+        pending = []
+        start = position + newline + 1
+        from = newline + 1
+      }
+      if (from < bytesRead) pending.push(Buffer.from(buffer.subarray(from, bytesRead)))
+      position += bytesRead
+    }
+    if (pending.length > 0) {
+      const bytes = Buffer.concat(pending)
+      yield { text: bytes.toString("utf8"), offset: start, length: bytes.length }
+    }
+  } finally {
+    await handle.close()
+  }
+}
+
+interface Location {
+  offset: number
+  length: number
+}
+
+/**
+ * How to rebuild one wire message from the log: which lines hold it and which
+ * form it takes (see transcript forms below). A message is found by Claude
+ * Code's hash of it, so any source with that hash rebuilds the same message.
+ */
+type Source =
+  | { form: "blob" | "blob-parts" | "message" | "role-content" | "role-parts" | "assistant"; at: Location }
+  | { form: "assistant-group" | "user-run"; at: Location[] }
+
+/** Where each message of every log file is, and how to read a block's content back once a request has used it. */
+class MessageStore {
+  private readonly files = new Map<string, FileMessages>()
+  /** Canonical block hash to where its message is. */
+  private readonly blocks = new Map<string, { messages: FileMessages; hash: string }>()
+
+  /** The messages of one file. Each file resolves its requests' messages from its own lines only. */
+  file(file: string): FileMessages {
+    const known = this.files.get(file)
+    if (known) return known
+    const messages = new FileMessages(file, (block, hash, owner) => this.blocks.set(block, { messages: owner, hash }))
+    this.files.set(file, messages)
+    return messages
+  }
+
+  /** The content of a block some file's records list by hash, read back from its log. */
+  content(blockHash: string): unknown {
+    const found = this.blocks.get(blockHash)
+    return found ? found.messages.block(found.hash).content : undefined
+  }
+}
+
+/** One file's messages, by Claude Code's hash: where each is, never its content. */
+class FileMessages {
+  private readonly sources = new Map<string, Source>()
+  // The few messages read last: a request's newest messages are read for its digest and again for its block.
+  private readonly recent = new Map<string, unknown>()
+
+  constructor(
+    readonly path: string,
+    private readonly onBlock: (blockHash: string, hash: string, owner: FileMessages) => void,
+  ) {}
+
+  /** A logged wire message. It wins over a transcript message with the same hash, as the log intends. */
+  addBlob(hash: string, message: unknown, at: Location) {
+    if (message === undefined) return
+    // Some blobs are logged with a string body while the message Claude Code hashed and sent had it as one text part.
+    const parts = isRecord(message) && typeof message.content === "string" && ccHash(message) !== hash && ccHash(asParts(message)) === hash
+    this.sources.set(hash, { form: parts ? "blob-parts" : "blob", at })
+    this.recent.delete(hash)
+  }
+
+  /** A message rebuilt from transcript records; never replaces a logged blob. */
+  addTranscript(hash: string, source: Source) {
+    const known = this.sources.get(hash)
+    if (known?.form === "blob" || known?.form === "blob-parts") return
+    this.sources.set(hash, source)
+  }
+
+  has(hash: string): boolean {
+    return this.sources.has(hash)
+  }
+
+  /** The message with Claude Code's hash `hash`, read from the log; undefined when no line has it. */
+  message(hash: string): unknown {
+    if (this.recent.has(hash)) return this.recent.get(hash)
+    const source = this.sources.get(hash)
+    if (!source) return undefined
+    const message = rebuild(this.path, source)
+    this.recent.set(hash, message)
+    if (this.recent.size > 8) this.recent.delete(this.recent.keys().next().value!)
+    return message
+  }
+
+  /** The canonical block of a message, without breakpoint, binary data elided. */
+  block(hash: string): Block {
+    const block = elideBinary(withoutBreakpoint(canonicalizeAnthropic({ messages: [this.message(hash)] }).blocks[0]!))
+    this.onBlock(block.hash, hash, this)
+    return block
+  }
+}
+
+function rebuild(file: string, source: Source): unknown {
+  const read = (at: Location) => readEntry(file, at)
+  if (Array.isArray(source.at)) {
+    const content = source.at.flatMap((at) => partsOf((read(at).message as Entry).content))
+    return { role: source.form === "user-run" ? "user" : "assistant", content }
+  }
+  const entry = read(source.at)
+  if (source.form === "blob") return entry.message
+  if (source.form === "blob-parts") return asParts(entry.message as Entry)
+  const message = entry.message as Entry
+  if (source.form === "message") return message
+  if (source.form === "role-content") return { role: message.role, content: message.content }
+  if (source.form === "role-parts") return { role: message.role, content: partsOf(message.content) }
+  return { role: "assistant", content: message.content }
+}
+
+function readEntry(file: string, at: Location): Entry {
+  const buffer = Buffer.alloc(at.length)
+  const fd = openSync(file, "r")
+  try {
+    readSync(fd, buffer, 0, at.length, at.offset)
+  } finally {
+    closeSync(fd)
+  }
+  return JSON.parse(buffer.toString("utf8")) as Entry
+}
+
+function partsOf(content: unknown): unknown[] {
+  return typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : []
+}
+
+function asParts(message: Entry): Entry {
+  return { ...message, content: [{ type: "text", text: message.content }] }
+}
+
+/**
+ * Indexes the messages rebuilt from the transcript, by Claude Code's message
+ * hash. Covers the forms the wire messages take: an assistant turn split
+ * across several records, a user string body sent as a text part, and
+ * consecutive user records sent as one message. Hashes of the joined forms are
+ * built up part by part as their records are read.
+ */
+class TranscriptIndex {
+  private readonly turns = new Map<string, { hash: JoinedHash; at: Location[] }>()
+  private run: { hash: JoinedHash; at: Location[] } | undefined
+
+  constructor(private readonly store: FileMessages) {}
+
+  add(entry: Entry, at: Location) {
+    if (!isRecord(entry.message)) return
+    const message = entry.message
+    if (entry.type === "assistant") {
+      this.flush()
+      const key = typeof entry.requestRef === "string" ? entry.requestRef : String(message.id ?? entry.uuid)
+      const turn = this.turns.get(key) ?? { hash: new JoinedHash(), at: [] }
+      this.turns.set(key, turn)
+      turn.hash.add(partsOf(message.content))
+      turn.at.push(at)
+      this.store.addTranscript(ccHash({ role: "assistant", content: message.content }), { form: "assistant", at })
+    }
+    if (entry.type === "user") {
+      this.run ??= { hash: new JoinedHash(), at: [] }
+      this.run.hash.add(partsOf(message.content))
+      this.run.at.push(at)
+      this.store.addTranscript(ccHash(message), { form: "message", at })
+      this.store.addTranscript(ccHash({ role: message.role, content: message.content }), { form: "role-content", at })
+      this.store.addTranscript(ccHash({ role: message.role, content: partsOf(message.content) }), { form: "role-parts", at })
+    }
+  }
+
+  finish() {
+    this.flush()
+    for (const turn of this.turns.values()) this.store.addTranscript(turn.hash.digest("assistant"), { form: "assistant-group", at: turn.at })
+  }
+
+  private flush() {
+    if (this.run && this.run.at.length > 1) this.store.addTranscript(this.run.hash.digest("user"), { form: "user-run", at: this.run.at })
+    this.run = undefined
+  }
+}
+
+/** Claude Code's hash of `{role, content: [...parts]}`, fed one record's parts at a time. */
+class JoinedHash {
+  private readonly hash = createHash("sha256").update('{"content":[')
+  private empty = true
+
+  add(parts: unknown[]) {
+    for (const part of parts) {
+      this.hash.update(`${this.empty ? "" : ","}${JSON.stringify(sortKeys(part)) ?? "null"}`)
+      this.empty = false
+    }
+  }
+
+  digest(role: string): string {
+    return this.hash.copy().update(`],"role":${JSON.stringify(role)}}`).digest("hex")
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Building records
+
+function fullRecords(log: Log, lane: string, store: FileMessages, onDemand: boolean, warnings: string[]): TraceRecord[] {
+  const requests = log.requests
   const byId = new Map(requests.map((request) => [request.id as string, request]))
   const memo = new Map<string, string[]>()
   const messageHashes = (id: string, seen = new Set<string>()): string[] => {
@@ -155,36 +417,36 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
     shapeMemo.set(hash, blocks)
     return blocks
   }
+  // On demand, message blocks are listed by hash only: their content stays in the log until the trace is written.
   const messageMemo = new Map<string, Block>()
   let unresolved = 0
   const messageBlock = (hash: string): Block => {
     const known = messageMemo.get(hash)
     if (known) return known
-    const message = blobs.get(hash) ?? transcript.get(hash)
-    if (message === undefined) unresolved++
+    if (!store.has(hash)) unresolved++
     // A message whose content is not in the log is still identified by its hash.
-    const block = message === undefined ? { kind: "message" as const, hash: `cc:${hash}` } : elideBinary(withoutBreakpoint(canonicalizeAnthropic({ messages: [message] }).blocks[0]!))
+    const block = store.has(hash) ? (onDemand ? withoutContent(store.block(hash)) : store.block(hash)) : { kind: "message" as const, hash: `cc:${hash}` }
     messageMemo.set(hash, block)
     return block
   }
-  const sessionHints = hintsByTime(entries)
+  const digests = new DigestChecker(store)
+  const sessionHints = hintsByTime(log.boundaries)
   let missingShape = 0
   let noResponse = 0
   let mismatched = 0
   let unverified = 0
   const records = requests.flatMap((request): TraceRecord[] => {
     const id = request.id as string
-    const response = responses.get(id)
+    const response = log.responses.get(id)
     if (!response) {
       noResponse++
       return []
     }
-    const shape = shapes.get(request.shapeHash as string)
+    const shape = log.shapes.get(request.shapeHash as string)
     if (!shape) missingShape++
     const hashes = messageHashes(id)
-    const messages = hashes.map((hash) => blobs.get(hash) ?? transcript.get(hash))
     const params = isRecord(request.params) ? request.params : {}
-    const check = shape && !messages.includes(undefined) ? verifyDigest(request, params, shape, messages) : "unverifiable"
+    const check = shape && hashes.every((hash) => store.has(hash)) ? digests.verify(request, params, shape, hashes) : "unverifiable"
     // A rebuilt request that does not match what Claude Code says it sent would
     // produce wrong diffs; keep its usage but do not claim to know the request.
     if (check === "mismatch") {
@@ -229,29 +491,103 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
   return records
 }
 
+function withoutContent(block: Block): Block {
+  const { content, ...rest } = block
+  return rest
+}
+
 /**
- * Claude Code records `requestDigest`, the SHA-256 of the key-sorted JSON of the
- * request body it sent ({...params, system, tools, messages} with cache_control
- * set at the logged paths). Rebuilding that body and matching the digest proves
- * the reconstruction is exactly the request.
+ * Checks requests against `requestDigest`, the SHA-256 of the key-sorted JSON of
+ * the request body Claude Code built ({...params, system, tools, messages} with
+ * cache_control set at the logged paths). A match proves the reconstruction is
+ * exactly that request.
+ *
+ * The body is hashed as it would be serialized, key by key and message by
+ * message. The hash state just before each marked message of a request is
+ * kept, and a request that extends it, with the same leading fields and the
+ * same messages and marks up to one of those points, hashes on from there, so
+ * the shared history of a long conversation is not hashed again for every
+ * request.
  */
-function verifyDigest(request: Entry, params: Entry, shape: Entry, messages: unknown[]): "verified" | "mismatch" | "unverifiable" {
-  if (typeof request.requestDigest !== "string") return "unverifiable"
-  const body: Entry = { ...params, system: shape.system, tools: shape.tools, messages }
-  for (const mark of Array.isArray(request.cacheControl) ? request.cacheControl : []) {
-    if (!isRecord(mark) || !Array.isArray(mark.path) || mark.path.length === 0) return "unverifiable"
-    // Copy only the nodes along the path, so the shared transcript messages are never mutated.
-    let node: Entry = body
-    for (const key of mark.path) {
+class DigestChecker {
+  private readonly saved = new Map<string, { lead: string; hashes: string[]; points: { count: number; marks: string; state: Hash }[] }>()
+  // The serialized fields after the messages (system, tools, the later params) for the last few shapes and marks.
+  private readonly tails = new Map<string, string | typeof MISMATCH>()
+
+  constructor(private readonly store: FileMessages) {}
+
+  verify(request: Entry, params: Entry, shape: Entry, hashes: string[]): "verified" | "mismatch" | "unverifiable" {
+    if (typeof request.requestDigest !== "string") return "unverifiable"
+    const marks = Array.isArray(request.cacheControl) ? request.cacheControl : []
+    if (marks.some((mark) => !isRecord(mark) || !Array.isArray(mark.path) || mark.path.length === 0)) return "unverifiable"
+    const body: Entry = { ...params, system: shape.system, tools: shape.tools, messages: hashes }
+    const keys = Object.keys(body)
+      .filter((key) => body[key] !== undefined)
+      .sort()
+    const paths = marks as { path: unknown[]; value?: unknown }[]
+    // A mark on a field the body does not have, or on a message it does not have, cannot have been set.
+    if (paths.some((mark) => !keys.includes(String(mark.path[0])))) return "mismatch"
+    const messageMarks = paths.filter((mark) => mark.path[0] === "messages")
+    if (messageMarks.some((mark) => mark.path.length > 1 && !(Number.isInteger(mark.path[1]) && (mark.path[1] as number) >= 0 && (mark.path[1] as number) < hashes.length))) return "mismatch"
+    const fields = (list: string[]) => {
+      const texts = list.map((key) => {
+        const value = withMarks(body[key], paths.filter((mark) => mark.path[0] === key), 1)
+        return value === MISMATCH ? MISMATCH : `${JSON.stringify(key)}:${JSON.stringify(sortKeys(value))}`
+      })
+      return texts.includes(MISMATCH) ? MISMATCH : texts.join(",")
+    }
+    const split = keys.indexOf("messages")
+    const before = fields(keys.slice(0, split))
+    const afterKeys = keys.slice(split + 1)
+    const tailKey = `${String(request.shapeHash)}\u0000${JSON.stringify(afterKeys.map((key) => (key === "system" || key === "tools" ? key : [key, body[key]])))}\u0000${JSON.stringify(paths.filter((mark) => mark.path[0] !== "messages"))}`
+    const after = this.tails.get(tailKey) ?? fields(afterKeys)
+    this.tails.set(tailKey, after)
+    if (this.tails.size > 16) this.tails.delete(this.tails.keys().next().value!)
+    if (before === MISMATCH || after === MISMATCH) return "mismatch"
+    const lead = `{${before}${split > 0 ? "," : ""}"messages":[`
+    // The marks on messages before `count`, which the serialization up to there depends on.
+    const marksBefore = (count: number) => JSON.stringify(messageMarks.filter((mark) => typeof mark.path[1] !== "number" || mark.path[1] < count))
+    const base = typeof request.base === "string" ? this.saved.get(request.base) : undefined
+    const resume =
+      base && base.lead === lead
+        ? base.points.find((point) => point.count <= hashes.length && point.marks === marksBefore(point.count) && base.hashes.slice(0, point.count).every((hash, index) => hashes[index] === hash))
+        : undefined
+    const state = resume ? resume.state.copy() : createHash("sha256").update(lead)
+    const points: { count: number; marks: string; state: Hash }[] = []
+    for (let index = resume ? resume.count : 0; index < hashes.length; index++) {
+      const at = messageMarks.filter((mark) => mark.path[1] === index)
+      if (at.length > 0) points.unshift({ count: index, marks: marksBefore(index), state: state.copy() })
+      const message = withMarks(this.store.message(hashes[index]!), at, 2)
+      if (message === MISMATCH) return "mismatch"
+      state.update(`${index === 0 ? "" : ","}${JSON.stringify(sortKeys(message))}`)
+    }
+    // Latest first: the longest shared history is tried first.
+    this.saved.set(request.id as string, { lead, hashes, points: [...points, ...(resume ? [resume] : [])] })
+    state.update(`]${afterKeys.length > 0 ? `,${after}` : ""}}`)
+    return state.digest("hex") === request.requestDigest ? "verified" : "mismatch"
+  }
+}
+
+const MISMATCH = Symbol("mismatch")
+
+/** `value` with cache_control set at each mark's path below `depth`, copying only the nodes along the paths; MISMATCH when a path does not exist. */
+function withMarks(value: unknown, marks: { path: unknown[]; value?: unknown }[], depth: number): unknown {
+  if (marks.length === 0) return value
+  let root: unknown = value
+  for (const mark of marks) {
+    if (!isRecord(root) && !Array.isArray(root)) return MISMATCH
+    root = Array.isArray(root) ? [...root] : { ...(root as Entry) }
+    let node = root as Entry
+    for (const key of mark.path.slice(depth)) {
       const child: unknown = node[key as string]
-      if (!isRecord(child) && !Array.isArray(child)) return "mismatch"
+      if (!isRecord(child) && !Array.isArray(child)) return MISMATCH
       const copy: unknown[] | Entry = Array.isArray(child) ? [...child] : { ...child }
       node[key as string] = copy
       node = copy as Entry
     }
-    node.cache_control = mark.value
+    node.cache_control = (mark as Entry).value
   }
-  return ccHash(body) === request.requestDigest ? "verified" : "mismatch"
+  return root
 }
 
 /** A call whose request could not be trusted: its usage alone. */
@@ -280,64 +616,6 @@ function laneOf(request: Entry, lane: string): string {
   return lane === "main" && typeof request.querySource === "string" && request.querySource !== "sdk" && request.querySource !== "repl_main_thread"
     ? request.querySource
     : lane
-}
-
-/** One response per API call: the last transcript record carrying its usage. */
-function responsesByRequest(entries: Entry[]): Map<string, Entry> {
-  const out = new Map<string, Entry>()
-  for (const entry of entries) {
-    if (entry.type !== "assistant" || typeof entry.requestRef !== "string") continue
-    if (!isRecord(entry.message) || !isRecord(entry.message.usage) || entry.message.model === "<synthetic>") continue
-    out.set(entry.requestRef, entry)
-  }
-  return out
-}
-
-/**
- * Messages rebuilt from the transcript, keyed by Claude Code's message hash.
- * Covers the forms the wire messages take: an assistant turn split across
- * several records, a user string body sent as a text part, and consecutive
- * user records sent as one message.
- */
-function transcriptMessages(entries: Entry[]): Map<string, unknown> {
-  const out = new Map<string, unknown>()
-  const add = (message: unknown) => out.set(ccHash(message), message)
-  const parts = (content: unknown) => (typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [])
-  const turns = new Map<string, Entry[]>()
-  let run: Entry[] = []
-  const flush = () => {
-    if (run.length > 1) add({ role: "user", content: run.flatMap((entry) => parts((entry.message as Entry).content)) })
-    run = []
-  }
-  for (const entry of entries) {
-    if (!isRecord(entry.message)) continue
-    if (entry.type === "assistant") {
-      flush()
-      const key = typeof entry.requestRef === "string" ? entry.requestRef : String(entry.message.id ?? entry.uuid)
-      turns.set(key, [...(turns.get(key) ?? []), entry])
-      add({ role: "assistant", content: entry.message.content })
-    }
-    if (entry.type === "user") {
-      run.push(entry)
-      add(entry.message)
-      add({ role: entry.message.role, content: entry.message.content })
-      add({ role: entry.message.role, content: parts(entry.message.content) })
-    }
-  }
-  flush()
-  for (const group of turns.values()) add({ role: "assistant", content: group.flatMap((entry) => parts((entry.message as Entry).content)) })
-  return out
-}
-
-/**
- * Some blobs are logged with a string body while the message Claude Code
- * hashed and sent had it as one text part. Returns the form whose hash is the
- * blob's key, so the rebuilt request is the one that was sent.
- */
-function wireForm(hash: string, message: unknown): unknown {
-  if (!isRecord(message) || typeof message.content !== "string" || ccHash(message) === hash) return message
-  const parts = { ...message, content: [{ type: "text", text: message.content }] }
-  return ccHash(parts) === hash ? parts : message
 }
 
 /** Claude Code's message hash: SHA-256 of JSON with keys sorted at every depth. */
@@ -406,11 +684,7 @@ function ttlOf(cacheControl: unknown): number | undefined {
 }
 
 /** Compaction boundaries in the transcript, attached to the first call after each. */
-function hintsByTime(entries: Entry[]): (ts: string) => Hint[] {
-  const boundaries = entries
-    .filter((entry) => entry.type === "system" && entry.subtype === "compact_boundary" && typeof entry.timestamp === "string")
-    .map((entry) => Date.parse(entry.timestamp as string))
-    .sort((a, b) => a - b)
+function hintsByTime(boundaries: number[]): (ts: string) => Hint[] {
   let previous = Number.NEGATIVE_INFINITY
   return (ts) => {
     const now = Date.parse(ts)
@@ -421,23 +695,15 @@ function hintsByTime(entries: Entry[]): (ts: string) => Hint[] {
 }
 
 /** Fallback for logs without request records: one usage-only record per assistant message. */
-function usageRecords(entries: Entry[], lane: string, warnings: string[]): TraceRecord[] {
-  const groups = new Map<string, Entry[]>()
-  for (const entry of entries) {
-    if (entry.type !== "assistant" || !isRecord(entry.message) || !isRecord(entry.message.usage)) continue
-    if (entry.message.model === "<synthetic>") continue
-    const key = String(entry.message.id ?? entry.requestId ?? entry.uuid)
-    groups.set(key, [...(groups.get(key) ?? []), entry])
-  }
-  const sessionHints = hintsByTime(entries)
-  if (groups.size === 0) warnings.push(`${lane}: no assistant responses with usage found`)
+function usageRecords(log: Log, lane: string, warnings: string[]): TraceRecord[] {
+  const sessionHints = hintsByTime(log.boundaries)
+  if (log.legacy.size === 0) warnings.push(`${lane}: no assistant responses with usage found`)
   // The request's breakpoints are not logged, but the usage says which TTL its
   // cache writes used; carry the last one seen forward per lane.
   const ttls = new Map<string, number>()
-  return [...groups.entries()].map(([id, group]): TraceRecord => {
-    const first = group[0]!
-    const last = group.at(-1)!
-    const message = last.message as Entry
+  return [...log.legacy.entries()].map(([id, group]): TraceRecord => {
+    const first = group.first
+    const message = group.last.message as Entry
     const ts = String(first.timestamp)
     const hints = sessionHints(ts)
     // Old logs kept sidechains inline in the main file; subagent files are already their own lane.
