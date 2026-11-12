@@ -17,17 +17,32 @@ There are four ways in:
 - **wrap** an Anthropic or OpenAI SDK client in your own harness (or `observe` calls from a custom client);
 - **test** prefix stability in CI with `prefixlens/test`, before a regression reaches your bill.
 
+## Status
+
+prefixlens 0.3 is unreleased and has so far run on one machine, Linux arm64 with Bun 1.4.0. It is meant to run on macOS too, and CI is set up to test it there, but it has not been run on macOS yet. What has been checked on real data: the `claude-code` importer, on Claude Code sessions from that machine (every rebuilt request matched the digest Claude Code logged, and call counts, token totals and costs matched an independent recount from the raw logs); the `codex` importer, on one real rollout file; and the recording proxy, live against OpenAI's Responses API with ChatGPT sign-in. The `opencode` and `otel` importers have been tested only on synthetic fixtures. The Anthropic paths of the proxy and of `wrap`, and `wrap` with the OpenAI SDK, have run only against a simulated upstream, never against the real APIs. The prices in `pricing.json` have not been checked independently (see [Pricing](#pricing)).
+
 ## Install
 
-prefixlens runs on [Bun](https://bun.sh) (1.1 or later) on Linux and macOS.
+prefixlens is not on a package registry yet; use it from a clone.
+
+Requirements: [Bun](https://bun.sh) 1.1 or later (developed and tested with 1.4.0), on Linux or macOS. It does not run on Node.js yet: the package's entry points are TypeScript sources and the proxy uses `Bun.serve`. There are no runtime dependencies.
 
 ```sh
-git clone <this repo> prefixlens && cd prefixlens
-bun install          # dev dependencies only; there are no runtime dependencies
-bun link             # optional: puts `prefixlens` on your PATH
+git clone <repository URL> prefixlens && cd prefixlens
+bun install              # dev dependencies only: TypeScript, Bun's types, and the two SDKs the tests wrap
+bun src/cli.ts --help    # the CLI, run from the checkout
 ```
 
-Without `bun link`, run `bun src/cli.ts` wherever this README says `prefixlens`.
+Run `bun src/cli.ts` wherever this README says `prefixlens`, or put `prefixlens` on your PATH with `bun link` (run in the checkout; it links to the checkout, so a `git pull` updates it).
+
+To use the library or `prefixlens/test` in another project, link the checkout into it:
+
+```sh
+cd prefixlens && bun link              # once, in the checkout
+cd ../your-project && bun link prefixlens
+```
+
+and add `"prefixlens": "link:prefixlens"` to that project's `devDependencies` so that `bun install` keeps the link. The project has to run on Bun (its tests with `bun test`), since prefixlens is imported as TypeScript.
 
 ## Quickstart: import an existing session
 
@@ -326,20 +341,32 @@ else trace.push(record)  // add hints (e.g. a prefix_break) before writing; seri
 
 Its signature is stable from 0.3: inputs may gain optional fields, never lose or change one.
 
-## Changes in 0.3
+## Changes
 
-- Parameters are judged per provider (SPEC 8.1). On OpenAI, `tool_choice` is no longer a cache-relevant parameter.
-- Trace format 1.1 adds the `prefix_break` hint. Declared breaks are reported as intentional and costed apart; `summary.misses` and `summary.cost.misses` no longer include them. A `compaction` or `model_switch` hint now declares a break too.
-- `allowBreak` without `after` reaches as far as its reason does: `"revert"` and `"refusal"` now keep the tools and system prompt (they allowed any change before). Pass `{ after: "start", reason }` for the old behaviour.
-- `cache_control` is stripped from OpenAI and Gemini tools and system parts as well, and non-string `system`/`instructions` values become a block instead of being dropped.
-- `buildRecord` is a public export.
+See [CHANGELOG.md](CHANGELOG.md).
+
+## Security and privacy
+
+A trace holds the full content of every request it records: your prompts, the system prompt, tool definitions, the code and files the agent read, tool outputs, and earlier replies sent back as history, plus request parameters as sent (including identifiers some harnesses put in the body, such as `metadata.user_id` or `user`). **Treat traces, and the HTML and JSON reports made from them, as sensitive, and never commit them.** Trace files get your default file permissions.
+
+What is never written: every request header except `session-id`, `anthropic-beta`, `anthropic-version` and `openai-beta`, so no `authorization`, `x-api-key`, `cookie`, organization, project or account header; and the content of responses (only their usage, id and model are kept). Error responses and calls that are not model calls are not written at all. The proxy, `wrap`, `lens.fetch`, `lens.observe` and `buildRecord` all build records with the same function, so this holds for each of them.
+
+The proxy forwards credentials to the provider unchanged, so it sees your API keys. It listens on `127.0.0.1` by default and has no authentication of its own. Binding it to another interface with `--host` sends your keys and prompts over plain HTTP and lets anyone who can reach the port send requests through it into your trace.
+
+prefixlens has no telemetry: its only network traffic is the proxy forwarding to the configured upstream, and `wrap`/`lens.fetch` passing requests to the client's own fetch.
+
+Details, and how to report a vulnerability, are in [SECURITY.md](SECURITY.md).
 
 ## Development
 
 ```sh
-bun test            # unit, adapter and CLI tests; fixtures are small and synthetic
+bun install
+bun test                                    # unit, adapter, CLI and privacy tests; fixtures are small and synthetic
 bun run typecheck
+cd examples/ci-prefix-test && bun test      # the CI example, which imports src/ through tsconfig paths
 ```
+
+CI (`.github/workflows/ci.yml`) runs these on Ubuntu and macOS with Bun 1.4.0, and fails if a trace, session log or credential is committed.
 
 Test fixtures are hand-written. Never commit real session logs or traces: they contain secrets and private code.
 
