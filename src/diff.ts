@@ -1,7 +1,7 @@
 // Diff engine: compares two requests block by block in prefix order, finds the
 // first block that changed, and names the change in plain words.
 
-import { canonicalJson, hashContent, isRecord } from "./canonical.ts"
+import { canonicalJson, hashContent, isItemReference, isRecord } from "./canonical.ts"
 import { IDENTIFYING_PARAMS, paramRule, type InvalidatesFrom } from "./params.ts"
 import { changedSpan, flatten, renderDiff } from "./textdiff.ts"
 import { prefixBlocks, type Block, type Hint } from "./trace.ts"
@@ -329,6 +329,14 @@ function explainEdit(before: Block, after: Block, position: number): PrefixChang
   const base = { region: "messages" as const, ...diffOf(before, after) }
   if (before.content === undefined || after.content === undefined)
     return { ...base, cause: "message_edited", summary: `message #${position} (${role}) changed (content not recorded)`, detail: { message: position, role } }
+  // Two references differ only in the stored item they name; nothing of either item is in the request.
+  if (isItemReference(before) && isItemReference(after) && isRecord(before.content) && isRecord(after.content))
+    return {
+      ...base,
+      cause: "message_edited",
+      summary: `message #${position} refers to another stored item (item_reference ${String(before.content.id)} → ${String(after.content.id)}); references are compared by id only`,
+      detail: { message: position, role, reference: true },
+    }
   const changed = changedParts(before.content, after.content)
   const kinds = new Set(changed.map((part) => part.kind))
   if (changed.length > 0 && [...kinds].every((kind) => kind === "tool_result")) {

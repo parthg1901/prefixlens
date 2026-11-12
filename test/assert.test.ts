@@ -114,6 +114,24 @@ describe("assertPrefixStable", () => {
     expect(assertPrefixStable(chat([user("One?"), assistant("One."), user("Two?")]), chat([assistant("One."), user("Two?")]), { allowBreak: { after: "system", reason: "history trimmed" } }).ok).toBe(true)
   })
 
+  test("item_reference items are compared by id, and the verdict says their content was not in the request", () => {
+    const reference = (id: string) => ({ type: "item_reference", id })
+    const first = responses([say("user", "Fix the synthetic bug."), reference("msg_synthetic_1")])
+    const second = responses([say("user", "Fix the synthetic bug."), reference("msg_synthetic_1"), reference("msg_synthetic_2"), say("user", "Go on.")])
+    const stable = assertPrefixStable(first, second)
+    expect(stable).toMatchObject({ stable: true, appended: 2, references: 1 })
+    expect(stable.message).toBe(
+      "prefix stable: all 6 blocks of the previous request are unchanged, and 2 blocks were appended; 1 of the unchanged blocks is an item_reference, compared by id only: the item it names was not in the request, so its content and size are unknown",
+    )
+    expect(assertPrefixStable(second, second).message).toEndWith("2 of the unchanged blocks are item_reference items, compared by id only: the items they name were not in the request, so their content and size are unknown")
+    // Without references the message is as it always was, and there is no count.
+    expect(assertPrefixStable(turn1, turn2)).not.toHaveProperty("references")
+    // Another id in the same place is a change, named for what it is.
+    const swapped = explainPrefixDiff(first, responses([say("user", "Fix the synthetic bug."), reference("msg_synthetic_9")]))
+    expect(swapped.stable).toBe(false)
+    expect(swapped.change?.summary).toBe("message #2 refers to another stored item (item_reference msg_synthetic_1 → msg_synthetic_9); references are compared by id only")
+  })
+
   test("a model change fails unless the break may start anywhere", () => {
     const other = responses(turn2.input, { model: "gpt-test-2" })
     expect(failure(turn2, other)).toContain("the model changed, so nothing in the cache applies")

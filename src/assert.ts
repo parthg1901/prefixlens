@@ -6,7 +6,7 @@
 // which block changed and how.
 
 import { changeStart, declaredBreaks, defaultAfter, describePosition, isPosition, keptBlocks, POSITIONS, type DeclaredBreak, type Position } from "./breaks.ts"
-import { canonicalizeRequest, type CanonicalRequest, type Provider } from "./canonical.ts"
+import { canonicalizeRequest, isItemReference, type CanonicalRequest, type Provider } from "./canonical.ts"
 import { comparePrefix, type Cause, type PrefixChange } from "./diff.ts"
 import { apiFromBody, PROVIDER_OF } from "./record/exchange.ts"
 import { prefixBlocks, type Block, type Hint, type TraceRecord } from "./trace.ts"
@@ -67,6 +67,12 @@ export interface PrefixExplanation {
   block?: ChangedBlock
   /** Set when the change was allowed: the reason given in `allowBreak`. */
   allowed?: string
+  /**
+   * How many of the unchanged blocks are OpenAI Responses `item_reference` items. They are compared
+   * by the id they name: the item itself was not in the request, so its content and size are unknown.
+   * Absent when there are none.
+   */
+  references?: number
   /** What to do about it. */
   fix?: string
   /** Plain-English explanation; the assertion's failure message. */
@@ -102,16 +108,23 @@ export function explainPrefixDiff(prev: RequestLike, next: RequestLike, options:
   const change = comparePrefix(before, { ...after, ...(hints.length > 0 ? { hints } : {}) })
   if (!change) {
     const appended = after.blocks.length - before.blocks.length
+    const references = before.blocks.filter(isItemReference).length
+    const byId =
+      references === 0
+        ? ""
+        : `; ${references} of the unchanged blocks ${references === 1 ? "is an item_reference, compared by id only: the item it names was not in the request, so its content and size are unknown" : "are item_reference items, compared by id only: the items they name were not in the request, so their content and size are unknown"}`
     return {
       stable: true,
       ok: true,
       appended,
       unchanged: before.blocks.length,
       change: null,
-      message: `prefix stable: all ${before.blocks.length} blocks of the previous request are unchanged${appended > 0 ? `, and ${appended} ${plural(appended, "block")} ${appended === 1 ? "was" : "were"} appended` : ""}`,
+      ...(references > 0 ? { references } : {}),
+      message: `prefix stable: all ${before.blocks.length} blocks of the previous request are unchanged${appended > 0 ? `, and ${appended} ${plural(appended, "block")} ${appended === 1 ? "was" : "were"} appended` : ""}${byId}`,
     }
   }
   const changedAt = changeStart(change, before.blocks)
+  const references = before.blocks.slice(0, changedAt).filter(isItemReference).length
   const covering = allowances.filter((entry) => changedAt >= keptBlocks(entry.after, before.blocks))
   const ok = covering.length > 0
   const block = change.block_index === undefined ? undefined : describeBlock(before.blocks, after.blocks, change.block_index)
@@ -128,6 +141,7 @@ export function explainPrefixDiff(prev: RequestLike, next: RequestLike, options:
     change,
     ...(block ? { block } : {}),
     ...(ok ? { allowed: reason } : {}),
+    ...(references > 0 ? { references } : {}),
     ...(fix ? { fix } : {}),
     message: ok
       ? `prefix changed at block ${changedAt + 1}, allowed (${reason}): ${change.summary}`

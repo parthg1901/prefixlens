@@ -1,7 +1,7 @@
 // Turns a trace into per-call results: hit rate, cost, whether the call missed
 // a cache it should have hit, and why.
 
-import { isRecord } from "./canonical.ts"
+import { isItemReference, isRecord } from "./canonical.ts"
 import { coveringBreaks, declaredBreaks, describePosition, keptBlocks, type DeclaredBreak } from "./breaks.ts"
 import { CAUSE_GROUP, comparePrefix, type Cause, type CauseGroup, type PrefixChange, type Region } from "./diff.ts"
 import { resolvePrice, type CatalogueTable, type PriceSources, type Resolution } from "./catalogue.ts"
@@ -551,6 +551,7 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
   const learnt = [...steps]
     .filter(([, tokens]) => tokens !== IMPLICIT_STEP_TOKENS)
     .map(([key, tokens]) => ({ provider: key.split("\u0000")[0]!, model: key.split("\u0000")[1]!, tokens }))
+  const referring = records.filter((record) => record.request?.blocks.some(isItemReference)).length
   const warm = turns.filter((turn) => turn.warm_start).length
   const notes = [
     ...(warm > 0
@@ -565,6 +566,11 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
     ...(partlyUnknown > 0
       ? [
           `${partlyUnknown} of ${turns.length} calls were sent with a block whose content the log does not record (for Claude Code, the billing-attribution line it puts first in the system prompt), so their system prompt is partly unknown: a change confined to that block cannot be seen, and a miss it caused reads as one with the prefix intact. Every other block is compared as usual.`,
+        ]
+      : []),
+    ...(referring > 0
+      ? [
+          `${referring} of ${turns.length} calls sent item_reference items (earlier output named by id, which the provider fills in from what it stored). They are compared by id only: the items were not in the request, so their content and size are unknown, and a change inside one cannot be seen.`,
         ]
       : []),
     ...(cutOff.length > 0

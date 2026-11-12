@@ -378,6 +378,15 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : []
 }
 
+/**
+ * True for an OpenAI Responses `item_reference` input item: earlier output the request names by id
+ * instead of sending (what a client sends for stored responses). Its block holds the id only, so two
+ * requests can be compared on it, but what it stands for, and how large that is, is not in the request.
+ */
+export function isItemReference(block: Block): boolean {
+  return isRecord(block.content) ? block.content.type === "item_reference" : block.kind === "message" && block.key === "item_reference"
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }

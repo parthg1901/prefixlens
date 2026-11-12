@@ -259,6 +259,17 @@ describe("a break after the tools and the first system parts", () => {
   })
 })
 
+describe("item_reference items in a recorded trace", () => {
+  test("the report notes that they are compared by id only", () => {
+    const reference = { type: "item_reference", id: "msg_synthetic_1" }
+    const result = run([openai(h1, 4000, 0), openai([...h1, reference, say("user", "Go on.")], 4300, 3968)])
+    expect(result.turns[1]!.status).toBe("hit")
+    expect(result.summary.notes).toContain(
+      "1 of 2 calls sent item_reference items (earlier output named by id, which the provider fills in from what it stored). They are compared by id only: the items were not in the request, so their content and size are unknown, and a change inside one cannot be seen.",
+    )
+  })
+})
+
 describe("reading declarations", () => {
   const line = (hints: unknown) => JSON.stringify({ v: 1, ts: "2026-01-01T10:00:00Z", provider: "openai", model: "m", fidelity: "usage-only", usage: usage(1, 0, null), hints })
 

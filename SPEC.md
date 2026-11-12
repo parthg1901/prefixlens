@@ -104,6 +104,8 @@ Within each group, blocks keep the order of the request:
 | OpenAI Responses | each element of `tools` | `instructions` (one block, absent when `instructions` is absent or `null`), then each leading `input` item whose role is `system` or `developer` | the other `input` items |
 | Gemini | each entry of `tools[].functionDeclarations`; other tool entries (e.g. `{"googleSearch": {}}`) whole | each part of `systemInstruction.parts` | each element of `contents` |
 
+An OpenAI Responses `item_reference` input item (`{"type": "item_reference", "id": "…"}`, earlier output the request names by id and the provider fills in from what it stored) is one message block like any other input item, with `key` `"item_reference"` and the reference as its content. Two requests compare equal on it when the id is the same. The item it names was not in the request: its content and its size are unknown to the trace, and a reader SHOULD say so when it reports on a request that has one (prefixlens counts such blocks in the assertion's message and notes them in a report). A reader MUST NOT fetch or guess the content.
+
 "Leading" means before the first element with any other role; a system or developer message later in the conversation is a message block, so the order rule holds.
 
 A tool sent with deferred loading keeps its place among the tool blocks and is marked `deferred` (section 4.1); it is listed, but is not part of the prefix.
