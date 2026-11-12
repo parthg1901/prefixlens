@@ -342,3 +342,7 @@ bun run typecheck
 ```
 
 Test fixtures are hand-written. Never commit real session logs or traces: they contain secrets and private code.
+
+## Licence
+
+MIT; see `LICENSE`.
