@@ -11,7 +11,7 @@ import { loadPricing } from "./pricing.ts"
 import { renderHtml } from "./report/html.ts"
 import { renderJson } from "./report/json.ts"
 import { renderTerminal } from "./report/terminal.ts"
-import { parseTrace, serializeTrace } from "./trace.ts"
+import { parseTrace, readableByOthers, serializeTrace, writePrivateFile } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
 import pkg from "../package.json" with { type: "json" }
 
@@ -38,6 +38,9 @@ record options:
   --host <address>      address to listen on (default 127.0.0.1)
   -o, --out <file>      trace to append to (default prefixlens.trace.jsonl)
   --upstream <url>      where to forward (default https://api.anthropic.com or https://api.openai.com)
+  --allow-origin <o>    let browser pages from these origins (comma-separated, or *) call the proxy
+  --keep-identifiers    keep metadata, user, safety_identifier and client_metadata in params
+  --keep-binary         keep base64 images, documents and audio instead of their SHA-256 and size
   --quiet               do not print a line per recorded call
 
 report options:
@@ -72,8 +75,8 @@ Examples:
 
 type Flags = Record<string, string | true>
 
-const VALUE_FLAGS = new Set(["out", "session", "pricing", "tolerance", "provider", "port", "host", "upstream", "from", "date", "catalogue-provider"])
-const KNOWN_FLAGS = new Set([...VALUE_FLAGS, "list", "no-subagents", "json", "html", "all", "no-color", "no-catalogue", "quiet", "help", "version"])
+const VALUE_FLAGS = new Set(["out", "session", "pricing", "tolerance", "provider", "port", "host", "upstream", "allow-origin", "from", "date", "catalogue-provider"])
+const KNOWN_FLAGS = new Set([...VALUE_FLAGS, "list", "no-subagents", "json", "html", "all", "no-color", "no-catalogue", "keep-identifiers", "keep-binary", "quiet", "help", "version"])
 const ALIASES: Record<string, string> = { o: "out", h: "help", v: "version" }
 
 export async function main(argv: string[]): Promise<number> {
@@ -164,10 +167,12 @@ async function runImport(args: string[], flags: Flags): Promise<number> {
   if (result.records.length === 0) return fail(`no model calls with usage found in ${input}; nothing written`)
   const text = serializeTrace(result.records)
   if (typeof flags.out === "string") {
-    await Bun.write(flags.out, text)
+    const shared = readableByOthers(flags.out)
+    writePrivateFile(flags.out, text)
+    if (shared) console.error(`warning: ${flags.out} already existed and other users can read it; its permissions were kept (chmod 600 to make it private)`)
     const full = result.records.filter((record) => record.fidelity === "full-request").length
     const verified = result.records.filter((record) => record.source?.request === "verified").length
-    const check = verified > 0 ? `; ${verified} checked against the request digest the harness logged` : ""
+    const check = verified > 0 ? `; ${verified} matched the digest the harness logged of the request it built` : ""
     console.error(`wrote ${result.records.length} records (${full} full-request, ${result.records.length - full} usage-only${check}) to ${flags.out}`)
   } else process.stdout.write(text)
   return 0
@@ -212,7 +217,7 @@ async function runReport(args: string[], flags: Flags): Promise<number> {
   const title = input === "-" ? "stdin" : path.basename(input)
   if (flags.html) {
     const out = typeof flags.html === "string" ? flags.html : `${input === "-" ? "prefixlens-report" : input.replace(/\.jsonl?$/, "")}.html`
-    await Bun.write(out, renderHtml(analysis, { title, pricingNote, generatedAt: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC" }))
+    writePrivateFile(out, renderHtml(analysis, { title, pricingNote, generatedAt: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC" }))
     console.error(`wrote ${out}`)
   }
   if (flags.json) process.stdout.write(renderJson(analysis, { trace: input, pricing: { source: pricingSource, ...(pricing.as_of ? { as_of: pricing.as_of } : {}), ...(catalogue ? { catalogue: { source: "models.dev", fetched_at: catalogue.fetched_at } } : {}) } }))
@@ -244,6 +249,9 @@ async function runRecord(flags: Flags): Promise<number> {
     trace,
     ...(typeof flags.host === "string" ? { hostname: flags.host } : {}),
     ...(typeof flags.upstream === "string" ? { upstream: flags.upstream } : {}),
+    ...(typeof flags["allow-origin"] === "string" ? { allowedOrigins: flags["allow-origin"].split(",").map((origin) => origin.trim()).filter(Boolean) } : {}),
+    ...(flags["keep-identifiers"] === true ? { keepIdentifiers: true } : {}),
+    ...(flags["keep-binary"] === true ? { keepBinary: true } : {}),
     onRecord: (record) => {
       count++
       if (quiet) return

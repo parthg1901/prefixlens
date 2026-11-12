@@ -35,7 +35,7 @@ describe("cli", () => {
     const trace = path.join(temp, "session.trace.jsonl")
     const imported = run(["import", "claude-code", path.join(fixtures, "claude-code-session.jsonl"), "-o", trace])
     expect(imported.code).toBe(0)
-    expect(imported.stderr).toContain("wrote 5 records (3 full-request, 2 usage-only; 3 checked against the request digest the harness logged)")
+    expect(imported.stderr).toContain("wrote 5 records (3 full-request, 2 usage-only; 3 matched the digest the harness logged of the request it built)")
     const report = run(["report", trace])
     expect(report.code).toBe(0)
     expect(report.stdout).toContain("turn 5: miss, tool list changed (+1 tool: 2 → 3), ~$0.02")
