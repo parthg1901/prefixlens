@@ -174,6 +174,41 @@ describe("comparePrefix", () => {
     expect(change?.summary).toContain("2026-01-01 → 2026-01-02")
   })
 
+  test("a relative date rendered again is a dynamic value, in the system prompt and in a message", () => {
+    const system = (text: string) => view(body(history, { system: [{ type: "text", text: SYSTEM }, { type: "text", text }] }))
+    const today = comparePrefix(system("Date: Nov 10, 2026 (today)\n* The user said hello."), system("Date: Nov 10, 2026 (yesterday)\n* The user said hello."))
+    expect(today).toMatchObject({ cause: "system_dynamic_value", summary: "system prompt changed: a relative date value was updated (today → yesterday)", detail: { part: 2, dynamic: "relative date" } })
+    // One digit changes; the words around it say it is a relative time.
+    const ago = comparePrefix(system("The user last wrote 2 hours ago."), system("The user last wrote 3 hours ago."))
+    expect(ago?.summary).toBe("system prompt changed: a relative date value was updated (2 hours ago → 3 hours ago)")
+    const ahead = comparePrefix(system("The build is due in 1 day."), system("The build is due in 2 days."))
+    expect(ahead?.summary).toBe("system prompt changed: a relative date value was updated (in 1 day → in 2 days)")
+    const note = (when: string) => view(body([user(`<note>Written ${when}: the user prefers short answers.</note>\nHello.`), ...history.slice(1)]))
+    expect(comparePrefix(note("today"), note("yesterday"))).toMatchObject({ cause: "message_dynamic_value", summary: "message #1 (user) edited: a relative date value was updated (today → yesterday)" })
+  })
+
+  test("a changed number that is not part of a relative date is a plain edit", () => {
+    const system = (text: string) => view(body(history, { system: [{ type: "text", text: SYSTEM }, { type: "text", text }] }))
+    expect(comparePrefix(system("Seen today: 5 files."), system("Seen today: 6 files."))?.cause).toBe("system_changed")
+    expect(comparePrefix(system("Answer in English."), system("Answer in French."))?.summary).toBe("system prompt changed (part 2 of 2 edited)")
+  })
+
+  test("parts put ahead of parts already sent are an insertion, wherever a merge left them", () => {
+    const part = (text: string) => ({ type: "text", text })
+    const first = [{ role: "user", content: [part("question 5")] }, assistant("answer 5"), user("question 6")]
+    const withParts = (parts: unknown[]) => view(body([{ role: "user", content: parts }, ...first.slice(1), assistant("answer 6")]))
+    // A recalled message inserted before the first user message and sent merged with it.
+    const front = comparePrefix(view(body(first)), withParts([part("question 1 (recalled)"), part("question 5")]))
+    expect(front).toMatchObject({ cause: "message_inserted", detail: { message: 1, role: "user", parts_added: 1, at: "start" } })
+    expect(front?.summary).toBe("1 part inserted at the start of message #1 (user), ahead of content already sent; a message inserted before it and merged into it looks like this")
+    const two = [{ role: "user", content: [part("a"), part("b")] }, ...first.slice(1)]
+    const middle = comparePrefix(view(body(two)), view(body([{ role: "user", content: [part("a"), part("new"), part("b")] }, ...first.slice(1)])))
+    expect(middle?.summary).toStartWith("1 part inserted into message #1 (user), ahead of content already sent")
+    // New parts after the old ones are an append, as before.
+    const appended = comparePrefix(view(body(first)), withParts([part("question 5"), part("afterthought")]))
+    expect(appended).toMatchObject({ cause: "message_edited", summary: "message #1 (user) was edited after it was sent: 1 part appended" })
+  })
+
   test("a message removed from history", () => {
     const change = comparePrefix(view(body(history)), view(body([history[0], history[2], history[3]])))
     expect(change?.cause).toBe("message_removed")

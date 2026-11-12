@@ -237,10 +237,10 @@ function explainSystem(prevBlocks: Block[], nextBlocks: Block[]): PrefixChange {
   return {
     cause: dynamic ? "system_dynamic_value" : "system_changed",
     summary: dynamic
-      ? `system prompt changed: a ${dynamic} value was updated (${quoteShort(dynamicSpan(before, after))})`
+      ? `system prompt changed: a ${dynamic.label} value was updated (${quoteShort(`${dynamic.from} → ${dynamic.to}`)})`
       : `system prompt changed (part ${position + 1} of ${next.length} edited)`,
     region: "system",
-    detail: { part: position + 1, ...(dynamic ? { dynamic } : {}) },
+    detail: { part: position + 1, ...(dynamic ? { dynamic: dynamic.label } : {}) },
     ...diffOf(before, after),
   }
 }
@@ -357,13 +357,23 @@ function explainEdit(before: Block, after: Block, position: number): PrefixChang
       summary: `message #${position} (${role}) edited: ${binary}`,
       detail: { message: position, role, binary: true },
     }
+  // Parts put ahead of parts already sent: what a message inserted into history looks like once the SDK or the
+  // provider has merged it with the message after it (consecutive user messages are sent as one).
+  const ahead = partsAhead(before.content, after.content)
+  if (ahead)
+    return {
+      ...base,
+      cause: "message_inserted",
+      summary: `${ahead.count} ${plural(ahead.count, "part")} inserted ${ahead.leading ? "at the start of" : "into"} message #${position} (${role}), ahead of content already sent; a message inserted before it and merged into it looks like this`,
+      detail: { message: position, role, parts_added: ahead.count, at: ahead.leading ? "start" : "middle" },
+    }
   const dynamic = dynamicValue(before, after)
   if (dynamic)
     return {
       ...base,
       cause: "message_dynamic_value",
-      summary: `message #${position} (${role}) edited: a ${dynamic} value was updated (${quoteShort(dynamicSpan(before, after))})`,
-      detail: { message: position, role, dynamic },
+      summary: `message #${position} (${role}) edited: a ${dynamic.label} value was updated (${quoteShort(`${dynamic.from} → ${dynamic.to}`)})`,
+      detail: { message: position, role, dynamic: dynamic.label },
     }
   const added = changed.filter((part) => part.sizeBefore === 0).length
   const removed = changed.filter((part) => part.sizeAfter === 0).length
@@ -476,9 +486,26 @@ function reshape(prev: Block[], next: Block[], index: number): PrefixChange | un
 
 type PartKind = "tool_result" | "thinking" | "other"
 
+// The parts of a message: its `content` array (Gemini: `parts`), else the message itself as one part.
+function partList(content: unknown): unknown[] {
+  return isRecord(content) && Array.isArray(content.content) ? content.content : isRecord(content) && Array.isArray(content.parts) ? content.parts : [content]
+}
+
+/**
+ * When a message kept every part it was sent with and gained new ones placed before at least one of
+ * them: how many, and whether they all come before the first part already sent. Undefined when a
+ * part was removed or changed, or when the new parts only follow the old ones (an append).
+ */
+function partsAhead(before: unknown, after: unknown): { count: number; leading: boolean } | undefined {
+  const old = new Set(partList(before).map((part) => canonicalJson(part)))
+  const kept = partList(after).map((part) => old.has(canonicalJson(part)))
+  if (kept.filter(Boolean).length !== old.size || partList(before).length !== old.size) return undefined
+  const count = kept.slice(0, kept.lastIndexOf(true)).filter((sent) => !sent).length
+  return count === 0 ? undefined : { count, leading: kept.indexOf(true) === count }
+}
+
 function changedParts(before: unknown, after: unknown) {
-  const list = (content: unknown): unknown[] =>
-    isRecord(content) && Array.isArray(content.content) ? content.content : isRecord(content) && Array.isArray(content.parts) ? content.parts : [content]
+  const list = partList
   const kindOf = (message: unknown, part: unknown): PartKind => {
     const type = isRecord(part) ? part.type : undefined
     if (type === "tool_result" || type === "function_call_output" || (isRecord(part) && "functionResponse" in part)) return "tool_result"
@@ -516,7 +543,13 @@ const DYNAMIC_PATTERNS: [string, RegExp][] = [
   ["timestamp", /\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}(:\d{2})?|^\d{10,13}$/],
   ["date", /\b(mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i],
   ["unique id", /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|\b[0-9a-f]{16,}\b/i],
+  ["relative date", /^(today|yesterday|tomorrow|tonight|(this|last|next) (morning|afternoon|evening|night|week|month|year))$/i],
 ]
+
+// A relative date or time rendered again later: "2 hours ago", "in 3 days", "a week ago".
+const RELATIVE_UNIT = "(?:second|minute|hour|day|week|month|year)s?"
+const RELATIVE_COUNT = "(?:\\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|a few|several)"
+const RELATIVE_PHRASE = new RegExp(`\\b${RELATIVE_COUNT} ${RELATIVE_UNIT} ago\\b|\\bin ${RELATIVE_COUNT} ${RELATIVE_UNIT}\\b`, "gi")
 
 const BINARY_MARKER = /<binary (?:([^,>]+), )?(\d+) bytes, sha256 ([0-9a-f]{64})>/g
 
@@ -536,22 +569,28 @@ function binaryChange(before: Block, after: Block): string | undefined {
 
 /**
  * When the only difference between two blocks is a short span that looks like
- * a clock reading or a fresh identifier, names what kind of value it was.
+ * a clock reading, a date (absolute or relative) or a fresh identifier: what
+ * kind of value it was, and the value before and after.
  */
-function dynamicValue(before: Block, after: Block): string | undefined {
+function dynamicValue(before: Block, after: Block): { label: string; from: string; to: string } | undefined {
   if (before.content === undefined || after.content === undefined) return undefined
   const span = spanAround(flatten(before.content).join("\n"), flatten(after.content).join("\n"))
   if (span.a.length > 64 || span.b.length > 64) return undefined
-  for (const [label, pattern] of DYNAMIC_PATTERNS) if (pattern.test(span.a) && pattern.test(span.b)) return label
+  for (const [label, pattern] of DYNAMIC_PATTERNS) if (pattern.test(span.a) && pattern.test(span.b)) return { label, from: span.a, to: span.b }
+  // "2 hours ago" and "3 hours ago" differ in one digit: the phrase around the changed span says what it is.
+  const from = phraseAt(span.lead + span.a + span.trail, span.lead.length, span.a.length)
+  const to = phraseAt(span.lead + span.b + span.trail, span.lead.length, span.b.length)
+  return from !== undefined && to !== undefined ? { label: "relative date", from, to } : undefined
+}
+
+// The relative-date phrase in `text` that covers the changed span starting at `start`, if there is one.
+function phraseAt(text: string, start: number, length: number): string | undefined {
+  for (const match of text.matchAll(RELATIVE_PHRASE)) if (match.index <= start && match.index + match[0].length >= start + length) return match[0]
   return undefined
 }
 
-function dynamicSpan(before: Block, after: Block): string {
-  const span = spanAround(flatten(before.content).join("\n"), flatten(after.content).join("\n"))
-  return `${span.a} → ${span.b}`
-}
-
-// The changed span widened to whole tokens, so "10:41" vs "10:42" reads as a time, not "1" vs "2".
+// The changed span widened to whole tokens, so "10:41" vs "10:42" reads as a time, not "1" vs "2",
+// with the few words on either side of it (the same in both texts).
 function spanAround(a: string, b: string) {
   const span = changedSpan(a, b)
   const token = /[\w:.\-\/+]/
@@ -564,7 +603,8 @@ function spanAround(a: string, b: string) {
     endB++
   }
   const trim = (text: string) => text.replace(/[.,:;]+$/, "")
-  return { a: trim(a.slice(start, endA)), b: trim(b.slice(start, endB)) }
+  const [wordA, wordB] = [trim(a.slice(start, endA)), trim(b.slice(start, endB))]
+  return { a: wordA, b: wordB, lead: a.slice(Math.max(0, start - 12), start), trail: a.slice(start + wordA.length, start + wordA.length + 24) }
 }
 
 function changedParams(prev: Record<string, unknown>, next: Record<string, unknown>, provider: string | undefined): string[] {
