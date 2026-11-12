@@ -3,11 +3,21 @@ import path from "node:path"
 import { analyze } from "../src/analyze.ts"
 import { paramRule } from "../src/params.ts"
 import { parsePricing } from "../src/pricing.ts"
-import { parseTrace } from "../src/trace.ts"
+import { parseTrace, TRACE_FORMAT_VERSION } from "../src/trace.ts"
 import { TEST_PRICING } from "./helpers.ts"
 
 // SPEC.md is what other implementations build from, so its example must stay a valid trace.
 const spec = await Bun.file(path.join(import.meta.dir, "..", "SPEC.md")).text()
+
+describe("SPEC.md version", () => {
+  test("the title, the record table and the code name the same format version", () => {
+    expect(spec.match(/^# prefixlens trace format, version (\d+\.\d+)$/m)?.[1]).toBe(TRACE_FORMAT_VERSION)
+    expect(spec).toContain(`Always \`1\` for this document (${TRACE_FORMAT_VERSION});`)
+    // Each earlier minor version is named as still valid, and the newest has its paragraph of additions.
+    expect(spec).toContain(`is a valid ${TRACE_FORMAT_VERSION} trace`)
+    expect(spec).toContain(`Version ${TRACE_FORMAT_VERSION} adds`)
+  })
+})
 
 describe("SPEC.md example", () => {
   test("the JSONL example parses with matching hashes and reports the stated cause", () => {

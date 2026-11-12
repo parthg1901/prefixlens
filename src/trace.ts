@@ -10,7 +10,7 @@ import { hashContent, isRecord } from "./canonical.ts"
 /** The `v` every record carries: the major version of the format. */
 export const TRACE_VERSION = 1
 /** The version of SPEC.md this reader implements. Minor versions only add optional fields, so every 1.x trace reads as `v: 1`. */
-export const TRACE_FORMAT_VERSION = "1.2"
+export const TRACE_FORMAT_VERSION = "1.3"
 
 export type Fidelity = "full-request" | "usage-only"
 export type Billing = "per_token" | "subscription"
@@ -36,7 +36,7 @@ export interface Block {
   /**
    * True for a tool the request sent with deferred loading (Anthropic `defer_loading: true`): the provider keeps
    * it out of the rendered prompt until tool search returns it, so it is recorded but is not part of the cached
-   * prefix (SPEC 4.1). `prefixBlocks` leaves such blocks out.
+   * prefix (SPEC 4.1). `prefixBlocks` leaves such blocks out. Format 1.3.
    */
   deferred?: boolean
 }
