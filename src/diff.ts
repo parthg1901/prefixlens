@@ -328,6 +328,14 @@ function explainEdit(before: Block, after: Block, position: number): PrefixChang
       summary: `reasoning blocks in message #${position} were changed or dropped on replay`,
       detail: { message: position, role, parts: changed.length },
     }
+  const binary = binaryChange(before, after)
+  if (binary)
+    return {
+      ...base,
+      cause: "message_edited",
+      summary: `message #${position} (${role}) edited: ${binary}`,
+      detail: { message: position, role, binary: true },
+    }
   const dynamic = dynamicValue(before, after)
   if (dynamic)
     return {
@@ -458,6 +466,22 @@ const DYNAMIC_PATTERNS: [string, RegExp][] = [
   ["date", /\b(mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i],
   ["unique id", /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|\b[0-9a-f]{16,}\b/i],
 ]
+
+const BINARY_MARKER = /<binary (?:([^,>]+), )?(\d+) bytes, sha256 ([0-9a-f]{64})>/g
+
+/** When the blocks differ only in elided binary data (SPEC 4.5): which part changed, by media type and digest. */
+function binaryChange(before: Block, after: Block): string | undefined {
+  if (!before.elided && !after.elided) return undefined
+  const text = (block: Block) => flatten(block.content).join("\n")
+  const [a, b] = [text(before), text(after)]
+  if (a.replace(BINARY_MARKER, "<binary>") !== b.replace(BINARY_MARKER, "<binary>")) return undefined
+  const markers = (value: string) => [...value.matchAll(BINARY_MARKER)]
+  const [old, now] = [markers(a), markers(b)]
+  const index = old.findIndex((marker, position) => marker[0] !== now[position]?.[0])
+  if (index === -1) return undefined
+  const [from, to] = [old[index]!, now[index]!]
+  return `binary part ${index + 1} changed (${to[1] ?? "data"}, ${number(Number(from[2]))} → ${number(Number(to[2]))} bytes, sha256 ${from[3]!.slice(0, 12)} → ${to[3]!.slice(0, 12)})`
+}
 
 /**
  * When the only difference between two blocks is a short span that looks like

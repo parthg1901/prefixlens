@@ -25,6 +25,8 @@ export interface LensOptions {
   lane?: string
   /** Keep identifying request fields (`metadata`, `user`, `safety_identifier`, `client_metadata`) in `params`. Default false: they are left out. */
   keepIdentifiers?: boolean
+  /** Keep base64 images, documents, audio and files in the trace instead of their SHA-256 and size. Default false. */
+  keepBinary?: boolean
 }
 
 export interface Observation {
@@ -66,6 +68,7 @@ export function createLens(options: LensOptions = {}): Lens {
     ...(options.session ? { session: options.session } : {}),
     ...(options.lane ? { lane: options.lane } : {}),
     ...(options.keepIdentifiers ? { keepIdentifiers: true } : {}),
+    ...(options.keepBinary ? { keepBinary: true } : {}),
   }
   const recorder = new Recorder({ ...shared, name: "observe" })
   return {

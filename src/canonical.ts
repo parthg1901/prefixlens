@@ -149,6 +149,70 @@ export function canonicalizeGemini(body: Record<string, unknown>): CanonicalRequ
 }
 
 /**
+ * The block with the binary data inside its content (base64 images, documents,
+ * audio and files, as each provider's part types carry them) replaced by a
+ * string naming its SHA-256 and size, and `elided` set. The hash stays that of
+ * the content as sent, so the block compares equal with the same block written
+ * in full, and a changed image still changes the hash. Blocks without binary
+ * data are returned as they are.
+ */
+export function elideBinary(block: Block): Block {
+  if (block.content === undefined) return block
+  let found = false
+  const walk = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(walk)
+    if (!isRecord(value)) return value
+    const replaced = replaceBinary(value)
+    if (replaced) {
+      found = true
+      return replaced
+    }
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, walk(child)]))
+  }
+  const content = walk(block.content)
+  return found ? { ...block, content, elided: true } : block
+}
+
+// The part shapes that carry binary data, and where: Anthropic image/document sources, OpenAI Responses
+// input_image/input_file, Chat Completions image_url/input_audio/file, Gemini inlineData.
+function replaceBinary(part: Record<string, unknown>): Record<string, unknown> | undefined {
+  const at = (object: unknown, key: string, transform: (text: string) => string | undefined) => {
+    if (!isRecord(object) || typeof object[key] !== "string") return undefined
+    const next = transform(object[key])
+    return next === undefined ? undefined : { ...object, [key]: next }
+  }
+  const nested = (key: string, field: string, transform: (text: string) => string | undefined) => {
+    const inner = at(part[key], field, transform)
+    return inner === undefined ? undefined : { ...part, [key]: inner }
+  }
+  if (isRecord(part.source) && part.source.type === "base64") return nested("source", "data", (data) => binaryMarker(data, stringOf(part.source, "media_type")))
+  if (part.type === "input_image") return at(part, "image_url", dataUrlMarker)
+  if (part.type === "input_file") return at(part, "file_data", (data) => dataUrlMarker(data) ?? binaryMarker(data))
+  if (part.type === "image_url") return nested("image_url", "url", dataUrlMarker)
+  if (part.type === "input_audio") return nested("input_audio", "data", (data) => binaryMarker(data, stringOf(part.input_audio, "format")))
+  if (part.type === "file") return nested("file", "file_data", (data) => dataUrlMarker(data) ?? binaryMarker(data))
+  for (const key of ["inlineData", "inline_data"])
+    if (isRecord(part[key])) return nested(key, "data", (data) => binaryMarker(data, stringOf(part[key], "mimeType") ?? stringOf(part[key], "mime_type")))
+  return undefined
+}
+
+/** "<binary image/png, 12345 bytes, sha256 …>": the SHA-256 is of the base64 text as sent, the size that of the decoded bytes. */
+function binaryMarker(base64: string, mediaType?: string): string {
+  const bytes = Math.floor((base64.replace(/[^A-Za-z0-9+/]/g, "").length * 3) / 4)
+  return `<binary${mediaType ? ` ${mediaType}` : ""}, ${bytes} bytes, sha256 ${createHash("sha256").update(base64, "utf8").digest("hex")}>`
+}
+
+// Only data: URLs carry the bytes; an http(s) URL is kept as it is.
+function dataUrlMarker(url: string): string | undefined {
+  const match = /^data:([^;,]*)(?:;[^,]*)?;base64,/.exec(url)
+  return match ? binaryMarker(url.slice(match[0].length), match[1] || undefined) : undefined
+}
+
+function stringOf(object: unknown, key: string): string | undefined {
+  return isRecord(object) && typeof object[key] === "string" ? object[key] : undefined
+}
+
+/**
  * Removes `cache_control` from an object and from each element of its `content`
  * array. Breakpoint placement moves between requests and is not part of the
  * cached content, so it must not change a block's hash.

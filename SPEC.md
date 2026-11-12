@@ -7,7 +7,7 @@ This document specifies the trace format that prefixlens reads. A harness in any
 - every 1.0 and 1.1 trace is a valid 1.2 trace and reads exactly as before;
 - an older reader reads a newer trace, ignoring what it does not know (section 2, section 6). A 1.0 reader will then report a declared intentional break (section 6.1) as an ordinary miss: the trace degrades to what it would have said without the declaration, never to something less safe.
 
-Version 1.2 adds the optional `interrupted` and `billing` record fields (section 2), the optional `cache_write_12h_tokens` usage field (section 3), and the `tools_changed` hint (section 6).
+Version 1.2 adds the optional `interrupted` and `billing` record fields (section 2), binary-data elision with the block's `elided` field (section 4.5), the optional `cache_write_12h_tokens` usage field (section 3), and the `tools_changed` hint (section 6).
 
 Version 1.1 adds the `prefix_break` hint (section 6.1), states the canonical form of every `cache_control` marker and of a non-string system prompt (section 4.3), and documents which request parameters each provider caches on (section 8.1).
 
@@ -87,6 +87,7 @@ A full request is a list of blocks in the order the provider assembles the promp
 | `content` | any JSON value | no | The block as sent, in the canonical form of section 4.3. May be omitted (section 4.5). |
 | `key` | string | no | The tool name for tools; the role for messages (`"user"`, `"assistant"`, `"tool"`, ...). Used in explanations only; not hashed. |
 | `breakpoint` | boolean | no | `true` when a cache breakpoint (Anthropic `cache_control`) was set on this block or on a part inside it. |
+| `elided` | boolean | no | 1.2. `true` when binary data inside `content` was replaced by its digest and size (section 4.5). `hash` is then still that of the content as sent, and is required. |
 
 ### 4.2 Order
 
@@ -141,6 +142,8 @@ Two blocks are the same if and only if their hashes are equal. When a block carr
 
 - **Deduplication.** A writer SHOULD write each distinct block's content only the first time its hash appears in the file, and omit it from later blocks with the same hash. Readers restore omitted content from the earliest earlier line with the same hash. Without this, a full-request trace grows with the square of the conversation length, since each call repeats the whole prefix.
 - **Redaction.** A writer MAY omit content it does not want stored (secrets, private code). A hash-only block still locates the first changed block exactly; only the text diff is lost. A writer that redacts MUST still compute the hash over the real canonical content.
+
+- **Binary data.** A writer SHOULD replace the base64 data of images, documents, audio and files inside `content` with a string `"<binary MEDIA_TYPE, N bytes, sha256 HEX>"` (`MEDIA_TYPE` is omitted when the part does not name one; `N` is the size of the decoded bytes; `HEX` is the lowercase hex SHA-256 of the base64 text as sent), and set `"elided": true` on the block. The block's `hash` MUST still be computed over the content as sent, so a block written this way and the same block written in full have the same hash and compare equal, and a changed image still changes it. The parts are, per provider: an Anthropic part whose `source` has `"type": "base64"` (`source.data`; images and documents, also inside `tool_result` content); OpenAI Responses `input_image` (`image_url` when it is a `data:` URL) and `input_file` (`file_data`); Chat Completions `image_url` (`image_url.url`, a `data:` URL), `input_audio` (`input_audio.data`) and `file` (`file.file_data`); Gemini `inlineData` (`data`). A URL that is not a `data:` URL is not binary data and is kept. Readers MUST NOT check `hash` against the content of an `elided` block, and MAY name a change in such a block by the digests.
 
 A hash-only block whose hash never appears with content is valid; it is treated as redacted.
 

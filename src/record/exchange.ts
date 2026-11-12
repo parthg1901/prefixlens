@@ -2,7 +2,7 @@
 // streamed or not) into a trace record. Shared by the recording proxy, the
 // recording fetch behind `wrap(client)`, and `lens.observe`.
 
-import { canonicalizeRequest, isRecord, type Provider } from "../canonical.ts"
+import { canonicalizeRequest, elideBinary, isRecord, type Provider } from "../canonical.ts"
 import type { Billing, TraceRecord } from "../trace.ts"
 import { withoutIdentifiers } from "../params.ts"
 import { normalizeUsage } from "../usage.ts"
@@ -153,6 +153,11 @@ export interface RecordInput {
   keepIdentifiers?: boolean
   /** How the call was billed, when the caller knows (`billing` in SPEC 2). Left out otherwise. */
   billing?: Billing
+  /**
+   * Keep base64 images, documents, audio and files in block content. Default false:
+   * each is replaced by its SHA-256 and size (`elideBinary`), which leaves every block hash unchanged.
+   */
+  keepBinary?: boolean
 }
 
 /** @deprecated Use RecordInput. Removed in the next minor. */
@@ -192,7 +197,7 @@ export function buildRecord(input: RecordInput): TraceRecord | string {
     model: canonical.model || input.response.model || "",
     params: withoutIdentifiers(canonical.params, input.keepIdentifiers),
     fidelity: "full-request",
-    request: { blocks: canonical.blocks },
+    request: { blocks: input.keepBinary ? canonical.blocks : canonical.blocks.map(elideBinary) },
     usage: normalizeUsage(provider, input.response.usage),
     ...(ttl ? { cache_ttl_seconds: ttl } : {}),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),

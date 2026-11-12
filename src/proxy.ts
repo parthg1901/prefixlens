@@ -24,6 +24,8 @@ export interface ProxyOptions {
   onSkip?: (reason: string) => void
   /** Keep identifying request fields (`metadata`, `user`, `safety_identifier`, `client_metadata`) in `params`. Default false. */
   keepIdentifiers?: boolean
+  /** Keep base64 images, documents, audio and files in the trace instead of their SHA-256 and size. Default false. */
+  keepBinary?: boolean
   /**
    * Browser origins allowed to call the proxy, e.g. `["http://localhost:3000"]`, or `["*"]` for any.
    * Default none: a request with an `Origin` header (sent by browsers, never by harness CLIs) is refused.
@@ -48,6 +50,7 @@ export function startProxy(options: ProxyOptions) {
     ...(options.onRecord ? { onRecord: options.onRecord } : {}),
     ...(options.onSkip ? { onSkip: options.onSkip } : {}),
     ...(options.keepIdentifiers ? { keepIdentifiers: true } : {}),
+    ...(options.keepBinary ? { keepBinary: true } : {}),
     ...(upstreamBilling(upstream) ? { billing: upstreamBilling(upstream) } : {}),
   })
   const server = Bun.serve({

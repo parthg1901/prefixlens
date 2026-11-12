@@ -26,6 +26,8 @@ export interface Block {
   content?: unknown
   /** True when a cache breakpoint (e.g. Anthropic `cache_control`) was set on this block. */
   breakpoint?: boolean
+  /** True when binary data in `content` was replaced by its SHA-256 and size (SPEC 4.5); `hash` is still that of the content as sent. */
+  elided?: boolean
 }
 
 export interface Usage {
@@ -301,8 +303,8 @@ function readBlocks(value: unknown, problems: string[], warnings: string[], line
       return []
     }
     if (block.key !== undefined && typeof block.key !== "string") problems.push(`request.blocks[${index}].key must be a string`)
-    if (block.hash === undefined && block.content === undefined) {
-      problems.push(`request.blocks[${index}] needs content or hash`)
+    if (block.hash === undefined && (block.content === undefined || block.elided === true)) {
+      problems.push(`request.blocks[${index}] needs ${block.content === undefined ? "content or hash" : "a hash: its content is elided"}`)
       return []
     }
     if (block.hash !== undefined && typeof block.hash !== "string") {
@@ -310,7 +312,9 @@ function readBlocks(value: unknown, problems: string[], warnings: string[], line
       return []
     }
     const hash = block.hash ?? hashContent(block.content)
-    if (block.hash !== undefined && block.content !== undefined && hashContent(block.content) !== block.hash)
+    if (block.elided !== undefined && typeof block.elided !== "boolean") problems.push(`request.blocks[${index}].elided must be a boolean`)
+    // An elided block's content is not what was sent, so its hash cannot be checked against it.
+    if (block.hash !== undefined && block.content !== undefined && block.elided !== true && hashContent(block.content) !== block.hash)
       warnings.push(`line ${line}: request.blocks[${index}].hash does not match its content; using the given hash`)
     if (block.content !== undefined) {
       if (!state.contents.has(hash)) state.contents.set(hash, block.content)

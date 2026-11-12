@@ -23,6 +23,8 @@ export interface RecorderOptions {
   keepIdentifiers?: boolean
   /** `billing` of every record, when the recorder knows how its calls are billed. */
   billing?: Billing
+  /** Keep base64 binary parts in block content instead of their SHA-256 and size. Default false. */
+  keepBinary?: boolean
 }
 
 /** Header a harness may send to choose the lane (and session) of a call itself; the proxy strips it before forwarding. */
@@ -87,7 +89,7 @@ export class Recorder {
     return {
       finish: (response) => {
         if (!end()) return undefined
-        const built = buildRecord({ api, body, response: readResponse(api, response), startedAt, ...(input.headers ? { headers: input.headers } : {}), ...(session ? { session } : {}), lane: lane.name, recorder: input.recorder ?? this.options.name, ...(this.options.keepIdentifiers ? { keepIdentifiers: true } : {}), ...(this.options.billing ? { billing: this.options.billing } : {}) })
+        const built = buildRecord({ api, body, response: readResponse(api, response), startedAt, ...(input.headers ? { headers: input.headers } : {}), ...(session ? { session } : {}), lane: lane.name, recorder: input.recorder ?? this.options.name, ...(this.options.keepIdentifiers ? { keepIdentifiers: true } : {}), ...(this.options.billing ? { billing: this.options.billing } : {}), ...(this.options.keepBinary ? { keepBinary: true } : {}) })
         if (typeof built === "string") {
           this.options.onSkip?.(`not recorded: ${built}`)
           return undefined

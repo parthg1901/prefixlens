@@ -17,7 +17,7 @@
 import { createHash } from "node:crypto"
 import { readdir, stat } from "node:fs/promises"
 import path from "node:path"
-import { canonicalizeAnthropic, isRecord } from "../canonical.ts"
+import { canonicalizeAnthropic, elideBinary, isRecord } from "../canonical.ts"
 import type { Block, Hint, TraceRecord } from "../trace.ts"
 import { withoutIdentifiers } from "../params.ts"
 import { normalizeUsage } from "../usage.ts"
@@ -152,7 +152,7 @@ function fullRecords(entries: Entry[], lane: string, warnings: string[]): TraceR
     const message = blobs.get(hash) ?? transcript.get(hash)
     if (message === undefined) unresolved++
     // A message whose content is not in the log is still identified by its hash.
-    const block = message === undefined ? { kind: "message" as const, hash: `cc:${hash}` } : withoutBreakpoint(canonicalizeAnthropic({ messages: [message] }).blocks[0]!)
+    const block = message === undefined ? { kind: "message" as const, hash: `cc:${hash}` } : elideBinary(withoutBreakpoint(canonicalizeAnthropic({ messages: [message] }).blocks[0]!))
     messageMemo.set(hash, block)
     return block
   }
