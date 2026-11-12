@@ -36,7 +36,9 @@ console.log("\npackage check passed")
 function pack() {
   const out = path.join(temp, "pack")
   mkdirSync(out)
-  const [result] = JSON.parse(execFileSync("npm", ["pack", "--json", "--pack-destination", out], { cwd: root, env: npmEnv, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }))
+  // npm before 10.8 (the one Node 22.0.0 ships) prints the prepack script's banner and output on stdout ahead of the JSON.
+  const stdout = execFileSync("npm", ["pack", "--json", "--pack-destination", out], { cwd: root, env: npmEnv, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] })
+  const [result] = JSON.parse(stdout.slice(stdout.search(/^\[/m)))
   const files = result.files.map((file) => file.path).sort()
   console.log(`tarball ${result.filename}: ${(result.size / 1024).toFixed(1)} kB packed, ${(result.unpackedSize / 1024).toFixed(1)} kB unpacked, ${files.length} files`)
   const allowed = /^(dist\/.+\.(js|d\.ts)|pricing\.json|SPEC\.md|README\.md|LICENSE|CHANGELOG\.md|SECURITY\.md|package\.json)$/
