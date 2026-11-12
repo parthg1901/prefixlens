@@ -1,6 +1,6 @@
 # Security and privacy
 
-prefixlens sits between an agent harness and its model provider, or inside the harness's own process, and writes what it sees to a trace file. This page says exactly what it sees, what it writes, and what it never writes. Each statement about what is written or stripped is checked by a test in `test/privacy.test.ts` or `test/record.test.ts`.
+prefixlens sits between an agent harness and its model provider, or inside the harness's own process, and writes what it sees to a trace file. This page says exactly what it sees, what it writes, and what it never writes. Each statement about what is written, stripped or refused is checked by a test in `test/privacy.test.ts`, `test/record.test.ts`, `test/proxy-guard.test.ts`, `test/binary.test.ts` or `test/cli-private.test.ts`.
 
 ## Reporting a vulnerability
 
@@ -10,13 +10,20 @@ prefixlens has not had a first release yet; until it does, only the latest commi
 
 ## Traces contain your prompts and code
 
-**Treat every trace as sensitive, and never commit one.** A trace records the full request of every model call, as sent: the system prompt, every tool definition, and every message in the conversation, including your prompts, the files and code the agent read, tool outputs (shell output, search results, anything a tool returned), and earlier assistant replies, which the harness sends back as history. Images and documents sent as base64 are written too. Request parameters are written as sent; that includes identifiers some harnesses put in the body, such as Anthropic's `metadata.user_id` and OpenAI's `user`, `safety_identifier` and `prompt_cache_key`.
+**Treat every trace like source code plus personal data: keep it private, and never commit one.** By design, a trace records the full request of every model call, as sent: the full system prompt, every tool definition, the instruction files and memory the harness sends with it (`CLAUDE.md`, `AGENTS.md`, memory files), and every message in the conversation, including your prompts, the contents of files the agent read, tool outputs (shell output, search results, anything a tool returned), and earlier assistant replies, which the harness sends back as history. That usually includes working-directory paths, and often your email address, which harnesses put in their system prompts and git context.
+
+Left out by default:
+
+- request fields that identify a person, account, device or installation and are not model input: `metadata` (Anthropic's `metadata.user_id`, where Claude Code puts its account id, a persistent device id and the session id; OpenAI's developer key-value pairs), `user`, `safety_identifier`, and Codex's `client_metadata` (`IDENTIFYING_PARAMS` in `src/params.ts`). The importers drop the same fields. `keepIdentifiers` (`--keep-identifiers`) keeps them. Leaving them out changes no block hash; OpenAI documents `user` as a cache-bucketing key, so without it a miss caused by changing `user` reads as one with the prefix intact;
+- the bytes of base64 images, documents, audio and files, which are written as their SHA-256 and decoded size (SPEC.md section 4.5). Block hashes are still those of the request as sent. `keepBinary` (`--keep-binary`) keeps the bytes.
+
+Kept, because the analysis needs them: `prompt_cache_key` and the `session-id` header, which providers route requests to a cache by. A harness may derive them from a session or user id.
 
 The same applies to traces made by `prefixlens import`, which copy the content of the harness's own session logs, and to `--html` and `--json` reports, which include the changed blocks of each miss.
 
 The repository's `.gitignore` ignores `*.trace.jsonl`, `*.trace.html` and `*.report.html`, and CI fails if a trace, session log or credential is committed. Neither helps if you write a trace under another name.
 
-Trace files are created with your default file permissions (your umask), like any other file you create; they are not made private to your user automatically.
+Trace files prefixlens creates (the proxy, `wrap`, `lens.fetch`, `lens.observe` with a trace path, `prefixlens import -o`) and `report --html` reports are created readable and writable by their owner only (mode 0600), and directories it creates for them owner-only (0700). A file or directory that already exists keeps its permissions: prefixlens never changes a mode you set. The proxy and `import -o` print a warning when such a file is readable by other users. A report printed to stdout (`--json`, the terminal report) or a trace written to stdout by `import` gets whatever permissions you redirect it into.
 
 ## What is never written
 
@@ -30,7 +37,14 @@ Nothing is written for calls that are not model calls (anything other than `POST
 
 `prefixlens record` forwards every request to the provider, credentials included and unchanged, and streams the response back. It sees everything the harness sends and receives, API keys included. It removes only hop-by-hop headers (`host`, `connection`, `keep-alive`, `content-length`, `transfer-encoding`) and its own `x-prefixlens-lane` and `x-prefixlens-session` before forwarding.
 
-It listens on `127.0.0.1:8787` by default, so only processes on the same machine can reach it. It has no authentication of its own: any local process can send requests through it, and those requests are written to your trace.
+It listens on `127.0.0.1:8787` by default, so only processes on the same machine can reach it. It has no authentication of its own: any local process can send requests through it (with its own credentials; the proxy adds none), and those requests are written to your trace.
+
+A web page in your browser can also send requests to a loopback port. The proxy refuses, with 403 and without forwarding:
+
+- a request whose `Host` header is not a loopback name (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`) or the address given with `--host`, which defeats DNS rebinding;
+- a request with an `Origin` header, which browsers send on cross-origin requests and harness CLIs do not, unless `--allow-origin` (`allowedOrigins`) names that origin.
+
+This does not make the proxy safe to expose: it does not authenticate the client, and a local process is trusted.
 
 `--host` binds it to another address. Do this only on a network you trust, and understand what it means:
 
@@ -39,9 +53,11 @@ It listens on `127.0.0.1:8787` by default, so only processes on the same machine
 
 `--upstream` sends requests, credentials included, wherever you point it. An `http://` upstream receives them unencrypted.
 
+The proxy prints a warning at start-up when `--host` is not a loopback address and when `--upstream` is plain HTTP to another machine.
+
 ## wrap, lens.fetch and lens.observe
 
-`wrap(client)` and `lens.fetch()` run inside your process. They send each request exactly as the client built it, through the client's own fetch, and record a copy as the response streams back; they make no other request. `lens.observe` and `buildRecord` make no network request at all: they build a record from the request and response you pass in. All of them write the same record as the proxy, with the same headers dropped. `wrap` and `lens.fetch` write to `$PREFIXLENS_TRACE`, else `prefixlens.trace.jsonl` in the working directory, unless you pass `trace` (a path, or `false` to write no file).
+`wrap(client)` and `lens.fetch()` run inside your process. They send each request exactly as the client built it, through the client's own fetch, and record a copy as the response streams back; they make no other request. `lens.observe` and `buildRecord` make no network request at all: they build a record from the request and response you pass in. All of them write the same record as the proxy, with the same headers and identifying fields dropped and binary data elided. `wrap` and `lens.fetch` write to `$PREFIXLENS_TRACE`, else `prefixlens.trace.jsonl` in the working directory, unless you pass `trace` (a path, or `false` to write no file).
 
 ## No telemetry
 
