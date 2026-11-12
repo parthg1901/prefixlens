@@ -35,7 +35,7 @@ node scripts/check-package.mjs              # pack, install the tarball into tem
 cd examples/ci-prefix-test && bun test      # the CI example, which imports src/ through tsconfig paths
 ```
 
-CI (`.github/workflows/ci.yml`) is set up to run, on pushes to `main` and on pull requests:
+CI (`.github/workflows/ci.yml`) runs, on pushes to `main` and on pull requests:
 
 - the Bun suite on Ubuntu and macOS;
 - the Node suite and the package check on Node 22.0.0 and 26, on Ubuntu and macOS;

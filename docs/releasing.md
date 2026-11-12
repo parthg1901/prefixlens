@@ -9,7 +9,7 @@ Releases are published by `.github/workflows/release.yml` when a tag `v<version>
 
 While `package.json` has `"private": true`, the first job fails with a message saying so, and nothing is published.
 
-Neither workflow has completed a run yet. Everything here about what they do is read from the workflow files, not observed.
+The CI workflow runs on every push. The release workflow has not completed a run yet; what is said here about it is read from the workflow file, not observed.
 
 ## Pushing
 
@@ -39,7 +39,7 @@ So the first release takes two versions, and both should be planned before the f
 Steps:
 
 1. Create the public repository on GitHub. Fill in the release checklist below, which ends with removing `"private": true`, and commit.
-2. `git push origin main` (see "Pushing" above) and wait for CI. It has never run: this is the first time the suites run on macOS, on Node 22.0.0 and on Node 26. Fix what it finds before going on.
+2. `git push origin main` (see "Pushing" above) and wait for CI to pass.
 3. Run the local checks of "Releasing a version" step 3, with `v0.5.0`. Then `git tag v0.5.0`, and do not push the tag yet.
 4. Publish 0.5.0 by hand: `npm login`, then in a clean checkout of the tagged commit, `bun install --frozen-lockfile && npm publish --access public` (the `prepack` script builds `dist/`). Check the result with `npm view prefixlens`. This one version has no provenance statement, since it was not published from the workflow.
 5. `git push origin v0.5.0`. The Release workflow runs its checks and tests, finds 0.5.0 already on the registry, skips the publish, and creates the GitHub release from the changelog section. If the tag were pushed before step 4, the publish step would fail (no trusted publisher exists yet) and no GitHub release would be created; re-running the workflow after step 4 then creates it.
@@ -79,9 +79,9 @@ Addresses, once the repository address is known:
 
 Sentences that stop being true:
 
-- [ ] `CHANGELOG.md`: set the date in `## [0.5.0] - 2026-11-12` to the day it is published.
+- [x] `CHANGELOG.md`: set the date in `## [0.5.0] - 2026-11-12` to the day it is published.
 - [ ] `docs/releasing.md` (this file): remove "Neither workflow has run yet" at the top once both have.
-- [ ] `docs/verification.md`: after the first green CI run, add to its second paragraph: "The test suites run in CI on Linux and macOS, with Bun 1.4.0 and with Node 22.0.0 and 26." Do not write this before CI has passed on every one of those.
+- [x] `docs/verification.md`: after the first green CI run, add to its second paragraph: "The test suites run in CI on Linux and macOS, with Bun 1.4.0 and with Node 22.0.0 and 26." Do not write this before CI has passed on every one of those.
 - [ ] `docs/verification.md`: remove the last "Not checked" item ("The release workflow's publish step. 0.5.0 is published by hand.") once 0.5.1 has gone out through the workflow, and keep its first line ("As of …") at the version the checks were made on.
 
 Before the tag:

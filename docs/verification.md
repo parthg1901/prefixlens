@@ -2,7 +2,7 @@
 
 As of 0.5.0. Every feature is covered by tests on small synthetic fixtures. This page lists what has also been checked on real traffic, and what has not.
 
-The checks on real traffic were made on Linux arm64, with Bun 1.4.0 and Node 24.20.
+The checks on real traffic were made on Linux arm64, with Bun 1.4.0 and Node 24.20. The test suites run in CI on Linux and macOS, with Bun 1.4.0 and with Node 22.0.0 and 26.
 
 ## Checked on real traffic
 
