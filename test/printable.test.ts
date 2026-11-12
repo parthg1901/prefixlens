@@ -45,7 +45,8 @@ describe("printable", () => {
   })
 
   test("printableDeep reaches every string of a value, keys included", () => {
-    expect(printableDeep({ [`k${ESC}`]: [`v${BEL}`, 1, null, { deep: `${ESC}` }], n: 2, flag: true })).toEqual({ "k\\x1b": ["v\\x07", 1, null, { deep: "\\x1b" }], n: 2, flag: true })
+    const value: Record<string, unknown> = { [`k${ESC}`]: [`v${BEL}`, 1, null, { deep: `${ESC}` }], n: 2, flag: true }
+    expect(printableDeep(value)).toEqual({ "k\\x1b": ["v\\x07", 1, null, { deep: "\\x1b" }], n: 2, flag: true })
   })
 })
 
