@@ -7,6 +7,7 @@
 // reasoning. Content attributes are opt-in and not the exact request, so no
 // blocks are imported.
 
+import { readFile } from "node:fs/promises"
 import { isRecord } from "../canonical.ts"
 import type { TraceRecord, Usage } from "../trace.ts"
 import type { ImportOptions, ImportResult } from "./index.ts"
@@ -24,7 +25,7 @@ const CHAT_OPERATIONS = new Set(["chat", "text_completion", "generate_content"])
 
 export async function importOtel(input: string, options: ImportOptions): Promise<ImportResult> {
   const warnings: string[] = []
-  const spans = readSpans(await Bun.file(input).text(), input, warnings)
+  const spans = readSpans(await readFile(input, "utf8"), input, warnings)
   const usable = spans
     .map((entry) => ({ ...entry, attributes: attributesOf(entry.span.attributes) }))
     .filter((entry) => Object.keys(entry.attributes).some((key) => key.startsWith("gen_ai.usage.")))

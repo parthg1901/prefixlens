@@ -28,10 +28,10 @@
 // opencode makes for each new top-level session is stored nowhere (only the
 // title it produced), so it is missed, with a warning.
 
-import { Database } from "bun:sqlite"
-import { readdir, stat } from "node:fs/promises"
+import { readdir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
 import { isRecord } from "../canonical.ts"
+import { openReadonly } from "../runtime/sqlite.ts"
 import type { Hint, TraceRecord, Usage } from "../trace.ts"
 import type { ImportOptions, ImportResult, SessionSummary } from "./index.ts"
 
@@ -133,9 +133,9 @@ async function exists(file: string) {
   )
 }
 
-function sqliteSource(file: string): Source {
-  const db = new Database(file, { readonly: true })
-  const tables = new Set(db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name))
+async function sqliteSource(file: string): Promise<Source> {
+  const db = await openReadonly(file)
+  const tables = new Set(db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'").map((row) => row.name))
   const next = tables.has("session_v2") && tables.has("session_message")
   const v1 = tables.has("session") && tables.has("message") && tables.has("part")
   if (!next && !v1) {
@@ -145,15 +145,13 @@ function sqliteSource(file: string): Source {
   const nextSessions = (): Session[] =>
     next
       ? db
-          .query<{ id: string; title: string | null; parent_id: string | null; time_updated: number }, []>("SELECT id, title, parent_id, time_updated FROM session_v2")
-          .all()
+          .all<{ id: string; title: string | null; parent_id: string | null; time_updated: number }>("SELECT id, title, parent_id, time_updated FROM session_v2")
           .map((row) => ({ id: row.id, title: row.title ?? undefined, parent: row.parent_id ?? undefined, updated: row.time_updated }))
       : []
   const v1Sessions = (): Session[] =>
     v1
       ? db
-          .query<{ id: string; title: string | null; parent_id: string | null; time_updated: number }, []>("SELECT id, title, parent_id, time_updated FROM session")
-          .all()
+          .all<{ id: string; title: string | null; parent_id: string | null; time_updated: number }>("SELECT id, title, parent_id, time_updated FROM session")
           .map((row) => ({ id: row.id, title: row.title ?? undefined, parent: row.parent_id ?? undefined, updated: row.time_updated }))
       : []
   return {
@@ -169,10 +167,7 @@ function sqliteSource(file: string): Source {
       const old = v1 ? v1SessionCalls(session) : { calls: [], events: [], ids: new Set<string>() }
       if (!next) return old
       const rows = db
-        .query<{ id: string; type: string; time_created: number; data: string }, [string]>(
-          "SELECT id, type, time_created, data FROM session_message WHERE session_id = ? ORDER BY seq",
-        )
-        .all(session)
+        .all<{ id: string; type: string; time_created: number; data: string }>("SELECT id, type, time_created, data FROM session_message WHERE session_id = ? ORDER BY seq", session)
         .filter((row) => !old.ids.has(row.id))
       const fresh = nextCalls(session, rows.map((row) => ({ id: row.id, type: row.type, time: row.time_created, data: parse(row.data) })))
       return { calls: [...old.calls, ...fresh.calls].toSorted((a, b) => a.ts - b.ts), events: [...old.events, ...fresh.events] }
@@ -182,21 +177,17 @@ function sqliteSource(file: string): Source {
 
   function v1SessionCalls(session: string) {
     const messages = db
-      .query<{ id: string; time_created: number; data: string }, [string]>("SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created, id")
-      .all(session)
+      .all<{ id: string; time_created: number; data: string }>("SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created, id", session)
       .map((row) => ({ id: row.id, time: row.time_created, data: parse(row.data) }))
     const parts = db
-      .query<{ id: string; message_id: string; time_created: number; data: string }, [string]>(
-        "SELECT id, message_id, time_created, data FROM part WHERE session_id = ? ORDER BY id",
-      )
-      .all(session)
+      .all<{ id: string; message_id: string; time_created: number; data: string }>("SELECT id, message_id, time_created, data FROM part WHERE session_id = ? ORDER BY id", session)
       .map((row) => ({ id: row.id, message: row.message_id, time: row.time_created as number | undefined, data: parse(row.data) }))
     return { ...v1Calls(session, messages, parts), ids: new Set(messages.map((message) => message.id)) }
   }
 }
 
 async function jsonSource(storage: string): Promise<Source> {
-  const read = async (file: string) => parse(await Bun.file(file).text())
+  const read = async (file: string) => parse(await readFile(file, "utf8"))
   const list = async (dir: string) => (await readdir(dir).catch(() => [] as string[])).filter((name) => name.endsWith(".json")).sort()
   const sessions: Session[] = []
   for (const project of await readdir(path.join(storage, "session")).catch(() => [] as string[]))

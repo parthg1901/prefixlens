@@ -26,9 +26,38 @@ jobs:
         run: bun run typecheck
       - name: Test
         run: bun test
+      - name: Build
+        run: bun run build
       - name: Test the CI example
         working-directory: examples/ci-prefix-test
         run: bun test
+
+  node:
+    # The built package under Node: the minimum supported version and the current LTS.
+    name: Node ${{ matrix.node }} (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ["22.0.0", "26"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # Bun installs the dev dependencies from bun.lock (the repository has no npm lockfile); everything after runs on Node.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Build
+        run: node scripts/build.mjs
+      - name: Test on Node
+        run: node --test "test-node/*.test.mjs"
+      - name: Check the packed package as a consumer (npm and Node, then Bun)
+        run: node scripts/check-package.mjs
 
   hygiene:
     name: No traces, session logs or credentials

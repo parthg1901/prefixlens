@@ -1,6 +1,8 @@
 // Loads the user-editable pricing table and prices a call's usage with it.
 // No price lives in code: everything comes from the JSON table.
 
+import { readFile } from "node:fs/promises"
+import { fileURLToPath } from "node:url"
 import { isRecord } from "./canonical.ts"
 import type { Usage } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
@@ -63,13 +65,19 @@ export const DEFAULT_STALE_AFTER_DAYS = 60
 
 export async function loadPricing(path?: string): Promise<PricingTable> {
   const source = path || process.env.PREFIXLENS_PRICING
-  const file = source ? Bun.file(source) : Bun.file(DEFAULT_PRICING_URL)
-  const name = source || DEFAULT_PRICING_URL.pathname
-  if (!(await file.exists())) throw new Error(`pricing table not found: ${name}`)
-  const value = await file.json().catch(() => {
-    throw new Error(`pricing table ${name} is not valid JSON`)
-  })
+  const name = source || fileURLToPath(DEFAULT_PRICING_URL)
+  const text = await readFile(source || DEFAULT_PRICING_URL, "utf8").catch(() => undefined)
+  if (text === undefined) throw new Error(`pricing table not found: ${name}`)
+  const value = parseTable(text, name)
   return parsePricing(value)
+}
+
+function parseTable(text: string, name: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new Error(`pricing table ${name} is not valid JSON`)
+  }
 }
 
 /** Validates a pricing table at the boundary so pricing code can trust its shape. */

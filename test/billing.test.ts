@@ -48,10 +48,10 @@ describe("billing", () => {
   test("the proxy sets it for the ChatGPT backend and leaves it out for an API endpoint", async () => {
     const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json({ id: "r", usage: { input_tokens: 2000, input_tokens_details: { cached_tokens: 0 }, output_tokens: 1 } }) })
     const records: TraceRecord[] = []
-    const api = startProxy({ provider: "openai", port: 0, upstream: `http://127.0.0.1:${upstream.port}`, trace: path.join(temp, "api.trace.jsonl"), onRecord: (record) => records.push(record) })
+    const api = await startProxy({ provider: "openai", port: 0, upstream: `http://127.0.0.1:${upstream.port}`, trace: path.join(temp, "api.trace.jsonl"), onRecord: (record) => records.push(record) })
     await (await fetch(`${api.url}/v1/responses`, { method: "POST", body: JSON.stringify(body) })).text()
     await Bun.sleep(20)
-    api.stop()
+    await api.stop()
     upstream.stop(true)
     expect(records[0]).not.toHaveProperty("billing")
     expect(upstreamBilling(new URL("https://chatgpt.com/backend-api/codex"))).toBe("subscription")

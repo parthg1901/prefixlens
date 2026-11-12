@@ -6,7 +6,7 @@ import { canonicalizeRequest, elideBinary, isRecord, type CanonicalRequest, type
 import type { Billing, TraceRecord } from "../trace.ts"
 import { withoutIdentifiers } from "../params.ts"
 import { normalizeUsage } from "../usage.ts"
-import pkg from "../../package.json" with { type: "json" }
+import { VERSION } from "../version.ts"
 
 export type Api = "anthropic-messages" | "openai-chat" | "openai-responses"
 
@@ -213,7 +213,7 @@ export function recordFrom(input: RecordInput, canonical: CanonicalRequest): Tra
     // A stream cut off after it reported usage (Anthropic reports the input side in its first event).
     ...(input.response.complete ? {} : { interrupted: true }),
     ...(input.billing ? { billing: input.billing } : {}),
-    source: { recorder: input.recorder ?? "library", api: input.api, version: pkg.version },
+    source: { recorder: input.recorder ?? "library", api: input.api, version: VERSION },
   }
 }
 

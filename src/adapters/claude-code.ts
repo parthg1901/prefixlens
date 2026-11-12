@@ -24,7 +24,7 @@
 // usage-only records, one per assistant message id.
 
 import { createHash } from "node:crypto"
-import { readdir, stat } from "node:fs/promises"
+import { readdir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
 import { canonicalizeAnthropic, elideBinary, isRecord } from "../canonical.ts"
 import type { Block, Hint, TraceRecord } from "../trace.ts"
@@ -41,7 +41,7 @@ export async function importClaudeCode(input: string, options: ImportOptions): P
   const records = (
     await Promise.all(
       files.map(async (file, index) => {
-        const entries = parseLines(await Bun.file(file.path).text(), file.path, warnings)
+        const entries = parseLines(await readFile(file.path, "utf8"), file.path, warnings)
         if (index === 0) costState = entries.findLast((entry) => entry.type === "cost-state")
         return entries.some((entry) => entry.type === "api-request")
           ? fullRecords(entries, file.lane, warnings)

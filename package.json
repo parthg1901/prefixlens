@@ -24,24 +24,39 @@
   "type": "module",
   "sideEffects": false,
   "bin": {
-    "prefixlens": "./src/cli.ts"
+    "prefixlens": "./dist/cli.js"
   },
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./test": "./src/assert.ts",
-    "./pricing.json": "./pricing.json"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./test": {
+      "types": "./dist/assert.d.ts",
+      "default": "./dist/assert.js"
+    },
+    "./pricing.json": "./pricing.json",
+    "./package.json": "./package.json"
   },
   "files": [
-    "src",
+    "dist",
     "pricing.json",
     "SPEC.md",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md"
   ],
   "engines": {
+    "node": ">=22.0.0",
     "bun": ">=1.1.0"
   },
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "node scripts/build.mjs",
     "test": "bun test",
+    "test:node": "node scripts/build.mjs && node --test \"test-node/*.test.mjs\"",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

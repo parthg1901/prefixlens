@@ -67,7 +67,7 @@ describe("the last chunk", () => {
     const flag = path.join(temp, "client-has-everything")
     const expected = await streamText("/v1/messages")
     let verdict = "no record"
-    const proxy = startProxy({
+    const proxy = await startProxy({
       provider: "anthropic",
       port: 0,
       upstream: upstream.url,
@@ -80,7 +80,7 @@ describe("the last chunk", () => {
     })
     await clientInAnotherProcess(`${proxy.url}/v1/messages`, { method: "POST", body }, expected, flag)
     for (let turn = 0; turn < 200 && verdict === "no record"; turn++) await Bun.sleep(10)
-    proxy.stop()
+    await proxy.stop()
     expect(existsSync(flag)).toBe(true)
     expect(verdict).toBe("client had every byte first")
   }, 20_000)

@@ -27,7 +27,7 @@
 // tool's definition, so a change to that map between two calls is a tool-list
 // change even though the request itself is not known.
 
-import { readdir, stat } from "node:fs/promises"
+import { readdir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
 import { isRecord } from "../canonical.ts"
 import type { Hint, TraceRecord, Usage } from "../trace.ts"
@@ -40,7 +40,7 @@ export async function importCodex(input: string, options: ImportOptions): Promis
   const files = await rolloutFiles(input)
   if (files.length === 0) throw new Error(`no Codex rollout files (*.jsonl) found in ${input}`)
   const warnings: string[] = []
-  const sessions = await Promise.all(files.map(async (file) => readRollout(file, await Bun.file(file).text(), warnings)))
+  const sessions = await Promise.all(files.map(async (file) => readRollout(file, await readFile(file, "utf8"), warnings)))
   // A session id names the root thread and its subagents; a thread id names that thread alone.
   const chosen = options.session ? sessions.filter((session) => session.id === options.session || session.thread === options.session) : sessions
   if (options.session && chosen.length === 0) throw new Error(`session ${options.session} not found in ${input}`)

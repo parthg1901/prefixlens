@@ -3,6 +3,7 @@
 // ANTHROPIC_BASE_URL or OPENAI_BASE_URL.
 
 import { copyResponse, observeBody } from "./record/fetch.ts"
+import { DECODED_ENCODINGS, serve } from "./runtime/server.ts"
 import { LANE_HEADER, Recorder, SESSION_HEADER } from "./record/recorder.ts"
 import { readableByOthers, type Billing, type TraceRecord } from "./trace.ts"
 
@@ -38,7 +39,24 @@ export interface ProxyOptions {
 // Hop-by-hop headers, and ours. Everything else, credentials included, goes upstream untouched (and is never written).
 const DROPPED_REQUEST_HEADERS = ["host", "connection", "keep-alive", "content-length", "transfer-encoding", LANE_HEADER, SESSION_HEADER]
 
-export function startProxy(options: ProxyOptions) {
+/** A running proxy. */
+export interface RunningProxy {
+  /** `http://<hostname>:<port>`, the base URL to point a harness at. */
+  url: string
+  hostname: string
+  port: number
+  /** Where requests are forwarded, with any path prefix. */
+  upstream: string
+  trace: string
+  /** Stops listening and closes open connections. */
+  stop(): Promise<void>
+}
+
+/**
+ * Starts the recording proxy and resolves once it is listening. Runs on Bun (Bun.serve) and on Node (node:http);
+ * on both, every response byte, the last included, reaches the client before work on its record starts.
+ */
+export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   const upstream = new URL(options.upstream ?? UPSTREAMS[options.provider])
   const base = upstream.origin + upstream.pathname.replace(/\/+$/, "")
   const hostname = options.hostname ?? "127.0.0.1"
@@ -53,13 +71,11 @@ export function startProxy(options: ProxyOptions) {
     ...(options.keepBinary ? { keepBinary: true } : {}),
     ...(upstreamBilling(upstream) ? { billing: upstreamBilling(upstream) } : {}),
   })
-  const server = Bun.serve({
+  const server = await serve({
     port: options.port ?? 8787,
     hostname,
-    // Model responses can be silent for minutes while the model thinks.
-    idleTimeout: 0,
-    async fetch(request) {
-      const url = new URL(request.url)
+    async handle(request) {
+      const url = request.url
       const refused = refusal(request.headers, hostname, options.allowedOrigins ?? [])
       if (refused) {
         options.onSkip?.(`refused a request to ${url.pathname} (403): ${refused}`)
@@ -71,9 +87,12 @@ export function startProxy(options: ProxyOptions) {
         options.onSkip?.(`refused a WebSocket handshake to ${url.pathname} (426): the proxy records HTTP only`)
         return new Response("prefixlens proxy: WebSockets are not relayed; use HTTP", { status: 426 })
       }
-      const body = request.body ? new Uint8Array(await request.arrayBuffer()) : undefined
+      const body = request.body
       const headers = new Headers(request.headers)
       for (const name of DROPPED_REQUEST_HEADERS) headers.delete(name)
+      // The response is passed on decoded, so only encodings this runtime's fetch decodes may be asked for.
+      const accepted = acceptedEncodings(headers.get("accept-encoding"))
+      if (accepted !== undefined) headers.set("accept-encoding", accepted)
       const pending = request.method === "POST" && body ? recorder.begin({ path: url.pathname, body, headers: request.headers }) : undefined
       const response = await fetch(base + url.pathname + url.search, {
         method: request.method,
@@ -95,12 +114,25 @@ export function startProxy(options: ProxyOptions) {
     },
   })
   return {
-    server,
-    url: `http://${server.hostname}:${server.port}`,
+    url: `http://${hostname.includes(":") ? `[${hostname}]` : hostname}:${server.port}`,
+    hostname,
+    port: server.port,
     upstream: base,
     trace: options.trace,
-    stop: () => server.stop(true),
+    stop: () => server.stop(),
   }
+}
+
+// The client's Accept-Encoding without the encodings this runtime's fetch would pass on undecoded
+// (zstd on Node before 24); undefined to leave the header as it is.
+function acceptedEncodings(header: string | null): string | undefined {
+  if (header === null) return undefined
+  const offered = header.split(",").map((entry) => entry.trim()).filter(Boolean)
+  const kept = offered.filter((entry) => {
+    const name = entry.split(";")[0]!.trim().toLowerCase()
+    return name === "identity" || name === "*" || DECODED_ENCODINGS.includes(name)
+  })
+  return kept.length === offered.length ? undefined : kept.join(", ") || "identity"
 }
 
 /**

@@ -1,9 +1,12 @@
 #!/usr/bin/env bun
 // prefixlens command line: import harness logs into traces, and report on traces.
 
-import { stat } from "node:fs/promises"
+import { realpathSync } from "node:fs"
+import { readFile as readText, stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { text as streamText } from "node:stream/consumers"
+import { fileURLToPath } from "node:url"
 import { ADAPTERS, findAdapter } from "./adapters/index.ts"
 import { analyze } from "./analyze.ts"
 import { cataloguePath, loadCatalogue, parseProviderMapping } from "./catalogue.ts"
@@ -13,9 +16,9 @@ import { renderJson } from "./report/json.ts"
 import { renderTerminal } from "./report/terminal.ts"
 import { parseTrace, readableByOthers, serializeTrace, writePrivateFile } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
-import pkg from "../package.json" with { type: "json" }
+import { VERSION } from "./version.ts"
 
-const HELP = `prefixlens ${pkg.version}: explains prompt-cache hits and misses
+const HELP = `prefixlens ${VERSION}: explains prompt-cache hits and misses
 
 Usage:
   prefixlens import <adapter> <path> [options]   convert harness logs to a trace (JSONL)
@@ -86,7 +89,7 @@ export async function main(argv: string[]): Promise<number> {
   const empty = [...VALUE_FLAGS].find((name) => flags[name] === "")
   if (empty) return fail(`--${empty} needs a value`)
   if (flags.version) {
-    console.log(pkg.version)
+    console.log(VERSION)
     return 0
   }
   const command = positionals[0]
@@ -181,7 +184,7 @@ async function runImport(args: string[], flags: Flags): Promise<number> {
 async function runReport(args: string[], flags: Flags): Promise<number> {
   const [input] = args
   if (!input) return fail("usage: prefixlens report <trace.jsonl|->")
-  const text = input === "-" ? await Bun.stdin.text() : await readFile(expandHome(input))
+  const text = input === "-" ? await streamText(process.stdin) : await readFile(expandHome(input))
   if (text === undefined) return fail(`cannot read ${input}`)
   const name = input === "-" ? "stdin" : input
   if (text.trim() === "") return fail(`${name} is empty: no trace records (did the import find any model calls?)`)
@@ -243,7 +246,7 @@ async function runRecord(flags: Flags): Promise<number> {
   const trace = typeof flags.out === "string" ? flags.out : "prefixlens.trace.jsonl"
   const quiet = flags.quiet === true
   let count = 0
-  const proxy = startProxy({
+  const proxy = await startProxy({
     provider,
     port,
     trace,
@@ -272,7 +275,7 @@ async function runRecord(flags: Flags): Promise<number> {
   await new Promise<void>((resolve) => {
     for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => resolve())
   })
-  proxy.stop()
+  await proxy.stop()
   console.error(`\nstopped; ${count} ${count === 1 ? "call" : "calls"} recorded in ${trace}. Next: prefixlens report ${trace}`)
   return 0
 }
@@ -283,8 +286,7 @@ function looksLikeTrace(text: string): boolean {
 }
 
 async function readFile(file: string): Promise<string | undefined> {
-  const handle = Bun.file(file)
-  return (await handle.exists()) ? handle.text() : undefined
+  return readText(file, "utf8").catch(() => undefined)
 }
 
 function expandHome(file: string): string {
@@ -296,7 +298,11 @@ function fail(message: string): number {
   return 1
 }
 
-if (import.meta.main) {
+// Run as a program (bun src/cli.ts, node dist/cli.js, or the installed bin, a symlink), not imported.
+// Bun and Node 24.2+ set import.meta.main; older Node compares the script path.
+const invoked = (import.meta as { main?: boolean }).main ?? (process.argv[1] !== undefined && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url))
+
+if (invoked) {
   // Set the exit code instead of calling process.exit so piped output is flushed first.
   main(process.argv.slice(2)).then(
     (code) => {

@@ -84,9 +84,9 @@ describe("recording proxy", () => {
   const trace = path.join(temp, "proxy.trace.jsonl")
   const records: TraceRecord[] = []
   const skipped: string[] = []
-  let proxy: ReturnType<typeof startProxy>
-  beforeAll(() => {
-    proxy = startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace, onRecord: (record) => records.push(record), onSkip: (reason) => skipped.push(reason) })
+  let proxy: Awaited<ReturnType<typeof startProxy>>
+  beforeAll(async () => {
+    proxy = await startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace, onRecord: (record) => records.push(record), onSkip: (reason) => skipped.push(reason) })
   })
   afterAll(() => proxy.stop())
 
@@ -193,7 +193,7 @@ describe("recording proxy", () => {
 describe("recording proxy, OpenAI", () => {
   test("Responses and Chat Completions streams, with the session-id header kept as metadata", async () => {
     const trace = path.join(temp, "openai.trace.jsonl")
-    const proxy = startProxy({ provider: "openai", port: 0, upstream: upstream.url, trace })
+    const proxy = await startProxy({ provider: "openai", port: 0, upstream: upstream.url, trace })
     const body = { model: "gpt-test-1", store: false, stream: true, instructions: "You are a synthetic agent.", tools: [], input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Hi." }] }] }
     const headers = { "content-type": "application/json", authorization: `Bearer ${SECRET}`, "session-id": "synthetic-session-1", "chatgpt-account-id": "synthetic-account" }
     const responses = await fetch(`${proxy.url}/v1/responses`, { method: "POST", headers, body: JSON.stringify(body) })
@@ -205,7 +205,7 @@ describe("recording proxy, OpenAI", () => {
     })
     expect(await chat.text()).toBe(await streamText("/v1/chat/completions"))
     await Bun.sleep(20)
-    proxy.stop()
+    await proxy.stop()
     const text = readFileSync(trace, "utf8")
     expect(text).not.toContain(SECRET)
     expect(text).not.toContain("synthetic-account")
@@ -241,19 +241,19 @@ describe("recording proxy, Codex on the ChatGPT sign-in flow", () => {
 
   test("a WebSocket handshake is answered 426 and never forwarded, so the client falls back to HTTP", async () => {
     const before = upstream.seen.length
-    const proxy = startProxy({ provider: "openai", port: 0, upstream: upstream.url, trace: path.join(temp, "ws.trace.jsonl") })
+    const proxy = await startProxy({ provider: "openai", port: 0, upstream: upstream.url, trace: path.join(temp, "ws.trace.jsonl") })
     const response = await fetch(`${proxy.url}/backend-api/codex/responses`, {
       headers: { upgrade: "websocket", connection: "Upgrade", "sec-websocket-version": "13", "sec-websocket-key": "c3ludGhldGljLWtleS0wMDAwMA==", authorization: `Bearer ${SECRET}` },
     })
     expect(response.status).toBe(426)
     await response.text()
-    proxy.stop()
+    await proxy.stop()
     expect(upstream.seen.length).toBe(before)
   })
 
   test("client_metadata is not recorded, and a new conversation opens its own lane instead of reading as a changed prefix", async () => {
     const trace = path.join(temp, "codex.trace.jsonl")
-    const proxy = startProxy({ provider: "openai", port: 0, upstream: upstream.url, trace })
+    const proxy = await startProxy({ provider: "openai", port: 0, upstream: upstream.url, trace })
     const send = async (conversation: string, turn: string, input: unknown[]) => {
       const response = await fetch(`${proxy.url}/v1/responses`, {
         method: "POST",
@@ -267,7 +267,7 @@ describe("recording proxy, Codex on the ChatGPT sign-in flow", () => {
     await send("conv-a", "turn-2", [say("First task."), say("And then?")])
     await send("conv-b", "turn-1", [say("Second task.")])
     await send("conv-b", "turn-2", [say("Second task."), say("Go on.")])
-    proxy.stop()
+    await proxy.stop()
     const text = readFileSync(trace, "utf8")
     expect(text).not.toContain("synthetic-installation")
     expect(text).not.toContain(SECRET)
@@ -285,13 +285,13 @@ describe("recording proxy, Codex on the ChatGPT sign-in flow", () => {
 describe("compressed request bodies", () => {
   test("a zstd-encoded request is forwarded as is and recorded", async () => {
     const trace = path.join(temp, "zstd.trace.jsonl")
-    const proxy = startProxy({ provider: "openai", port: 0, upstream: upstream.url, trace })
+    const proxy = await startProxy({ provider: "openai", port: 0, upstream: upstream.url, trace })
     const body = JSON.stringify({ model: "gpt-test-1", stream: true, instructions: "Synthetic.", input: [] })
     const compressed = Bun.zstdCompressSync(Buffer.from(body))
     const response = await fetch(`${proxy.url}/v1/responses`, { method: "POST", headers: { "content-type": "application/json", "content-encoding": "zstd" }, body: compressed })
     await response.text()
     await Bun.sleep(20)
-    proxy.stop()
+    await proxy.stop()
     expect(upstream.seen.at(-1)!.body).toBe(body)
     expect(upstream.seen.at(-1)!.headers["content-encoding"]).toBe("zstd")
     const { records } = parseTrace(readFileSync(trace, "utf8"))

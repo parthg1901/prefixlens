@@ -1,0 +1,17 @@
+{
+  // Emits dist/: JavaScript and declarations for Node and Bun, one file per source file, with
+  // relative .ts imports rewritten to .js. `bun run build` (or `npm run build`) runs this and
+  // scripts/build.mjs, which gives the CLI a Node shebang.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": true,
+    "rewriteRelativeImportExtensions": true,
+    "sourceMap": false,
+    "declarationMap": false,
+    "removeComments": false
+  },
+  "include": ["src"]
+}

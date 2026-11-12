@@ -1,5 +1,6 @@
 // A fetch that records model calls while passing every byte through unchanged.
 
+import { deliveredBody } from "../runtime/server.ts"
 import type { Recorder } from "./recorder.ts"
 
 export type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
@@ -37,10 +38,8 @@ export function recordingFetch(recorder: Recorder, inner: Fetch, name?: string):
  *
  * In-process readers (`wrap`, `lens.fetch`) have a chunk as soon as their read resolves; `onEnd`
  * waits for the next turn of the event loop so their own handling of the end runs first.
- * `toSocket` is for a body Bun.serve sends to a client (the proxy): a chunk enqueued on an ordinary
- * stream may still be waiting in Bun's buffers when the stream closes, so each chunk is written to a
- * direct stream and flushed, the body is ended, and `onEnd` runs once every byte, the body's end
- * included, has been handed to the socket.
+ * `toSocket` is for a body the proxy's server sends to a client: `onEnd` runs only once every byte,
+ * the body's end included, has been handed to the socket (see `deliveredBody`, on Bun and on Node).
  */
 export function observeBody(body: ReadableStream<Uint8Array>, onEnd: (text: string) => unknown, options: { toSocket?: boolean } = {}): ReadableStream<Uint8Array> {
   const reader = body.getReader()
@@ -57,7 +56,7 @@ export function observeBody(body: ReadableStream<Uint8Array>, onEnd: (text: stri
       failed(error)
     }
   }
-  if (options.toSocket) return directBody(reader, chunks, end)
+  if (options.toSocket) return deliveredBody(reader, (chunk) => chunks.push(chunk), end)
   return new ReadableStream<Uint8Array>(
     {
       async pull(controller) {
@@ -80,45 +79,6 @@ export function observeBody(body: ReadableStream<Uint8Array>, onEnd: (text: stri
     },
     { highWaterMark: 0 },
   )
-}
-
-// Bun's direct streams: write() buffers, flush() hands the buffer to the socket, and end() flushes and
-// ends the body (the terminating chunk); each returns a promise when the socket pushes back.
-interface DirectController {
-  write(chunk: Uint8Array): number | Promise<number>
-  flush(): number | Promise<number>
-  end(): number | Promise<number>
-}
-
-interface ChunkReader {
-  read(): Promise<{ done: boolean; value?: Uint8Array }>
-  cancel(reason?: unknown): Promise<void>
-}
-
-function directBody(reader: ChunkReader, chunks: Uint8Array[], end: () => void): ReadableStream<Uint8Array> {
-  const source = {
-    type: "direct",
-    async pull(controller: DirectController) {
-      try {
-        for (;;) {
-          const next = await reader.read()
-          if (next.done || !next.value) break
-          chunks.push(next.value)
-          await controller.write(next.value)
-          await controller.flush()
-        }
-        // The body's end is a byte too: a client reading to the end waits for it.
-        await controller.end()
-      } finally {
-        end()
-      }
-    },
-    cancel(reason: unknown) {
-      end()
-      return reader.cancel(reason)
-    },
-  }
-  return new ReadableStream<Uint8Array>(source as unknown as ConstructorParameters<typeof ReadableStream<Uint8Array>>[0])
 }
 
 /** The same response with another body. Content-Encoding and Content-Length are dropped: fetch has already decoded the body. */

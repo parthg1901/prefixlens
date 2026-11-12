@@ -1,7 +1,7 @@
 // What the recorders write and what they never write: the claims in SECURITY.md
 // and the README's "Security and privacy" section, one test each.
 
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -57,11 +57,14 @@ function expectNothingSensitive(text: string) {
 
 describe("the recording proxy", () => {
   const trace = path.join(temp, "proxy.trace.jsonl")
-  const proxy = startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace })
+  let proxy: Awaited<ReturnType<typeof startProxy>>
+  beforeAll(async () => {
+    proxy = await startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace })
+  })
   afterAll(() => proxy.stop())
 
   test("listens on 127.0.0.1 unless told otherwise", () => {
-    expect(proxy.server.hostname).toBe("127.0.0.1")
+    expect(proxy.hostname).toBe("127.0.0.1")
     expect(proxy.url).toStartWith("http://127.0.0.1:")
   })
 
@@ -196,10 +199,10 @@ describe("identifying request fields", () => {
     expect(createLens({ trace: false }).observe({ request: body, response })!.params).toEqual({ max_tokens: 100 })
     expect(createLens({ trace: false, keepIdentifiers: true }).observe({ request: body, response })!.params).toEqual({ max_tokens: 100, metadata: { user_id: USER_ID } })
     const trace = path.join(temp, "keep.trace.jsonl")
-    const proxy = startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace, keepIdentifiers: true })
+    const proxy = await startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace, keepIdentifiers: true })
     await (await fetch(`${proxy.url}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).text()
     await Bun.sleep(20)
-    proxy.stop()
+    await proxy.stop()
     expect(parseTrace(readFileSync(trace, "utf8")).records.at(-1)!.params).toEqual({ max_tokens: 100, metadata: { user_id: USER_ID } })
   })
 
@@ -218,10 +221,10 @@ describe("trace file permissions", () => {
 
   test("a new trace and the directories made for it are private to the owner (proxy and library)", async () => {
     const proxyTrace = path.join(temp, "private", "proxy", "run.trace.jsonl")
-    const proxy = startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace: proxyTrace })
+    const proxy = await startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace: proxyTrace })
     await (await fetch(`${proxy.url}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).text()
     await Bun.sleep(20)
-    proxy.stop()
+    await proxy.stop()
     const libraryTrace = path.join(temp, "private", "library", "run.trace.jsonl")
     createLens({ trace: libraryTrace }).observe({ request: body, response })
     for (const file of [proxyTrace, libraryTrace]) {

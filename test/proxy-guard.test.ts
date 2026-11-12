@@ -36,10 +36,11 @@ async function send(port: number, headers: Record<string, string>): Promise<numb
   return Number(text.split(" ")[1])
 }
 
+const skipped: string[] = []
+const proxy = await startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace: path.join(temp, "guard.trace.jsonl"), onSkip: (reason) => skipped.push(reason) })
+const port = proxy.port
+
 describe("the proxy's request guard", () => {
-  const skipped: string[] = []
-  const proxy = startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace: path.join(temp, "guard.trace.jsonl"), onSkip: (reason) => skipped.push(reason) })
-  const port = Number(proxy.server.port)
   afterAll(() => proxy.stop())
 
   test("relays what harness clients send: no Origin, a loopback Host", async () => {
@@ -68,11 +69,11 @@ describe("the proxy's request guard", () => {
   })
 
   test("relays an Origin that was explicitly allowed, and only that one", async () => {
-    const allowed = startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace: path.join(temp, "allowed.trace.jsonl"), allowedOrigins: ["http://localhost:3000"] })
-    const allowedPort = Number(allowed.server.port)
+    const allowed = await startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace: path.join(temp, "allowed.trace.jsonl"), allowedOrigins: ["http://localhost:3000"] })
+    const allowedPort = allowed.port
     expect(await send(allowedPort, { host: `127.0.0.1:${allowedPort}`, origin: "http://localhost:3000" })).toBe(200)
     expect(await send(allowedPort, { host: `127.0.0.1:${allowedPort}`, origin: "https://attacker.example" })).toBe(403)
-    allowed.stop()
+    await allowed.stop()
   })
 })
 
@@ -80,7 +81,7 @@ describe("start-up warnings", () => {
   const warningsFor = (options: { hostname?: string; upstream?: string; trace?: string }) => {
     const warnings: string[] = []
     const proxy = startProxy({ provider: "anthropic", port: 0, upstream: upstream.url, trace: path.join(temp, "warn.trace.jsonl"), ...options, onWarning: (warning) => warnings.push(warning) })
-    proxy.stop()
+    void proxy.then((running) => running.stop())
     return warnings
   }
 

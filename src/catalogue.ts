@@ -3,7 +3,7 @@
 // written to the user's cache directory. Reports read it as an overlay: the hand-verified table
 // wins for every model it lists, and the catalogue prices only the models the table lacks.
 
-import { mkdir, rename } from "node:fs/promises"
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { isRecord } from "./canonical.ts"
@@ -143,10 +143,10 @@ export async function fetchCatalogue(options: FetchOptions = {}): Promise<unknow
 
 /** Reads a saved copy of https://models.dev/api.json. */
 export async function readCatalogueFile(file: string, maxBytes = CATALOGUE_MAX_BYTES): Promise<unknown> {
-  const handle = Bun.file(file)
-  if (!(await handle.exists())) throw new Error(`catalogue file not found: ${file}`)
-  if (handle.size > maxBytes) throw new Error(`${file} is ${megabytes(handle.size)}, more than the ${megabytes(maxBytes)} limit`)
-  return parseJson(await handle.text(), file)
+  const info = await stat(file).catch(() => undefined)
+  if (!info?.isFile()) throw new Error(`catalogue file not found: ${file}`)
+  if (info.size > maxBytes) throw new Error(`${file} is ${megabytes(info.size)}, more than the ${megabytes(maxBytes)} limit`)
+  return parseJson(await readFile(file, "utf8"), file)
 }
 
 async function readLimited(response: Response, url: string, limit: number, timeout: number): Promise<string> {
@@ -267,16 +267,25 @@ export async function writeCatalogue(table: CatalogueTable, file = cataloguePath
   // One model per line keeps the file small and diffable.
   const text = `${JSON.stringify(header, null, 2).slice(0, -2)},\n  "models": [\n${models.map((model) => `    ${JSON.stringify(model)}`).join(",\n")}\n  ]\n}\n`
   const temporary = `${file}.${process.pid}.tmp`
-  await Bun.write(temporary, text)
+  await writeFile(temporary, text)
   await rename(temporary, file)
   return file
 }
 
 /** The converted catalogue at `file`, or undefined when there is none. Throws when the file is not one prefixlens wrote. */
 export async function loadCatalogue(file = cataloguePath()): Promise<CatalogueTable | undefined> {
-  const handle = Bun.file(file)
-  if (!(await handle.exists())) return undefined
-  const value: unknown = await handle.json().catch(() => undefined)
+  const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined
+    throw error
+  })
+  if (text === undefined) return undefined
+  const value: unknown = (() => {
+    try {
+      return JSON.parse(text)
+    } catch {
+      return undefined
+    }
+  })()
   if (!isRecord(value) || value.format !== "prefixlens-catalogue" || !Array.isArray(value.models) || typeof value.fetched_at !== "string")
     throw new Error(`${file} is not a catalogue written by prefixlens pricing update; delete it or run the update again`)
   value.models.forEach((entry, index) => {

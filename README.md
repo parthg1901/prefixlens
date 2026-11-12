@@ -23,9 +23,11 @@ prefixlens 0.3 is unreleased and has so far run on one machine, Linux arm64 with
 
 ## Install
 
-prefixlens is not on a package registry yet; use it from a clone.
+prefixlens is not on a package registry yet; use it from a clone, or pack the clone and install the tarball.
 
-Requirements: [Bun](https://bun.sh) 1.1 or later (developed and tested with 1.4.0), on Linux or macOS. It does not run on Node.js yet: the package's entry points are TypeScript sources and the proxy uses `Bun.serve`. There are no runtime dependencies.
+Requirements: [Node.js](https://nodejs.org) 22 or later, or [Bun](https://bun.sh) 1.1 or later, on Linux or macOS. There are no runtime dependencies. Node 22 is the oldest Node line still supported upstream (Node 20 reached end of life in March 2026), and nothing in prefixlens needs a newer one except two features, which say so when they are missing instead of raising the minimum for everyone: reading an opencode SQLite database needs Node's built-in SQLite (Node 22.13 or later), and the proxy decodes zstd-compressed request bodies (Codex with ChatGPT sign-in sends them) only on Node 22.15 or later. Bun has both.
+
+From a clone, with Bun (runs the TypeScript sources directly):
 
 ```sh
 git clone <repository URL> prefixlens && cd prefixlens
@@ -33,16 +35,20 @@ bun install              # dev dependencies only: TypeScript, Bun's types, and t
 bun src/cli.ts --help    # the CLI, run from the checkout
 ```
 
-Run `bun src/cli.ts` wherever this README says `prefixlens`, or put `prefixlens` on your PATH with `bun link` (run in the checkout; it links to the checkout, so a `git pull` updates it).
-
-To use the library or `prefixlens/test` in another project, link the checkout into it:
+Run `bun src/cli.ts` wherever this README says `prefixlens`. With Node, build first; `dist/` then holds the JavaScript and type declarations that ship:
 
 ```sh
-cd prefixlens && bun link              # once, in the checkout
-cd ../your-project && bun link prefixlens
+bun install && bun run build    # or, without Bun: npm install --no-package-lock && npm run build
+node dist/cli.js --help
 ```
 
-and add `"prefixlens": "link:prefixlens"` to that project's `devDependencies` so that `bun install` keeps the link. The project has to run on Bun (its tests with `bun test`), since prefixlens is imported as TypeScript.
+To use the CLI, the library or `prefixlens/test` in another project, on Node or Bun, pack the checkout and install the tarball there:
+
+```sh
+cd prefixlens && npm pack                          # builds dist/ and writes prefixlens-<version>.tgz (nothing is published)
+cd ../your-project && npm install --save-dev ../prefixlens/prefixlens-*.tgz    # or: bun add -d ../prefixlens/prefixlens-*.tgz
+npx prefixlens --help
+```
 
 ## Quickstart: import an existing session
 
@@ -179,7 +185,7 @@ lens.observe({
 ## Quickstart: test prefix stability in CI
 
 ```ts
-import { test } from "bun:test"
+import { test } from "node:test"          // or "bun:test"
 import { assertPrefixStable } from "prefixlens/test"
 
 test("each step extends the previous request", () => {
@@ -411,7 +417,7 @@ import { assertPrefixStable, explainPrefixDiff } from "prefixlens/test" // CI
 import { canonicalizeRequest, comparePrefix, parseTrace, analyze, renderTerminal } from "prefixlens"
 ```
 
-Beyond recording, the main export has the building blocks the CLI uses: canonicalize a provider request body into blocks, compare two requests, read and write traces (`parseTrace`, `serializeTrace`, `openTraceWriter`), analyze a trace and render reports. The package runs on Bun and has no runtime dependencies.
+Beyond recording, the main export has the building blocks the CLI uses: canonicalize a provider request body into blocks, compare two requests, read and write traces (`parseTrace`, `serializeTrace`, `openTraceWriter`), analyze a trace and render reports. The package runs on Node 22 or later and on Bun, ships its type declarations, and has no runtime dependencies. `startProxy(options)` resolves once the proxy is listening, to `{ url, hostname, port, upstream, trace, stop() }`.
 
 To write traces from your own harness that are identical to what the proxy records, call the proxy's own record builder:
 
@@ -456,12 +462,17 @@ Details, and how to report a vulnerability, are in [SECURITY.md](SECURITY.md).
 
 ```sh
 bun install
-bun test                                    # unit, adapter, CLI and privacy tests; fixtures are small and synthetic
+bun test                                    # unit, adapter, CLI and privacy tests on Bun; fixtures are small and synthetic
 bun run typecheck
+bun run build                               # dist/: JavaScript and declarations, for Node and for the package
+node --test "test-node/*.test.mjs"          # the built package on Node: CLI, library, assertions, proxy (npm run test:node builds first)
+node scripts/check-package.mjs              # npm pack, install the tarball into temporary projects with npm and Bun, and use it there
 cd examples/ci-prefix-test && bun test      # the CI example, which imports src/ through tsconfig paths
 ```
 
-CI (`.github/workflows/ci.yml`) runs these on Ubuntu and macOS with Bun 1.4.0, and fails if a trace, session log or credential is committed.
+The sources run on Bun as they are. What differs between the runtimes is kept in `src/runtime/`: the proxy's HTTP server (`Bun.serve` or `node:http`, each releasing every byte of a response, the last included, before the record is built; `test/stream-order.test.ts` and `test-node/proxy.test.mjs` check this on each) and read-only SQLite (`bun:sqlite` or `node:sqlite`). Files, hashing and compression use `node:` modules, which both runtimes provide.
+
+CI (`.github/workflows/ci.yml`) runs the Bun suite on Ubuntu and macOS with Bun 1.4.0, the Node suite and the package check on Node 22.0.0 and 26 on Ubuntu and macOS, and fails if a trace, session log or credential is committed.
 
 Test fixtures are hand-written. Never commit real session logs or traces: they contain secrets and private code.
 
