@@ -34,7 +34,7 @@ What npm's documentation says (docs.npmjs.com, "Trusted publishing for npm packa
 - `package.json`'s `repository.url` must match the GitHub repository exactly.
 - Provenance is generated only for a public package published from a public repository. The workflow passes `--provenance`, so a publish from a private repository fails instead of going out without it.
 
-So the first release takes two versions, and both should be planned before the first is published: **0.5.0** goes out by hand, and **0.5.1** follows through the workflow within npm's 2 days, to validate the trusted publisher. 0.5.1 needs a changelog section with at least one entry; the publish-time changes to the README and `SECURITY.md` in the checklist below are enough for one if nothing else has come up.
+So the first release takes two versions, and both should be planned before the first is published: **0.5.0** goes out by hand, and **0.5.1** follows through the workflow within npm's 2 days, to validate the trusted publisher. 0.5.1 needs a changelog section with at least one entry; the publish-time changes in the checklist below are enough for one if nothing else has come up.
 
 Steps:
 
@@ -57,7 +57,7 @@ Steps:
    [<version>]: https://github.com/parthg1901/prefixlens/compare/v<previous version>...v<version>
    ```
 
-   Only versions that have a tag get a link. The first tag is `v0.5.0`, so its link is to the release (`releases/tag/v0.5.0`), and the first compare link is 0.5.1's (`compare/v0.5.0...v0.5.1`). The stages under "Before the first release" (0.1.0 to 0.4.0) were never tagged and have no links.
+   Only versions that have a tag get a link. The first tag is `v0.5.0`, so its link is to the release (`releases/tag/v0.5.0`), and the first compare link is 0.5.1's (`compare/v0.5.0...v0.5.1`).
 2. Set `version` in `package.json` to the same version.
 3. Run `bun run typecheck`, `bun test`, `npm run test:node`, `node scripts/check-package.mjs` and `node scripts/release-check.mjs v<version>`.
 4. Commit, then `git tag v<version>`, `git push origin main` and `git push origin v<version>` (never `--tags`; see "Pushing").
@@ -74,18 +74,15 @@ Addresses, once the repository address is known:
 - [x] `package.json`: add `repository` (`{ "type": "git", "url": "git+https://github.com/<owner>/<repo>.git" }`), `homepage` and `bugs` (`{ "url": ".../issues" }`).
 - [x] `CHANGELOG.md`: replace `<owner>/<repo>` in the two link definitions at the bottom (`[Unreleased]` and `[0.5.0]`).
 - [x] `SECURITY.md`, "Reporting a vulnerability": add the link to the repository's private security advisory form (`https://github.com/<owner>/<repo>/security/advisories/new`).
-- [x] `README.md`, "Install": replace the `<repository URL>` placeholder in the clone command.
+- [x] `docs/development.md`, "From a clone": the clone command has the repository address.
 - [x] `docs/releasing.md` (this file): replace `<owner>/<repo>` in the `npm trust` command and in the link examples.
 
 Sentences that stop being true:
 
-- [ ] `README.md`, "Status", first paragraph ("prefixlens 0.5 is unreleased. … it has not run yet: there is no public repository. So Node support has been tested on Linux only, with Node 24 only, and nothing has been run on macOS."). After the first green CI run, change it to: "prefixlens 0.5 is the first release. The checks on real traffic below were all made on one machine, Linux arm64, with Bun 1.4.0 and Node 24.20. CI runs the Bun suite on Linux and macOS and the Node suite on Node 22.0.0 (the minimum) and 26, on Linux and macOS." Do not write this before CI has passed on every one of those.
-- [ ] `README.md`, "Status", last "Not checked" item ("the release workflow, which cannot run before there is a repository and an npm package."). With 0.5.0: "the release workflow's publish step, which runs for the first time for 0.5.1." Remove the item once 0.5.1 has gone out through the workflow.
-- [ ] `README.md`, "Install", first sentence ("prefixlens is not on a package registry yet; use it from a clone, or pack the clone and install the tarball."). Change to: "Install it from npm: `npm install --save-dev prefixlens` (or `bun add -d prefixlens`), then `npx prefixlens --help`." and keep the clone instructions below it under "From a clone". The sentence "Run `bun src/cli.ts` wherever this README says `prefixlens`" then applies to a clone only.
-- [ ] `SECURITY.md`, "Reporting a vulnerability" ("prefixlens has not had a first release yet; until it does, only the latest commit is supported."). Change to: "Only the latest released version is supported."
-- [ ] `CHANGELOG.md`, third paragraph ("No version has been published to a package registry yet. 0.5.0 is to be the first. …"). Change to: "0.5.0 is the first published version. The entries under "Before the first release" record development stages that were never published."
 - [ ] `CHANGELOG.md`: set the date in `## [0.5.0] - 2026-11-12` to the day it is published.
 - [ ] `docs/releasing.md` (this file): remove "Neither workflow has run yet" at the top once both have.
+- [ ] `docs/verification.md`: after the first green CI run, add to its second paragraph: "The test suites run in CI on Linux and macOS, with Bun 1.4.0 and with Node 22.0.0 and 26." Do not write this before CI has passed on every one of those.
+- [ ] `docs/verification.md`: remove the last "Not checked" item ("The release workflow's publish step. 0.5.0 is published by hand.") once 0.5.1 has gone out through the workflow, and keep its first line ("As of …") at the version the checks were made on.
 
 Before the tag:
 
