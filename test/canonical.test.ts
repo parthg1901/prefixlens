@@ -87,6 +87,20 @@ describe("canonicalizeAnthropic", () => {
     expect(plain.blocks.some((block) => block.breakpoint)).toBe(false)
   })
 
+  test("a top-level cache_control is a breakpoint on the last block, not a parameter", () => {
+    const messages = [user("q"), { role: "assistant", content: [{ type: "text", text: "a" }] }, user("more")]
+    const plain = canonicalizeAnthropic(body(messages))
+    const automatic = canonicalizeAnthropic(body(messages, { cache_control: { type: "ephemeral", ttl: "1h" } }))
+    expect(automatic.params).toEqual({ max_tokens: 1000 })
+    expect(automatic.blocks.map((block) => block.hash)).toEqual(plain.blocks.map((block) => block.hash))
+    // 3 tools, 1 system part, 3 messages: only the last block is marked.
+    expect(automatic.blocks.map((block) => block.breakpoint === true)).toEqual([false, false, false, false, false, false, true])
+    // A null marker sets nothing and is still not a parameter.
+    const off = canonicalizeAnthropic(body(messages, { cache_control: null }))
+    expect(off.params).toEqual({ max_tokens: 1000 })
+    expect(off.blocks.some((block) => block.breakpoint)).toBe(false)
+  })
+
   test("tolerates a request without tools or system", () => {
     const request = canonicalizeAnthropic({ model: "m", messages: [user("x")] })
     expect(request.blocks).toHaveLength(1)

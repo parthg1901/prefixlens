@@ -140,10 +140,15 @@ function draftAnthropic(body: Record<string, unknown>): Plan {
     const normalized = normalizeMessage(message)
     return draft("message", normalized.value, roleOf(normalized.value), normalized.marked)
   })
+  const blocks = [...tools, ...systemBlocks, ...messages]
+  // A cache_control at the top level of the request (automatic caching) is a breakpoint on the last
+  // block, which moves forward as the conversation grows; it is not a parameter (SPEC 4.3).
+  const last = blocks.at(-1)
+  if (last && body.cache_control !== undefined && body.cache_control !== null) last.breakpoint = true
   return {
     model: String(body.model ?? ""),
-    params: paramsWithout(body, ["model", "tools", "system", "messages"]),
-    blocks: [...tools, ...systemBlocks, ...messages],
+    params: paramsWithout(body, ["model", "tools", "system", "messages", "cache_control"]),
+    blocks,
   }
 }
 
