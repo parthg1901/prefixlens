@@ -160,6 +160,8 @@ function draftOpenAI(body: Record<string, unknown>): Plan {
     return draft("tool", stripped.value, toolName(stripped.value), stripped.marked)
   })
   const isResponses = body.input !== undefined || body.instructions !== undefined
+  // OpenAI's explicit breakpoints (prompt_cache_breakpoint, GPT-5.6 and later) sit on message parts and move between calls like cache_control.
+  const item = (message: unknown, textType?: (role: unknown) => string) => withoutOpenAIBreakpoints(normalizeMessage(message, textType))
   if (isResponses) {
     const instructions = systemParts(body.instructions, "instructions").map((part) => {
       const stripped = stripCacheControl(part)
@@ -169,7 +171,7 @@ function draftOpenAI(body: Record<string, unknown>): Plan {
       typeof body.input === "string"
         ? [{ role: "user", content: [{ type: "input_text", text: body.input }] }]
         : asArray(body.input)
-    const items = leadingSystem(input.map((item) => normalizeMessage(item, (role) => (role === "assistant" ? "output_text" : "input_text"))))
+    const items = leadingSystem(input.map((entry) => item(entry, (role) => (role === "assistant" ? "output_text" : "input_text"))))
     return {
       model: String(body.model ?? ""),
       params: paramsWithout(body, ["model", "tools", "functions", "instructions", "input"]),
@@ -179,7 +181,7 @@ function draftOpenAI(body: Record<string, unknown>): Plan {
   return {
     model: String(body.model ?? ""),
     params: paramsWithout(body, ["model", "tools", "functions", "messages"]),
-    blocks: [...tools, ...leadingSystem(asArray(body.messages).map((message) => normalizeMessage(message)))],
+    blocks: [...tools, ...leadingSystem(asArray(body.messages).map((message) => item(message)))],
   }
 }
 
@@ -285,6 +287,28 @@ export function stripCacheControl(value: unknown, partsKey: "content" | "parts" 
     value: { ...rest, [partsKey]: parts.map((part) => part.value) },
     marked: cache_control !== undefined || parts.some((part) => part.marked),
   }
+}
+
+/**
+ * Removes OpenAI's `prompt_cache_breakpoint` from a message item and from each element of its
+ * `content` array (and of `output`, where a Responses `function_call_output` carries parts), keeping
+ * where it was as the block's breakpoint (SPEC 4.3).
+ */
+function withoutOpenAIBreakpoints(stripped: { value: unknown; marked: boolean }): { value: unknown; marked: boolean } {
+  if (!isRecord(stripped.value)) return stripped
+  const { prompt_cache_breakpoint, ...rest } = stripped.value
+  let marked = stripped.marked || prompt_cache_breakpoint !== undefined
+  for (const key of ["content", "output"]) {
+    const list = rest[key]
+    if (!Array.isArray(list)) continue
+    rest[key] = list.map((part) => {
+      if (!isRecord(part) || part.prompt_cache_breakpoint === undefined) return part
+      marked = true
+      const { prompt_cache_breakpoint: marker, ...unmarked } = part
+      return unmarked
+    })
+  }
+  return prompt_cache_breakpoint === undefined && !marked ? stripped : { value: rest, marked }
 }
 
 function block(kind: BlockKind, stripped: { value: unknown; marked: boolean }, key?: string): Draft {

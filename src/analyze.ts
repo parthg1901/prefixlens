@@ -1,6 +1,7 @@
 // Turns a trace into per-call results: hit rate, cost, whether the call missed
 // a cache it should have hit, and why.
 
+import { isRecord } from "./canonical.ts"
 import { coveringBreaks, declaredBreaks, describePosition, keptBlocks, type DeclaredBreak } from "./breaks.ts"
 import { CAUSE_GROUP, comparePrefix, type Cause, type CauseGroup, type PrefixChange, type Region } from "./diff.ts"
 import { resolvePrice, type CatalogueTable, type PriceSources, type Resolution } from "./catalogue.ts"
@@ -265,8 +266,13 @@ function expectedCached(previous: TraceRecord, minimum: number): number {
 /** Providers that cache prompt prefixes automatically. Their write figures are billing facts, not a measure of what was cached. */
 const IMPLICIT_CACHING = new Set(["openai", "gemini"])
 
-/** Explicit caching: a known explicit-caching provider (Anthropic), or any other provider that reports writes. */
+/**
+ * Explicit caching: a known explicit-caching provider (Anthropic), any other provider that reports
+ * writes, or OpenAI in explicit-only mode (`prompt_cache_options.mode: "explicit"`, GPT-5.6 and
+ * later), which caches only up to the breakpoints a request sets and nothing without one.
+ */
 function explicitCaching(record: TraceRecord): boolean {
+  if (record.provider === "openai") return isRecord(record.params?.prompt_cache_options) && record.params.prompt_cache_options.mode === "explicit"
   return record.usage.cache_write_tokens !== null && !IMPLICIT_CACHING.has(record.provider)
 }
 

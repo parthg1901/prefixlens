@@ -74,6 +74,8 @@ export const PARAM_RULES: Record<string, Record<string, ParamRule>> = {
     response_format: prefix("start", "assumed", "Chat Completions name for the structured-output format the guide documents"),
     context_management: prefix("start", "documented", `${OPENAI_DOCS}: compaction replaces earlier conversation content`),
     prompt_cache_key: prefix("start", "documented", "OpenAI prompt-caching guide: keys influence routing to a cache"),
+    prompt_cache_options: none("assumed", "selects which breakpoints are written (mode), their minimum lifetime (ttl) and diagnostics (comparison_response_id, a new id on every call); a read still needs the rendered prefix to match"),
+    prompt_cache_retention: none("assumed", "a maximum retention policy (deprecated for prompt_cache_options.ttl); does not change the prompt"),
     user: prefix("start", "documented", "OpenAI API reference: `user` is used to bucket similar requests for cache hits, and is deprecated in favour of prompt_cache_key"),
     store: none("assumed", "response storage only"),
     include: none("assumed", "selects response fields only"),

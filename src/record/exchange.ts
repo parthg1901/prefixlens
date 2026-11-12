@@ -195,7 +195,7 @@ export function recordFrom(input: RecordInput, canonical: CanonicalRequest): Tra
   const provider = PROVIDER_OF[input.api]
   const given = input.headers instanceof Headers ? input.headers : new Headers(input.headers)
   const headers = Object.fromEntries(RECORDED_HEADERS.flatMap((name) => (given.get(name) ? [[name, given.get(name)!]] : [])))
-  const ttl = input.api === "anthropic-messages" ? anthropicTtl(input.body) : undefined
+  const ttl = input.api === "anthropic-messages" ? anthropicTtl(input.body) : openaiTtl(input.body)
   return {
     v: 1,
     ...(input.response.id ? { id: input.response.id } : {}),
@@ -230,6 +230,19 @@ function anthropicTtl(body: Record<string, unknown>): number | undefined {
   const last = markers.at(-1)
   if (!last) return undefined
   return last.ttl === "1h" ? 3600 : 300
+}
+
+// OpenAI (GPT-5.6 and later): the minimum lifetime of what a request wrote, when the request sets one.
+// In implicit mode the last breakpoint is the implicit one, which takes prompt_cache_options.ttl; in
+// explicit mode it is the last explicit breakpoint, whose own ttl overrides the request's.
+function openaiTtl(body: Record<string, unknown>): number | undefined {
+  const options = isRecord(body.prompt_cache_options) ? body.prompt_cache_options : {}
+  const items = Array.isArray(body.input) ? body.input : asArray(body.messages)
+  const marks = items
+    .flatMap((item) => (isRecord(item) ? [item, ...asArray(item.content), ...asArray(item.output)] : []))
+    .flatMap((part) => (isRecord(part) && isRecord(part.prompt_cache_breakpoint) ? [part.prompt_cache_breakpoint] : []))
+  const ttl = options.mode === "explicit" ? (marks.at(-1)?.ttl ?? options.ttl) : options.ttl
+  return ttl === "12h" ? 43_200 : ttl === "30m" ? 1800 : undefined
 }
 
 function withoutNulls(object: Record<string, unknown>) {

@@ -290,6 +290,8 @@ Prompt caching is a prefix match. The provider caches the request up to a point,
 - **Model or parameter changes.** Caches are per model. Which parameters count depends on the provider: on Anthropic, changing thinking, effort or `tool_choice` invalidates cached messages (documented); on OpenAI, reasoning effort, verbosity, the output format and `parallel_tool_calls` count (documented), and `tool_choice` does not (measured on the Responses API).
 - **Provider-side or expiry misses.** The prefix is intact, but more time passed than the TTL (5 minutes by default, 1 hour if requested), or the provider evicted or routed elsewhere.
 
+Breakpoints count where a provider caches only up to them: Anthropic's `cache_control`, and OpenAI's `prompt_cache_breakpoint` in explicit-only mode (`prompt_cache_options.mode: "explicit"`, GPT-5.6 and later). Both are recorded as `breakpoint` on the block and left out of its hash, so a breakpoint that moves is not an edit; a change after the previous call's last breakpoint is not blamed for a miss.
+
 prefixlens separates these: with full requests it proves which block changed, or that none did.
 
 ## How it decides
@@ -310,7 +312,7 @@ A parameter change explains a miss only if the provider caches on it. prefixlens
 | | verified (measured live) | documented (provider's caching docs) | assumed |
 |---|---|---|---|
 | Anthropic | | `tool_choice` (messages only), `thinking`, `output_config.effort`, `speed` | sampling and output limits don't count; `context_management`, `mcp_servers` do |
-| OpenAI | `tool_choice` does not count (Responses API) | `reasoning`, `text`, `parallel_tool_calls`, `context_management`, `prompt_cache_key` count | `tool_choice` on Chat Completions; the Chat names `reasoning_effort`, `verbosity`, `response_format`; sampling, limits, `store`, `include` don't count |
+| OpenAI | `tool_choice` does not count (Responses API) | `reasoning`, `text`, `parallel_tool_calls`, `context_management`, `prompt_cache_key` count | `tool_choice` on Chat Completions; the Chat names `reasoning_effort`, `verbosity`, `response_format`; sampling, limits, `store`, `include`, `prompt_cache_options`, `prompt_cache_retention` don't count |
 | Gemini | | | everything but sampling and limits counts |
 
 Any parameter not in the table is assumed to count, so a change is never silently ignored.
