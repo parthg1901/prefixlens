@@ -30,7 +30,7 @@ Misses
 npm install --save-dev prefixlens    # or: bun add -d prefixlens
 ```
 
-Requires Node.js 22 or later, or Bun 1.1 or later. There are no runtime dependencies.
+Requires Node.js 22 or later, or Bun (tested with 1.4). There are no runtime dependencies.
 
 ## Quickstart
 

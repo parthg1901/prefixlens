@@ -9,7 +9,7 @@ Releases are published by `.github/workflows/release.yml` when a tag `v<version>
 
 While `package.json` has `"private": true`, the first job fails with a message saying so, and nothing is published.
 
-Neither workflow has run yet: there is no repository on GitHub. Everything here about what they do is read from the workflow files, not observed.
+Neither workflow has completed a run yet. Everything here about what they do is read from the workflow files, not observed.
 
 ## Pushing
 
