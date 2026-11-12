@@ -40,6 +40,11 @@ export const STATUS_LABEL: Record<Status, string> = {
   uncached: "no cache",
 }
 
+/** "hit", "partial miss", ...; a first call in its lane that read from the cache is "hit (warm start)". */
+export function statusLabel(turn: TurnResult): string {
+  return turn.warm_start ? `${STATUS_LABEL[turn.status]} (warm start)` : STATUS_LABEL[turn.status]
+}
+
 /** A call that lost cached tokens and that the harness did not declare as an intentional break: an avoidable miss. */
 export function isMiss(turn: TurnResult): boolean {
   return (turn.status === "miss" || turn.status === "partial") && !turn.declared_break?.intentional
@@ -59,7 +64,7 @@ export function intentionalLabel(turn: TurnResult): string {
 export function missLine(turn: TurnResult): string {
   const cost = turn.miss_cost === null ? "" : `, ~${money(turn.miss_cost)}`
   if (isIntentional(turn)) return `turn ${turn.turn}: ${intentionalLabel(turn)}${cost}; ${turn.cause?.summary ?? "cause unknown"}`
-  return `turn ${turn.turn}: ${STATUS_LABEL[turn.status]}, ${turn.cause?.summary ?? "cause unknown"}${cost}`
+  return `turn ${turn.turn}: ${statusLabel(turn)}, ${turn.cause?.summary ?? "cause unknown"}${cost}`
 }
 
 /** Facts under a miss line: tokens lost, baseline, lane, confidence, and for a declared break whether it was checked. */

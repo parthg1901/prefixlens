@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import { analyze } from "../src/analyze.ts"
 import { parsePricing } from "../src/pricing.ts"
+import { renderTerminal } from "../src/report/terminal.ts"
 import type { TraceRecord } from "../src/trace.ts"
 import { assistant, body, fullRecord, resetClock, TEST_PRICING, TOOLS, toolResult, toolUse, usage, usageRecord, user } from "./helpers.ts"
 
@@ -245,6 +246,23 @@ describe("analyze", () => {
   test("implicit caching below the minimum prompt size is uncached", () => {
     const openai = (input: number): TraceRecord => ({ ...usageRecord("gpt-test", usage(input, 0, null)), provider: "openai" })
     expect(run([openai(500), openai(700)]).turns[1]!.status).toBe("uncached")
+  })
+
+  test("a first call in its lane that read from the cache is a hit, shown as a warm start", () => {
+    // A new session whose tools and instructions an earlier session had left cached: 7,616 of 7,718 tokens read.
+    const fresh = (read: number): TraceRecord => ({ ...usageRecord("gpt-test", usage(7718 - read, read, null), { session: "s2" }), provider: "openai" })
+    const result = run([fresh(7616)])
+    expect(result.turns[0]).toMatchObject({ status: "hit", warm_start: true, lost_tokens: 0, expected_cached_tokens: 0, miss_cost: 0 })
+    expect(result.turns[0]!.cause).toBeUndefined()
+    expect(result.summary.status).toMatchObject({ cold: 0, hit: 1 })
+    expect(result.summary.notes[0]).toBe(
+      "1 call was the first in its lane and still read from the cache (a warm start: an earlier call outside the lane, such as another session with the same tools and instructions, had left that prefix cached). It is counted as a hit.",
+    )
+    expect(renderTerminal(result)).toContain("98.7%  $0.0044  hit (warm start)")
+    // A first call that read nothing is cold, as before.
+    const cold = run([fresh(0)])
+    expect(cold.turns[0]).toMatchObject({ status: "cold", cause: { summary: "first call in this lane: nothing cached yet" } })
+    expect(cold.turns[0]!.warm_start).toBeUndefined()
   })
 
   test("lanes are compared separately", () => {

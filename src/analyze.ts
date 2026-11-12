@@ -62,6 +62,11 @@ export interface TurnResult {
   prefix_change?: CauseInfo
   /** On a miss or partial miss: the breaks the harness declared on this call (SPEC 6.1), and whether they excuse it. */
   declared_break?: DeclaredBreakResult
+  /**
+   * The first call in its lane, which still read from the cache: something outside the lane had left the same
+   * prefix cached (an earlier session with the same tools and instructions, say). Reported as a hit.
+   */
+  warm_start?: true
   /** The response was cut off before it ended (SPEC 2, `interrupted`): input-side counts are final, output tokens and cost are lower bounds. */
   interrupted?: true
   /** How the call was billed, when the trace says (SPEC 2, `billing`). */
@@ -195,15 +200,12 @@ function analyzeTurn(
     ...(record.billing ? { billing: record.billing } : {}),
     priced: cost ? resolution.source === "catalogue" ? ("catalogue" as const) : ("table" as const) : record.usage.reported_cost !== undefined ? ("reported" as const) : ("none" as const),
   }
-  if (!previous)
-    return {
-      ...base,
-      expected_cached_tokens: 0,
-      lost_tokens: 0,
-      status: "cold",
-      miss_cost: cost ? 0 : null,
-      cause: { cause: "cold_start", group: CAUSE_GROUP.cold_start, summary: "first call in this lane: nothing cached yet", confidence: "confirmed" },
-    }
+  if (!previous) {
+    const first = { ...base, expected_cached_tokens: 0, lost_tokens: 0, miss_cost: cost ? 0 : null }
+    // Nothing in the lane to compare with, but the call's own usage says whether it started cold.
+    if (record.usage.cache_read_tokens > 0) return { ...first, status: "hit", warm_start: true }
+    return { ...first, status: "cold", cause: { cause: "cold_start", group: CAUSE_GROUP.cold_start, summary: "first call in this lane: nothing cached yet", confidence: "confirmed" } }
+  }
 
   const gap = (Date.parse(record.ts) - Date.parse(previous.ts)) / 1000
   if (gap < 0) warnings.push(`turn ${index + 1}: timestamp is earlier than the previous call in its lane`)
@@ -544,7 +546,13 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
   const learnt = [...steps]
     .filter(([, tokens]) => tokens !== IMPLICIT_STEP_TOKENS)
     .map(([key, tokens]) => ({ provider: key.split("\u0000")[0]!, model: key.split("\u0000")[1]!, tokens }))
+  const warm = turns.filter((turn) => turn.warm_start).length
   const notes = [
+    ...(warm > 0
+      ? [
+          `${warm === 1 ? "1 call was" : `${warm} calls were`} the first in ${warm === 1 ? "its" : "their"} lane and still read from the cache (a warm start: an earlier call outside the lane, such as another session with the same tools and instructions, had left that prefix cached). ${warm === 1 ? "It is" : "They are"} counted as ${warm === 1 ? "a hit" : "hits"}.`,
+        ]
+      : []),
     ...learnt.map(
       (step) =>
         `Cache reads for ${step.model} come in steps of ${step.tokens.toLocaleString("en-US")} tokens in this trace (the greatest common divisor of the reads seen), not the usual 128: what a call is expected to read is counted in those steps, and a request that exactly extends the previous one is a hit when it is less than one step short.`,

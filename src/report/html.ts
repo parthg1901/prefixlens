@@ -2,7 +2,7 @@
 // of inline script for filtering. No external requests.
 
 import type { Analysis, TurnResult } from "../analyze.ts"
-import { atLeast, clock, costBasis, cutOffMark, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, spansDays, STATUS_LABEL, tokens } from "./format.ts"
+import { atLeast, clock, costBasis, cutOffMark, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, spansDays, statusLabel, tokens } from "./format.ts"
 
 export interface HtmlOptions {
   title?: string
@@ -121,7 +121,7 @@ function diffLine(line: string): string {
 
 function row(turn: TurnResult, multiLane: boolean, withDate: boolean): string {
   const intentional = isIntentional(turn)
-  const label = `${intentional ? intentionalLabel(turn) : STATUS_LABEL[turn.status]}${cutOffMark(turn)}`
+  const label = `${intentional ? intentionalLabel(turn) : statusLabel(turn)}${cutOffMark(turn)}`
   const status = intentional || isMiss(turn) ? `${label}: ${turn.cause?.summary ?? ""}` : label
   const cost = turn.cost ? money(turn.cost.total) : turn.usage.reported_cost !== undefined ? `${money(turn.usage.reported_cost)}*` : "-"
   const statusCell = isMiss(turn) || intentional ? `<a href="#turn-${turn.turn}">${escape(status)}</a>` : escape(status)

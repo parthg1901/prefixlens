@@ -1,7 +1,7 @@
 // Plain-text report for the terminal.
 
 import type { Analysis, TurnResult } from "../analyze.ts"
-import { atLeast, clock, costBasis, cutOffMark, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, shortModel, spansDays, STATUS_LABEL, tokens } from "./format.ts"
+import { atLeast, clock, costBasis, cutOffMark, exact, intentionalLabel, isIntentional, isMiss, missFacts, missLine, money, percent, shortModel, spansDays, statusLabel, tokens } from "./format.ts"
 
 export interface TerminalOptions {
   color?: boolean
@@ -118,8 +118,8 @@ export function renderTerminal(analysis: Analysis, options: TerminalOptions = {}
 
 function statusText(turn: TurnResult): string {
   if (isIntentional(turn)) return `${intentionalLabel(turn)}${cutOffMark(turn)}: ${turn.cause?.summary ?? "cause unknown"}`
-  if (!isMiss(turn)) return `${STATUS_LABEL[turn.status]}${cutOffMark(turn)}`
-  return `${STATUS_LABEL[turn.status]}${cutOffMark(turn)}: ${turn.cause?.summary ?? "cause unknown"}`
+  if (!isMiss(turn)) return `${statusLabel(turn)}${cutOffMark(turn)}`
+  return `${statusLabel(turn)}${cutOffMark(turn)}: ${turn.cause?.summary ?? "cause unknown"}`
 }
 
 function laneLabel(lane: string): string {
