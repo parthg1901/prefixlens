@@ -50,17 +50,50 @@ export async function importClaudeCode(input: string, options: ImportOptions): P
   const files = await sessionFiles(input, options.subagents ?? true)
   const warnings: string[] = []
   const store = new MessageStore()
-  const records: TraceRecord[] = []
+  const perFile: TraceRecord[][] = []
   let costState: Entry | undefined
   // One file at a time: its small parts are read, its records built, and only the records kept.
   for (const [index, file] of files.entries()) {
     const log = await readLog(file.path, store.file(file.path), warnings)
     if (index === 0) costState = log.costState
-    records.push(...(log.requests.length > 0 ? fullRecords(log, file.lane, store.file(file.path), options.contentOnDemand === true, warnings) : usageRecords(log, file.lane, warnings)))
+    perFile.push(log.requests.length > 0 ? fullRecords(log, file.lane, store.file(file.path), options.contentOnDemand === true, warnings) : usageRecords(log, file.lane, warnings))
   }
+  const records = withoutCopies(perFile, warnings)
   records.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
   if (costState && (options.subagents ?? true)) warnings.push(...compareCostState(costState, records))
   return { records, warnings, ...(options.contentOnDemand ? { content: (hash: string) => store.content(hash) } : {}) }
+}
+
+/**
+ * The records of every file, each model call once. A resumed or forked conversation starts a new
+ * file with a copy of the earlier conversation's lines, so importing a directory would count those
+ * calls once per file they appear in. A call is the same call when its id and its timestamp are
+ * (an id alone may repeat between unrelated sessions); the copy in the file that starts earliest
+ * is kept, and of files that start together, the one that ends first: the one that was copied
+ * from. A file is never deduplicated against itself, so one resumed file imported alone keeps the
+ * calls it copied.
+ */
+function withoutCopies(perFile: TraceRecord[][], warnings: string[]): TraceRecord[] {
+  const span = (records: TraceRecord[]) => records.map((record) => Date.parse(record.ts)).reduce(([first, last], time) => [Math.min(first, time), Math.max(last, time)], [Infinity, -Infinity])
+  const ordered = perFile.map((records) => ({ records, span: span(records) })).sort((a, b) => a.span[0]! - b.span[0]! || a.span[1]! - b.span[1]!)
+  const owner = new Map<string, number>()
+  const copied = new Set<TraceRecord>()
+  for (const [index, file] of ordered.entries())
+    for (const record of file.records) {
+      if (record.id === undefined) continue
+      const key = `${record.id}\u0000${record.ts}`
+      const first = owner.get(key) ?? index
+      owner.set(key, first)
+      if (first !== index) copied.add(record)
+    }
+  const copies = copied.size
+  // In the files' own order, as before.
+  const kept = perFile.flat().filter((record) => !copied.has(record))
+  if (copies > 0)
+    warnings.push(
+      `${copies.toLocaleString("en-US")} ${copies === 1 ? "call was a copy" : "calls were copies"} of a call in an earlier session file (a resumed or forked conversation starts its file with the earlier one's lines); each call is imported once, from the file that starts earliest`,
+    )
+  return kept
 }
 
 /**

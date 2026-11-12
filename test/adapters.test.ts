@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { importClaudeCode } from "../src/adapters/claude-code.ts"
@@ -99,6 +99,70 @@ describe("claude-code adapter", () => {
     expect(records[0]!.cache_ttl_seconds).toBe(300)
     const causes = analyze(records, { pricing }).turns.map((turn) => turn.cause?.cause)
     expect(causes).toEqual(["cold_start", undefined, "cold_start", "compaction", "cache_expired"])
+  })
+
+  describe("a directory where one session file resumes or forks another", () => {
+    const at = (seconds: number) => new Date(Date.parse("2026-01-01T10:00:00Z") + seconds * 1000).toISOString()
+    // An older log's response line: one model call.
+    const call = (session: string, id: string, seconds: number, read: number, write: number) => ({
+      sessionId: session,
+      version: "1.0.99",
+      type: "assistant",
+      uuid: `${session}-${id}`,
+      isSidechain: false,
+      timestamp: at(seconds),
+      requestId: `req_${id}`,
+      message: { id, model: "claude-test-1", role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 4, cache_creation_input_tokens: write, cache_read_input_tokens: read, output_tokens: 30 } },
+    })
+    const project = (name: string, files: Record<string, unknown[]>) => {
+      const dir = path.join(temp, name)
+      mkdirSync(dir)
+      for (const [file, lines] of Object.entries(files)) writeFileSync(path.join(dir, file), lines.map((line) => JSON.stringify(line)).join("\n") + "\n")
+      return dir
+    }
+    const original = [call("session-a", "msg_1", 0, 0, 5000), call("session-a", "msg_2", 10, 5000, 100)]
+    // The resumed session's file starts with the earlier calls, copied line for line.
+    const resumed = [...original, call("session-b", "msg_3", 300, 5100, 100)]
+
+    test("each call is imported once, from the file that starts and ends earliest", async () => {
+      // The resumed file sorts first by name, so the choice is by time, not by file order.
+      const { records, warnings } = await importClaudeCode(project("resumed", { "b-original.jsonl": original, "a-resumed.jsonl": resumed }), {})
+      expect(records.map((record) => [record.id, record.lane])).toEqual([
+        ["msg_1", "b-original"],
+        ["msg_2", "b-original"],
+        ["msg_3", "a-resumed"],
+      ])
+      expect(warnings).toEqual(["2 calls were copies of a call in an earlier session file (a resumed or forked conversation starts its file with the earlier one's lines); each call is imported once, from the file that starts earliest"])
+    })
+
+    test("a copy that carries the new session's id is still a copy", async () => {
+      const fork = [call("session-b", "msg_1", 0, 0, 5000), call("session-b", "msg_2", 10, 5000, 100), call("session-b", "msg_3", 300, 5100, 100)]
+      const { records } = await importClaudeCode(project("forked", { "session-a.jsonl": original, "session-b.jsonl": fork }), {})
+      expect(records.map((record) => [record.id, record.session])).toEqual([
+        ["msg_1", "session-a"],
+        ["msg_2", "session-a"],
+        ["msg_3", "session-b"],
+      ])
+    })
+
+    test("the resumed file imported alone keeps the calls it copied", async () => {
+      const dir = project("alone", { "session-b.jsonl": resumed })
+      const { records, warnings } = await importClaudeCode(path.join(dir, "session-b.jsonl"), {})
+      expect(records.map((record) => record.id)).toEqual(["msg_1", "msg_2", "msg_3"])
+      expect(warnings).toEqual([])
+    })
+
+    test("unrelated sessions that happen to use the same call ids are both kept", async () => {
+      const later = [call("session-c", "msg_1", 900, 0, 4000), call("session-c", "msg_2", 910, 4000, 100)]
+      const { records, warnings } = await importClaudeCode(project("unrelated", { "session-a.jsonl": original, "session-c.jsonl": later }), {})
+      expect(records.map((record) => [record.id, record.session])).toEqual([
+        ["msg_1", "session-a"],
+        ["msg_2", "session-a"],
+        ["msg_1", "session-c"],
+        ["msg_2", "session-c"],
+      ])
+      expect(warnings).toEqual([])
+    })
   })
 
   test("survives a compact trace round trip", async () => {
