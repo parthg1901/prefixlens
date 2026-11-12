@@ -121,6 +121,22 @@ describe("assertPrefixStable", () => {
     expect(assertPrefixStable(canonical.blocks, canonicalizeRequest("anthropic", a2).blocks).stable).toBe(true)
   })
 
+  test("Anthropic's request-level cache_control is a breakpoint that moves, not a parameter change", () => {
+    const marker = { type: "ephemeral" }
+    const first = body([user("Hi.")])
+    const second = body([user("Hi."), assistant("Hello."), user("Go on.")], { cache_control: marker })
+    // Turning it on, and moving from a marker on the last message to the request-level one, both keep the prefix.
+    expect(assertPrefixStable(first, second)).toMatchObject({ stable: true, appended: 2 })
+    const marked = body([{ role: "user", content: [{ type: "text", text: "Hi.", cache_control: marker }] }])
+    expect(assertPrefixStable(marked, second)).toMatchObject({ stable: true, appended: 2 })
+  })
+
+  test("a body without system or tools gets Anthropic's parameter rules when its model id is Claude's", () => {
+    const bare = (toolChoice: string, messages: unknown[]) => ({ model: "claude-test-1", max_tokens: 100, tool_choice: { type: toolChoice }, messages })
+    const result = explainPrefixDiff(bare("auto", [user("Hi.")]), bare("none", [user("Hi."), assistant("Hello.")]))
+    expect(result.change).toMatchObject({ cause: "params_changed", summary: "request parameters changed: tool_choice", detail: { from: "messages" } })
+  })
+
   test("a Gemini body needs provider: gemini", () => {
     const gemini = (contents: unknown[]) => ({ model: "gemini-test", systemInstruction: { parts: [{ text: "Synthetic." }] }, contents })
     const hi = { role: "user", parts: [{ text: "Hi." }] }

@@ -60,6 +60,27 @@ describe("reading responses", () => {
     expect(apiFromBody(anthropicBody([user("hi")]))).toBe("anthropic-messages")
     expect(apiFromBody({ model: "m", messages: [{ role: "system", content: "x" }, user("hi")] })).toBe("openai-chat")
   })
+
+  test("an Anthropic body without system or tools is told by what only Anthropic sends", () => {
+    const parts = (text: string) => ({ role: "user", content: [{ type: "text", text }] })
+    const bare = { max_tokens: 100, messages: [parts("hi")] }
+    expect(apiFromBody({ ...bare, model: "m", stop_sequences: ["END"] })).toBe("anthropic-messages")
+    expect(apiFromBody({ ...bare, model: "m", cache_control: { type: "ephemeral" } })).toBe("anthropic-messages")
+    expect(apiFromBody({ ...bare, anthropic_version: "bedrock-2023-05-31" })).toBe("anthropic-messages")
+    expect(apiFromBody({ ...bare, model: "claude-test-1" })).toBe("anthropic-messages")
+    // Nothing decides this one: it is valid for both APIs, and stays Chat Completions (pass `provider` to say otherwise).
+    expect(apiFromBody({ ...bare, model: "m" })).toBe("openai-chat")
+  })
+
+  test("a Claude model served in Chat Completions format stays Chat Completions", () => {
+    const claude = { model: "claude-test-1", max_tokens: 100 }
+    expect(apiFromBody({ ...claude, messages: [{ role: "system", content: "x" }, user("hi")] })).toBe("openai-chat")
+    expect(apiFromBody({ ...claude, stop: ["END"], messages: [user("hi")] })).toBe("openai-chat")
+    expect(apiFromBody({ ...claude, tools: [{ type: "function", function: { name: "read_file" } }], messages: [user("hi")] })).toBe("openai-chat")
+    expect(apiFromBody({ ...claude, messages: [user("hi"), { role: "assistant", content: null, tool_calls: [] }] })).toBe("openai-chat")
+    // A router's id for a Claude model is not Anthropic's own id.
+    expect(apiFromBody({ model: "anthropic/claude-test-1", messages: [user("hi")] })).toBe("openai-chat")
+  })
 })
 
 describe("buildRecord, the public record builder", () => {

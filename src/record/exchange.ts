@@ -27,23 +27,38 @@ export function apiFromPath(pathname: string): Api | undefined {
 
 /**
  * The API a request body was written for, from its shape: `input` or
- * `instructions` mean Responses; a top-level `system`, Anthropic-style tools
- * or content parts mean Anthropic Messages; anything else with `messages` is
- * Chat Completions.
+ * `instructions` mean Responses; a top-level `system`, `thinking`,
+ * `stop_sequences`, `cache_control` or `anthropic_version`, Anthropic-style
+ * tools or content parts mean Anthropic Messages; so does a `claude` model id,
+ * unless the body has something only Chat Completions has (gateways serve
+ * Claude models in that format too). Anything else with `messages` is Chat
+ * Completions, including a body with nothing that tells the two apart
+ * (`{ model, max_tokens, messages }` with text parts is valid for both).
  */
 export function apiFromBody(body: Record<string, unknown>): Api {
   if (body.input !== undefined || body.instructions !== undefined) return "openai-responses"
+  const messages = asArray(body.messages).filter(isRecord)
   const anthropic =
     body.system !== undefined ||
     body.thinking !== undefined ||
+    // Chat Completions calls this `stop`; request-level caching and the version field of Bedrock and Vertex bodies are Anthropic's alone.
+    body.stop_sequences !== undefined ||
+    body.cache_control !== undefined ||
+    body.anthropic_version !== undefined ||
     asArray(body.tools).some((tool) => isRecord(tool) && ("input_schema" in tool || "cache_control" in tool)) ||
-    asArray(body.messages).some(
-      (message) =>
-        isRecord(message) &&
-        asArray(message.content).some((part) => isRecord(part) && (["tool_use", "tool_result", "thinking", "redacted_thinking"].includes(String(part.type)) || "cache_control" in part)),
+    messages.some((message) =>
+      asArray(message.content).some((part) => isRecord(part) && (["tool_use", "tool_result", "thinking", "redacted_thinking"].includes(String(part.type)) || "cache_control" in part)),
     )
-  return anthropic ? "anthropic-messages" : "openai-chat"
+  if (anthropic) return "anthropic-messages"
+  const chatOnly =
+    messages.some((message) => ["system", "developer", "tool", "function"].includes(String(message.role)) || "tool_calls" in message) ||
+    asArray(body.tools).some((tool) => isRecord(tool) && tool.type === "function") ||
+    CHAT_ONLY_PARAMS.some((key) => body[key] !== undefined)
+  return !chatOnly && typeof body.model === "string" && /^claude-/.test(body.model) ? "anthropic-messages" : "openai-chat"
 }
+
+// Request fields Chat Completions has and Anthropic Messages does not.
+const CHAT_ONLY_PARAMS = ["stop", "max_completion_tokens", "n", "response_format", "frequency_penalty", "presence_penalty", "logprobs", "stream_options", "functions", "reasoning_effort", "parallel_tool_calls"]
 
 export interface ResponseSummary {
   /** Raw provider usage object, merged across stream events. */
