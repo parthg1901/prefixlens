@@ -32,7 +32,7 @@ bun run typecheck
 bun run build                               # dist/: JavaScript and declarations, for Node and for the package
 node --test "test-node/*.test.mjs"          # the built package on Node (npm run test:node builds first)
 node scripts/check-package.mjs              # pack, install the tarball into temporary projects with npm and Bun, and use it there
-cd examples/ci-prefix-test && bun test      # the CI example, which imports src/ through tsconfig paths
+cd examples/ci-prefix-test && bun test      # an example project, which imports src/ through tsconfig paths (bun test runs both examples too)
 ```
 
 CI (`.github/workflows/ci.yml`) runs, on pushes to `main` and on pull requests:

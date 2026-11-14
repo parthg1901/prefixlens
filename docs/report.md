@@ -9,6 +9,8 @@ prefixlens report session.trace.jsonl --html     # writes session.trace.html, on
 prefixlens import otel spans.json | prefixlens report -    # "-" reads the trace from stdin
 ```
 
+For a pass or a fail in CI, `prefixlens check <trace.jsonl>` reads the same analysis and exits 1 when the harness broke its own cache: see [check.md](check.md).
+
 ## The terminal report
 
 ```
@@ -76,7 +78,9 @@ Its fields are not a stable interface yet. Until 1.0 a minor version may add, re
 
 `summary` holds the calls, lanes, tokens, hit rate, cost, calls by status, misses by cause group, intentional breaks, the headline and the notes.
 
-Each entry of `turns` holds the call's usage, hit rate, cost, expected and lost cached tokens and status. A miss also has a `cause`, with `summary`, `confidence`, `detail` and a `diff` excerpt.
+Each entry of `turns` holds the call's usage, hit rate, cost, expected and lost cached tokens and status. A miss also has a `cause`, with `summary`, `confidence`, `detail`, a `diff` excerpt and, for a changed block, its `block_index` and `block_label` (`tool "web_search"`, `message #3 (assistant)`).
+
+A change that is not the cause of lost tokens is in `prefix_change`. `prefix_change_excused` says why the harness does not have to answer for it, when it does not: `declared` (a declared break allows it), `after_breakpoint` (it lies after the previous call's last cache breakpoint) or `new_conversation` (the two requests share no message).
 
 Strings are the trace's content as it was, except the `diff` excerpts, in which control characters are written visibly (`\x1b`).
 

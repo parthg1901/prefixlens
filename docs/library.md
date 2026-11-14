@@ -2,11 +2,11 @@
 
 ```ts
 import { wrap, createLens, startProxy, buildRecord } from "prefixlens"   // recording
-import { assertPrefixStable, explainPrefixDiff } from "prefixlens/test"  // tests
-import { canonicalizeRequest, comparePrefix, parseTrace, analyze, renderTerminal } from "prefixlens"
+import { assertPrefixStable, recordRequests } from "prefixlens/test"     // tests
+import { canonicalizeRequest, comparePrefix, parseTrace, analyze, classifyMisses, renderTerminal } from "prefixlens"
 ```
 
-The package runs on Node 22 or later and on Bun, ships its type declarations, and has no runtime dependencies. The assertions are documented in [assertions.md](assertions.md).
+The package runs on Node 22 or later and on Bun, ships its type declarations, and has no runtime dependencies. The assertions and the test session are documented in [assertions.md](assertions.md).
 
 There are four ways to record from your own code. They all build the same record, with the same function.
 
@@ -123,6 +123,7 @@ The main export has the building blocks the CLI uses:
 - **Canonicalizing and comparing.** `canonicalizeRequest` (and `canonicalizeAnthropic`, `canonicalizeOpenAI`, `canonicalizeGemini`) turns a provider request body into blocks. `comparePrefix` and `firstDivergence` compare two requests.
 - **Traces.** `parseTrace`, `serializeTrace`, `openTraceWriter`, `createTraceEncoder`, `TRACE_FORMAT_VERSION`.
 - **Analysis and reports.** `analyze`, `renderTerminal`, `renderJson`, `renderHtml`.
+- **The CI check.** `classifyMisses` sorts the calls of an analysis into classes and says whether the trace passes; `renderCheck` and `renderCheckJson` print it. See [check.md](check.md#from-code).
 - **Rules.** `PARAM_RULES` and `paramRule` (which parameters count), `BREAK_REASONS` and `declaredBreaks` (intentional breaks), `CAUSE_GROUP`.
 - **Pricing.** `loadPricing`, `findPrice`, `costOf`, and the models.dev catalogue functions.
 - **Importers.** `ADAPTERS`, `findAdapter`.

@@ -1,0 +1,8 @@
+{
+  "name": "prefixlens-example-session",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  }
+}

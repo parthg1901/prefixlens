@@ -7,6 +7,7 @@ prefixlens record --provider anthropic -o run.trace.jsonl     # listens on 127.0
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8787               # in another terminal, then run your agent as usual
 # Ctrl-C the proxy, then
 prefixlens report run.trace.jsonl
+prefixlens check run.trace.jsonl                              # in CI: exits 1 when the harness broke its own cache
 ```
 
 While it runs, the proxy prints one line per call, so you can watch the hit rate while you work:
@@ -112,9 +113,11 @@ A plain `GET` navigation or image load carries no `Origin`. It is forwarded, unr
 One proxy often carries several conversations at once (subagents, title generation, side queries), and each call must be compared with the call it builds on. The proxy assigns lanes by shared prefix. A call joins the first of these that applies:
 
 1. the lane whose latest request it extends;
-2. else the lane it shares the most leading messages with, when it also shares the start of the request, or that lane is idle with the same tools or system prompt (an edit, a mode switch);
+2. else the lane it shares the most leading messages with, when it also shares the start of the request, or that lane is idle with the same tools or system prompt (an edit, a mode switch). With no tools on either side and another system prompt, it must also add a message: a title written from a conversation's first message is not that conversation;
 3. else an idle lane with the same tools and system prompt (a compaction);
 4. else it opens a new lane.
+
+The [test session](assertions.md#lanes) of `prefixlens/test` uses the same rules, and one more for a single agent under test.
 
 A call that does not extend a lane joins it only when its cache key (the `session-id` header, else `prompt_cache_key`) matches. A harness that names its conversations this way gets a lane per conversation.
 

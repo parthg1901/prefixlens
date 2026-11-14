@@ -36,30 +36,36 @@ Requires Node.js 22 or later, or Bun (tested with 1.4). There are no runtime dep
 
 ### 1. Test prefix stability in CI
 
-Build the request for two consecutive steps the way your harness does, and assert that the second keeps the first one's prefix. Nothing is sent to a provider.
+**Your harness builds the request.** Build it for two consecutive steps, and assert that the second keeps the first one's prefix. Nothing is sent to a provider:
 
 ```ts
-import { test } from "node:test"                  // or "bun:test"
 import { assertPrefixStable } from "prefixlens/test"
-
-// Stand-in for your harness: the request body it sends for a given history.
-const buildRequest = (messages) => ({
-  model: "claude-opus-5-5",
-  max_tokens: 1024,
-  system: "You are a coding agent.",
-  tools: [{ name: "read_file", description: "Read a file", input_schema: { type: "object" } }],
-  messages,
-})
 
 test("a new step extends the previous request", () => {
   const history = [{ role: "user", content: "Fix the failing test." }]
-  const first = buildRequest(history)
+  const first = buildRequest(history)             // your harness's own request builder
   const second = buildRequest([...history, { role: "assistant", content: "Reading it now." }, { role: "user", content: "Go on." }])
   assertPrefixStable(first, second)
 })
 ```
 
-When the builder puts the current time in the system prompt, the test fails with the first changed block, a diff and a fix:
+**You use a framework.** The request is built inside it, so give its model provider a session's `fetch`. The session answers every model call itself, with no network, records each request, and compares it with the one before it in the same conversation:
+
+```ts
+import { recordRequests } from "prefixlens/test"
+
+test("the agent keeps its prefix from one question to the next", async () => {
+  const session = recordRequests()
+  const model = createAnthropic({ apiKey: "test", fetch: session.fetch })("claude-sonnet-5-5")
+  const agent = new Agent({ model, instructions, tools, memory })   // your framework's agent
+
+  await agent.generate("first question")
+  await agent.generate("second question")
+  session.assertStable()
+})
+```
+
+When the current time is in the system prompt, the test fails with the first changed block, a diff and a fix (a session also names the call):
 
 ```
 PrefixBreakError: prefix not stable: system prompt changed: a timestamp value was updated (2026-01-01T10:00:00Z → 2026-01-01T10:00:01Z)
@@ -74,7 +80,7 @@ PrefixBreakError: prefix not stable: system prompt changed: a timestamp value wa
   if this change is intentional, pass { allowBreak: { reason: "..." } }
 ```
 
-More in [assertions](https://github.com/parthg1901/prefixlens/blob/main/docs/assertions.md).
+A session can also script tool calls and allow a compaction at the call where it happens. More in [assertions](https://github.com/parthg1901/prefixlens/blob/main/docs/assertions.md).
 
 ### 2. Record through the proxy
 
@@ -94,9 +100,10 @@ Stop the proxy with Ctrl-C, then read the report:
 
 ```sh
 npx prefixlens report run.trace.jsonl          # add --html for a self-contained page, --json for the data
+npx prefixlens check run.trace.jsonl           # the CI step: exits 1 when your harness broke its own cache
 ```
 
-Credentials are forwarded and never written. More in [proxy](https://github.com/parthg1901/prefixlens/blob/main/docs/proxy.md).
+Credentials are forwarded and never written. More in [proxy](https://github.com/parthg1901/prefixlens/blob/main/docs/proxy.md) and [check](https://github.com/parthg1901/prefixlens/blob/main/docs/check.md).
 
 ### 3. Wrap your client
 
@@ -128,6 +135,7 @@ Any client of the Anthropic Messages, OpenAI Chat Completions or OpenAI Response
 | | |
 |---|---|
 | Assertions | Request bodies in those three formats, and Gemini `generateContent` bodies with `provider: "gemini"`. |
+| Test sessions | Any SDK or framework that accepts a `fetch` function and sends one of those three formats, streamed or not. |
 | Proxy, `wrap`, `lens.fetch`, `lens.observe`, `buildRecord` | Calls in those three formats, streamed or not. A gateway's or another provider's compatible endpoint is recorded in the format it uses. |
 | Caching | Implicit caches (OpenAI, Gemini) and explicit breakpoints (Anthropic `cache_control`, OpenAI `prompt_cache_breakpoint`). |
 | Other languages | The proxy, or a trace written to [SPEC.md](SPEC.md). |
@@ -153,7 +161,7 @@ More in [reports](https://github.com/parthg1901/prefixlens/blob/main/docs/report
 
 A compaction, a revert or a model change the user asked for breaks the prefix on purpose. Declare it, and it is reported as an intentional break, with its cost totalled apart from the misses that point at bugs.
 
-In a test: `assertPrefixStable(prev, next, { allowBreak: "compaction" })`. In a trace: a `prefix_break` hint on the first call after the break.
+In a test: `assertPrefixStable(prev, next, { allowBreak: "compaction" })`, or `session.assertStable({ allowBreakAt: { 7: "compaction" } })` for call 7 of a session. In a trace: a `prefix_break` hint on the first call after the break.
 
 A declaration excuses one call, and only a change its reason allows. See [intentional breaks](https://github.com/parthg1901/prefixlens/blob/main/docs/intentional-breaks.md).
 
@@ -163,14 +171,15 @@ A declaration excuses one call, and only a change its reason allows. See [intent
 - Costs are API list prices from a bundled table, not your bill. Subscriptions, discounts and batch tiers are not applied, and the table can be out of date. See [pricing](https://github.com/parthg1901/prefixlens/blob/main/docs/pricing.md).
 - Gemini's native API and WebSocket transports are not recorded. Chat Completions streams are recorded only when they report usage (`stream_options: {"include_usage": true}`).
 - A trace holds your prompts, tool output and the files your agent read. Keep it private and never commit it. See [SECURITY.md](SECURITY.md).
-- The fields of `report --json` may change in a minor version before 1.0. What has been checked on real traffic is listed in [verification](https://github.com/parthg1901/prefixlens/blob/main/docs/verification.md).
+- The fields of `report --json` and `check --json` may change in a minor version before 1.0. What has been checked on real traffic is listed in [verification](https://github.com/parthg1901/prefixlens/blob/main/docs/verification.md).
 
 ## Documentation
 
-- [Assertions](https://github.com/parthg1901/prefixlens/blob/main/docs/assertions.md): `assertPrefixStable`, `explainPrefixDiff`, options, example failures.
+- [Assertions](https://github.com/parthg1901/prefixlens/blob/main/docs/assertions.md): `assertPrefixStable`, `recordRequests` and its session, options, complete examples.
 - [Proxy](https://github.com/parthg1901/prefixlens/blob/main/docs/proxy.md): options, the base URL to set, lanes and sessions.
-- [Library](https://github.com/parthg1901/prefixlens/blob/main/docs/library.md): `wrap`, `createLens`, `buildRecord`, `startProxy`, other exports.
+- [Library](https://github.com/parthg1901/prefixlens/blob/main/docs/library.md): `wrap`, `createLens`, `buildRecord`, `startProxy`, `classifyMisses`, other exports.
 - [Reports](https://github.com/parthg1901/prefixlens/blob/main/docs/report.md): options, the JSON report, how verdicts are decided.
+- [CI check](https://github.com/parthg1901/prefixlens/blob/main/docs/check.md): `prefixlens check`, its classes, options and exit codes.
 - [Intentional breaks](https://github.com/parthg1901/prefixlens/blob/main/docs/intentional-breaks.md) and [pricing](https://github.com/parthg1901/prefixlens/blob/main/docs/pricing.md).
 - [Importers](https://github.com/parthg1901/prefixlens/blob/main/docs/adapters.md): for logs you already have, there are importers for OpenTelemetry GenAI spans and for the session logs of a few coding agents.
 - [Trace format](SPEC.md), [security and privacy](SECURITY.md), [changelog](CHANGELOG.md), [development](https://github.com/parthg1901/prefixlens/blob/main/docs/development.md).
