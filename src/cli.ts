@@ -9,9 +9,12 @@ import { text as streamText } from "node:stream/consumers"
 import { fileURLToPath } from "node:url"
 import { ADAPTERS, findAdapter } from "./adapters/index.ts"
 import { analyze } from "./analyze.ts"
+import { classifyMisses, isHarnessCause, MISS_CLASSES, type MissClass } from "./check.ts"
+import { CAUSE_GROUP, type Cause } from "./diff.ts"
 import { cataloguePath, loadCatalogue, parseProviderMapping } from "./catalogue.ts"
 import { loadPricing } from "./pricing.ts"
 import { printable } from "./printable.ts"
+import { renderCheck, renderCheckJson } from "./report/check.ts"
 import { renderHtml } from "./report/html.ts"
 import { renderJson } from "./report/json.ts"
 import { renderTerminal } from "./report/terminal.ts"
@@ -24,6 +27,7 @@ const HELP = `prefixlens ${VERSION}: explains prompt-cache hits and misses
 Usage:
   prefixlens import <adapter> <path> [options]   convert harness logs to a trace (JSONL)
   prefixlens report <trace.jsonl|-> [options]    report hit rates, costs and miss causes
+  prefixlens check <trace.jsonl|-> [options]     exit 1 when the harness broke its own cache (for CI)
   prefixlens record --provider <p> [options]     run a local proxy that records every model call
   prefixlens adapters                            list adapters and what they can diagnose
   prefixlens pricing update [--from <file>]      fetch models.dev prices into the user cache (network)
@@ -59,6 +63,15 @@ report options:
   --all                 show every row and every miss in the terminal report
   --no-color            plain terminal output (also honours NO_COLOR)
 
+check options:
+  --fail-on <classes>   also fail on these, comma-separated: unexplained, intentional, expiry,
+                        provider-side, cold-start, warm-start (default: avoidable misses and
+                        undeclared prefix changes only)
+  --allow <causes>      causes that are intentional in this trace, comma-separated, e.g. compaction
+  --json                print the verdict for every call, and the counts, as JSON
+  --pricing, --no-catalogue, --catalogue-provider, --tolerance   as for report
+  exit codes: 0 pass, 1 a call fails, 2 the trace could not be checked
+
 pricing options:
   --from <file>         read a saved copy of https://models.dev/api.json instead of fetching it
   --pricing <file>      the table to compare with or look in (default: as for report)
@@ -74,12 +87,13 @@ Examples:
   prefixlens import claude-code ~/.claude/projects/-my-project/<session-id>.jsonl -o session.trace.jsonl
   prefixlens import opencode ~/.local/share/opencode/opencode.db --list
   prefixlens report session.trace.jsonl --html
+  prefixlens check run.trace.jsonl --fail-on expiry           # in CI, after a recorded run
   prefixlens record --provider anthropic -o run.trace.jsonl   # then ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 `
 
 type Flags = Record<string, string | true>
 
-const VALUE_FLAGS = new Set(["out", "session", "pricing", "tolerance", "provider", "port", "host", "upstream", "allow-origin", "from", "date", "catalogue-provider"])
+const VALUE_FLAGS = new Set(["out", "session", "pricing", "tolerance", "provider", "port", "host", "upstream", "allow-origin", "from", "date", "catalogue-provider", "fail-on", "allow"])
 const KNOWN_FLAGS = new Set([...VALUE_FLAGS, "list", "no-subagents", "json", "html", "all", "no-color", "no-catalogue", "keep-identifiers", "keep-binary", "quiet", "help", "version"])
 const ALIASES: Record<string, string> = { o: "out", h: "help", v: "version" }
 
@@ -101,6 +115,7 @@ export async function main(argv: string[]): Promise<number> {
   if (command === "adapters") return listAdapters()
   if (command === "import") return runImport(positionals.slice(1), flags)
   if (command === "report") return runReport(positionals.slice(1), flags)
+  if (command === "check") return runCheck(positionals.slice(1), flags)
   if (command === "record") return runRecord(flags)
   if (command === "pricing") {
     const mapping = typeof flags["catalogue-provider"] === "string" ? parseProviderMapping(flags["catalogue-provider"]) : undefined
@@ -202,37 +217,9 @@ async function writeLines(file: string, lines: Iterable<string>) {
 async function runReport(args: string[], flags: Flags): Promise<number> {
   const [input] = args
   if (!input) return fail("usage: prefixlens report <trace.jsonl|->")
-  const text = input === "-" ? await streamText(process.stdin) : await readFile(expandHome(input))
-  if (text === undefined) return fail(`cannot read ${input}`)
-  const name = input === "-" ? "stdin" : input
-  if (text.trim() === "") return fail(`${name} is empty: no trace records (did the import find any model calls?)`)
-  const parsed = parseTrace(text)
-  if (parsed.records.length === 0 && !looksLikeTrace(text))
-    return fail(`${name} is not a prefixlens trace (no line has "v": 1); convert harness logs first with prefixlens import <adapter> <path>`)
-  for (const error of parsed.errors.slice(0, 20)) console.error(printable(`error: ${error}`))
-  if (parsed.errors.length > 20) console.error(`error: ... ${parsed.errors.length - 20} more`)
-  if (parsed.records.length === 0) return fail(parsed.errors.length > 0 ? "no valid trace records" : "the trace has no records (the import found no model calls with usage)")
-  const pricingPath = typeof flags.pricing === "string" ? flags.pricing : undefined
-  const pricing = await loadPricing(pricingPath)
-  const tolerance = typeof flags.tolerance === "string" ? Number(flags.tolerance) : undefined
-  if (tolerance !== undefined && !(Number.isFinite(tolerance) && tolerance >= 0)) return fail("--tolerance must be a non-negative number")
-  const catalogueProviders = typeof flags["catalogue-provider"] === "string" ? parseProviderMapping(flags["catalogue-provider"]) : undefined
-  const catalogueWarnings: string[] = []
-  const catalogue =
-    flags["no-catalogue"] === true
-      ? undefined
-      : await loadCatalogue().catch((error: unknown) => {
-          catalogueWarnings.push(`not using the models.dev prices: ${error instanceof Error ? error.message : String(error)}`)
-          return undefined
-        })
-  const analysis = analyze(parsed.records, {
-    pricing,
-    ...(catalogue ? { catalogue } : {}),
-    ...(catalogueProviders ? { catalogueProviders } : {}),
-    ...(tolerance !== undefined ? { toleranceTokens: tolerance } : {}),
-  })
-  analysis.warnings.unshift(...parsed.warnings, ...catalogueWarnings)
-  const pricingSource = pricingPath || process.env.PREFIXLENS_PRICING || "bundled pricing.json"
+  const loaded = await loadAnalysis(input, flags)
+  if (typeof loaded === "string") return fail(loaded)
+  const { analysis, pricing, pricingSource, catalogue } = loaded
   const usesCatalogue = analysis.turns.some((turn) => turn.priced === "catalogue")
   const pricingNote = `prices from ${pricingSource === "bundled pricing.json" ? "the bundled pricing.json" : pricingSource}${pricing.as_of ? ` (as of ${pricing.as_of})` : ""}${catalogue && usesCatalogue ? `, then models.dev (fetched ${catalogue.fetched_at.slice(0, 10)}) for models it does not list` : ""}`
   const title = input === "-" ? "stdin" : path.basename(input)
@@ -252,6 +239,62 @@ async function runReport(args: string[], flags: Flags): Promise<number> {
       }),
     )
   return 0
+}
+
+// The CI gate: the report's analysis, sorted into classes, with an exit code. 2 means the check could not be made.
+async function runCheck(args: string[], flags: Flags): Promise<number> {
+  const [input] = args
+  if (!input) return fail("usage: prefixlens check <trace.jsonl|-> [--fail-on <classes>] [--allow <causes>] [--json]", 2)
+  const list = (flag: string | true | undefined) => (typeof flag === "string" ? flag.split(",").map((name) => name.trim()).filter(Boolean) : [])
+  const optional = MISS_CLASSES.filter((name) => name !== "ok" && name !== "avoidable" && name !== "undeclared-change")
+  const failOn = list(flags["fail-on"])
+  const unknownClass = failOn.find((name) => !MISS_CLASSES.includes(name as MissClass) || name === "ok")
+  if (unknownClass !== undefined) return fail(`--fail-on ${unknownClass}: not a class of call; choose from ${optional.join(", ")} (avoidable and undeclared-change always fail)`, 2)
+  const allow = list(flags.allow)
+  const causes = (Object.keys(CAUSE_GROUP) as Cause[]).filter(isHarnessCause)
+  const unknownCause = allow.find((name) => !causes.includes(name as Cause))
+  if (unknownCause !== undefined) return fail(`--allow ${unknownCause}: not a cause a harness controls; choose from ${causes.join(", ")}`, 2)
+  const loaded = await loadAnalysis(input, flags)
+  if (typeof loaded === "string") return fail(loaded, 2)
+  for (const warning of loaded.analysis.warnings.slice(0, 10)) console.error(printable(`warning: ${warning}`))
+  const check = classifyMisses(loaded.analysis, { failOn: failOn as MissClass[], allow: allow as Cause[] })
+  process.stdout.write(flags.json ? renderCheckJson(check, { trace: input }) : renderCheck(check, { title: input === "-" ? "stdin" : path.basename(input) }))
+  return check.ok ? 0 : 1
+}
+
+/** Reads a trace and analyzes it with the pricing the flags name. Returns a message when it cannot. */
+async function loadAnalysis(input: string, flags: Flags) {
+  const text = input === "-" ? await streamText(process.stdin) : await readFile(expandHome(input))
+  if (text === undefined) return `cannot read ${input}`
+  const name = input === "-" ? "stdin" : input
+  if (text.trim() === "") return `${name} is empty: no trace records (did the import find any model calls?)`
+  const parsed = parseTrace(text)
+  if (parsed.records.length === 0 && !looksLikeTrace(text))
+    return `${name} is not a prefixlens trace (no line has "v": 1); convert harness logs first with prefixlens import <adapter> <path>`
+  for (const error of parsed.errors.slice(0, 20)) console.error(printable(`error: ${error}`))
+  if (parsed.errors.length > 20) console.error(`error: ... ${parsed.errors.length - 20} more`)
+  if (parsed.records.length === 0) return parsed.errors.length > 0 ? "no valid trace records" : "the trace has no records (the import found no model calls with usage)"
+  const pricingPath = typeof flags.pricing === "string" ? flags.pricing : undefined
+  const pricing = await loadPricing(pricingPath)
+  const tolerance = typeof flags.tolerance === "string" ? Number(flags.tolerance) : undefined
+  if (tolerance !== undefined && !(Number.isFinite(tolerance) && tolerance >= 0)) return "--tolerance must be a non-negative number"
+  const catalogueProviders = typeof flags["catalogue-provider"] === "string" ? parseProviderMapping(flags["catalogue-provider"]) : undefined
+  const catalogueWarnings: string[] = []
+  const catalogue =
+    flags["no-catalogue"] === true
+      ? undefined
+      : await loadCatalogue().catch((error: unknown) => {
+          catalogueWarnings.push(`not using the models.dev prices: ${error instanceof Error ? error.message : String(error)}`)
+          return undefined
+        })
+  const analysis = analyze(parsed.records, {
+    pricing,
+    ...(catalogue ? { catalogue } : {}),
+    ...(catalogueProviders ? { catalogueProviders } : {}),
+    ...(tolerance !== undefined ? { toleranceTokens: tolerance } : {}),
+  })
+  analysis.warnings.unshift(...parsed.warnings, ...catalogueWarnings)
+  return { analysis, pricing, pricingSource: pricingPath || process.env.PREFIXLENS_PRICING || "bundled pricing.json", catalogue }
 }
 
 async function runRecord(flags: Flags): Promise<number> {
@@ -314,9 +357,9 @@ function expandHome(file: string): string {
   return file === "~" || file.startsWith("~/") ? path.join(os.homedir(), file.slice(1)) : file
 }
 
-function fail(message: string): number {
+function fail(message: string, code = 1): number {
   console.error(`prefixlens: ${message}`)
-  return 1
+  return code
 }
 
 // Run as a program (bun src/cli.ts, node dist/cli.js, or the installed bin, a symlink), not imported.

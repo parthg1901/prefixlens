@@ -1,6 +1,7 @@
 // Turns a trace into per-call results: hit rate, cost, whether the call missed
 // a cache it should have hit, and why.
 
+import { describeBlock } from "./advice.ts"
 import { isItemReference, isRecord } from "./canonical.ts"
 import { coveringBreaks, declaredBreaks, describePosition, keptBlocks, type DeclaredBreak } from "./breaks.ts"
 import { CAUSE_GROUP, comparePrefix, type Cause, type CauseGroup, type PrefixChange, type Region } from "./diff.ts"
@@ -20,6 +21,8 @@ export interface CauseInfo {
   confidence: Confidence
   region?: Region
   block_index?: number
+  /** The first block that differs, named: `tool "write_file"`, `system part 1`, `message #3 (assistant)`. Set with `block_index`. */
+  block_label?: string
   detail?: Record<string, unknown>
   diff?: string
 }
@@ -60,6 +63,14 @@ export interface TurnResult {
    * what else was found).
    */
   prefix_change?: CauseInfo
+  /**
+   * With `prefix_change`: why the harness does not have to answer for it. `declared`: a break declared on
+   * this call allows it. `after_breakpoint`: it lies after the previous call's last cache breakpoint, in a
+   * part the provider never cached. `new_conversation`: the two requests share no message, so this is
+   * another conversation with the same tools and system prompt, not a rewritten one. Absent when the
+   * change is in what the next call could have read from the cache and nothing allows it.
+   */
+  prefix_change_excused?: "declared" | "after_breakpoint" | "new_conversation"
   /** On a miss or partial miss: the breaks the harness declared on this call (SPEC 6.1), and whether they excuse it. */
   declared_break?: DeclaredBreakResult
   /**
@@ -219,6 +230,25 @@ function analyzeTurn(
   const change = full
     ? comparePrefix({ provider: previous.provider, model: previous.model, params: previous.params, blocks: before }, { provider: record.provider, model: record.model, params: record.params, blocks: sent, hints: record.hints })
     : null
+  // With explicit caching the previous call cached only up to its last breakpoint, so a change after it cannot explain a loss.
+  const lastBreakpoint = full && explicitCaching(previous) ? before.findLastIndex((block) => block.breakpoint) : -1
+  const named = (found: PrefixChange): CauseInfo => {
+    const info = fromChange(found, "confirmed")
+    return found.block_index === undefined ? info : { ...info, block_label: describeBlock(before, sent, found.block_index).label }
+  }
+  // A change that is not the cause of lost tokens, with why it is not held against the harness, if it is not.
+  const beside = (found: PrefixChange): Pick<TurnResult, "prefix_change" | "prefix_change_excused"> => {
+    const sentBefore = new Set(before.flatMap((block) => (block.kind === "message" ? [block.hash] : [])))
+    const excused =
+      found.block_index !== undefined && lastBreakpoint !== -1 && found.block_index > lastBreakpoint
+        ? "after_breakpoint"
+        : coveringBreaks(declaredBreaks(record.hints), found, before).length > 0
+          ? "declared"
+          : found.region === "messages" && found.block_index === before.findIndex((block) => block.kind === "message") && !sent.some((block) => block.kind === "message" && sentBefore.has(block.hash))
+            ? "new_conversation"
+            : undefined
+    return { prefix_change: named(found), ...(excused ? { prefix_change_excused: excused } : {}) }
+  }
   // Where the trace shows an implicit cache reading in steps larger than 128 tokens, a request that exactly
   // extends the previous one cannot be more than one step short through any fault of the harness.
   const allowed = full && !change && step > IMPLICIT_STEP_TOKENS && !explicitCaching(previous) ? Math.max(tolerance, step - 1) : tolerance
@@ -261,8 +291,6 @@ function analyzeTurn(
           : { intentional: true, checked: false, note: "usage-only: where the prefix changed cannot be checked against the declaration" },
       )
     }
-    // With explicit caching the previous call cached only up to its last breakpoint, so a change after it cannot explain the loss.
-    const lastBreakpoint = explicitCaching(previous) ? before.findLastIndex((block) => block.breakpoint) : -1
     const afterCached = change?.block_index !== undefined && lastBreakpoint !== -1 && change.block_index > lastBreakpoint
     const found = afterCached ? null : change
     // Past the cache lifetime a call that read nothing would have missed with the prefix untouched: expiry is the
@@ -271,7 +299,7 @@ function analyzeTurn(
     const expired = status === "miss" && gap > ttl && found !== null && found.region !== "model"
     // A block the writer could not record (SPEC 4.1) compares equal whatever it held, so "nothing changed" is not proven.
     const hidden = [sent, before].flatMap((blocks) => blocks.flatMap((block, index) => (block.unknown ? [`block ${index + 1}${block.key ? `, ${block.key}` : ""}`] : [])))[0]
-    const cause = confirmedCause(expired ? null : found, gap, ttl, previous.usage.cache_write_tokens ?? 0, [previous.headers?.["session-id"], record.headers?.["session-id"]], hidden)
+    const cause = found && !expired ? named(found) : unchangedCause(gap, ttl, previous.usage.cache_write_tokens ?? 0, [previous.headers?.["session-id"], record.headers?.["session-id"]], hidden)
     if (expired)
       return withDeclared(
         {
@@ -281,16 +309,16 @@ function analyzeTurn(
             summary: `cache expired: ${lapse.replace(", TTL", " (TTL")}); the prefix had also changed (${found.summary}), so this call would have missed within the TTL too`,
             detail: { ...cause.detail, also_changed: found.cause },
           },
-          prefix_change: fromChange(found, "confirmed"),
+          ...beside(found),
         },
         { intentional: false, checked: true, note: `a break was declared (${declared.map((entry) => entry.reason).join(", ")}), but the cache had expired before this call (${lapse}), so the miss is counted as an expiry` },
       )
     const verdict = judgeDeclared(declared, found, before)
     if (!afterCached) return withDeclared({ ...turn, cause }, verdict)
     const where = `cached prefix unchanged (the first change, at block ${change!.block_index! + 1}, is after the previous call's last cache breakpoint)`
-    return withDeclared({ ...turn, cause: { ...cause, summary: cause.summary.replace(/^(recorded )?prefix unchanged/, where) }, prefix_change: fromChange(change!, "confirmed") }, verdict)
+    return withDeclared({ ...turn, cause: { ...cause, summary: cause.summary.replace(/^(recorded )?prefix unchanged/, where) }, ...beside(change!) }, verdict)
   }
-  return change ? { ...turn, prefix_change: fromChange(change, "confirmed") } : turn
+  return change ? { ...turn, ...beside(change) } : turn
 }
 
 /**
@@ -378,8 +406,8 @@ function judgeDeclared(declared: DeclaredBreak[], change: PrefixChange | null, p
   }
 }
 
-function confirmedCause(change: PrefixChange | null, gap: number, ttl: number, previousWrite: number, sessionIds: (string | undefined)[], hidden?: string): CauseInfo {
-  if (change) return fromChange(change, "confirmed")
+/** The cause of a miss whose two full requests show no change in what was cached. */
+function unchangedCause(gap: number, ttl: number, previousWrite: number, sessionIds: (string | undefined)[], hidden?: string): CauseInfo {
   // Past the cache lifetime nothing else needs to have happened for the call to miss.
   if (gap > ttl)
     return {
