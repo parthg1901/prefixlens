@@ -7,7 +7,8 @@
 
 import { changeStart, declaredBreaks, defaultAfter, describePosition, isPosition, keptBlocks, POSITIONS, type DeclaredBreak, type Position } from "./breaks.ts"
 import { canonicalizeRequest, isItemReference, type CanonicalRequest, type Provider } from "./canonical.ts"
-import { comparePrefix, type Cause, type PrefixChange } from "./diff.ts"
+import { describeBlock, fixFor, type ChangedBlock } from "./advice.ts"
+import { comparePrefix, type PrefixChange } from "./diff.ts"
 import { printable } from "./printable.ts"
 import { apiFromBody, PROVIDER_OF } from "./record/exchange.ts"
 import { prefixBlocks, type Block, type Hint, type TraceRecord } from "./trace.ts"
@@ -20,7 +21,7 @@ import { prefixBlocks, type Block, type Hint, type TraceRecord } from "./trace.t
  */
 export type RequestLike = Record<string, unknown> | TraceRecord | CanonicalRequest | Block[]
 
-export type { Position }
+export type { ChangedBlock, Position }
 
 export interface PrefixOptions {
   /** Request format, when it cannot be told from the body (always needed for Gemini). */
@@ -43,14 +44,6 @@ export interface PrefixOptions {
    * `next` when it is a trace record.
    */
   hints?: Hint[]
-}
-
-export interface ChangedBlock {
-  /** 1-based block number. */
-  number: number
-  kind: Block["kind"]
-  /** Plain description, e.g. `tool "write_file"`, `system part 1`, `message #3 (assistant)`. */
-  label: string
 }
 
 export interface PrefixExplanation {
@@ -95,6 +88,19 @@ export class PrefixBreakError extends Error {
  * for a change; `ok` says whether it is allowed.
  */
 export function explainPrefixDiff(prev: RequestLike, next: RequestLike, options: PrefixOptions = {}): PrefixExplanation {
+  return explainPair(prev, next, options, PAIR_WORDING)
+}
+
+/** How a failure is worded: what it opens with, and the option that would allow the change. */
+export interface Wording {
+  heading: string
+  allow: string
+}
+
+const PAIR_WORDING: Wording = { heading: "prefix not stable", allow: 'pass { allowBreak: { reason: "..." } }' }
+
+/** `explainPrefixDiff` with the failure worded by the caller: the test session names the two calls and its per-call option. */
+export function explainPair(prev: RequestLike, next: RequestLike, options: PrefixOptions, wording: Wording): PrefixExplanation {
   const before = comparable(prev, options)
   const after = comparable(next, options)
   const given = typeof options.allowBreak === "string" ? { reason: options.allowBreak } : options.allowBreak
@@ -129,7 +135,7 @@ export function explainPrefixDiff(prev: RequestLike, next: RequestLike, options:
   const covering = allowances.filter((entry) => changedAt >= keptBlocks(entry.after, before.blocks))
   const ok = covering.length > 0
   const block = change.block_index === undefined ? undefined : describeBlock(before.blocks, after.blocks, change.block_index)
-  const fix = FIXES[change.cause]
+  const fix = fixFor(change.cause, "test")
   // The allowance that reaches furthest, to say how far a break was allowed when none reaches far enough.
   const widest = allowances.toSorted((a, b) => keptBlocks(a.after, before.blocks) - keptBlocks(b.after, before.blocks))[0]
   const reason = ok ? [...new Set(covering.map((entry) => entry.reason))].join(", ") : (widest?.reason ?? "an intentional break")
@@ -149,7 +155,7 @@ export function explainPrefixDiff(prev: RequestLike, next: RequestLike, options:
     message: printable(
       ok
         ? `prefix changed at block ${changedAt + 1}, allowed (${reason}): ${change.summary}`
-        : failureMessage(change, before.blocks, changedAt, block, fix, widest && keep !== undefined ? { reason, keep, after: widest.after } : undefined),
+        : failureMessage(wording, change, before.blocks, changedAt, block, fix, widest && keep !== undefined ? { reason, keep, after: widest.after } : undefined),
     ),
   }
 }
@@ -165,7 +171,7 @@ export function assertPrefixStable(prev: RequestLike, next: RequestLike, options
   return explanation
 }
 
-function failureMessage(change: PrefixChange, blocks: Block[], changedAt: number, block: ChangedBlock | undefined, fix: string | undefined, allowed: { reason: string; keep: number; after: Position } | undefined): string {
+function failureMessage(wording: Wording, change: PrefixChange, blocks: Block[], changedAt: number, block: ChangedBlock | undefined, fix: string | undefined, allowed: { reason: string; keep: number; after: Position } | undefined): string {
   const evidence = change.detail.evidence as Record<string, string> | undefined
   const where =
     change.region === "model"
@@ -173,36 +179,12 @@ function failureMessage(change: PrefixChange, blocks: Block[], changedAt: number
       : change.region === "params"
         ? `a cache-relevant request parameter changed (${Object.entries(evidence ?? {}).map(([key, value]) => `${key}: ${value}`).join(", ")}); it invalidates ${changedAt >= blocks.length ? "nothing already sent" : changedAt === 0 ? `the whole request (${range(1, blocks.length)})` : range(changedAt + 1, blocks.length)}`
         : `first changed block: ${block!.number} of ${blocks.length} (${block!.label}); ${changedAt === 0 ? "nothing before it matches, so the whole request is re-read" : `${range(1, changedAt)} still ${changedAt === 1 ? "matches" : "match"}, everything from block ${changedAt + 1} on is re-read`}`
-  const lines = [`prefix not stable: ${change.summary}`, "", `  ${where}`]
+  const lines = [`${wording.heading}: ${change.summary}`, "", `  ${where}`]
   if (allowed) lines.push(`  a break was allowed (${allowed.reason}) only after block ${allowed.keep} (${describePosition(allowed.after)} must stay), and this one is earlier`)
   if (change.diff) lines.push("", ...clip(change.diff.split("\n"), 16).map((line) => `    ${line}`))
   if (fix) lines.push("", `  fix: ${fix}`)
-  if (!allowed) lines.push(`  if this change is intentional, pass { allowBreak: { reason: "..." } }`)
+  if (!allowed) lines.push(`  if this change is intentional, ${wording.allow}`)
   return lines.join("\n")
-}
-
-const FIXES: Partial<Record<Cause, string>> = {
-  model_changed: "caches are per model; a model switch always starts cold, so switch only at a deliberate breakpoint.",
-  params_changed: "keep cache-relevant parameters fixed for the session, or declare the change ({ allowBreak: \"settings_change\" }) when the user asked for it; if your provider does not cache on the parameter, list it in ignoreParams and tell us how you verified it.",
-  tools_changed: "keep one tool list for the whole session (refuse a disallowed tool when it is called rather than removing it), or change it only at a deliberate breakpoint such as a compaction.",
-  tools_reordered: "build the tool list in a deterministic order (sort it once, e.g. by name) instead of connection or map order.",
-  tool_definition_changed: "generate tool definitions deterministically: no counts, dates or unordered keys in descriptions and schemas.",
-  system_dynamic_value: "keep clocks and ids out of the system prompt: send them in a new message, or round them (to the day, say).",
-  system_changed: "freeze the system prompt for the session and append updated instructions as a new message.",
-  message_edited: "replay sent messages byte for byte; append a correction as a new message instead of editing history.",
-  message_dynamic_value: "replay sent messages byte for byte; a value rendered at send time (a clock, an id) must be stored and replayed, not re-rendered.",
-  tool_output_rewritten: "store each tool output once, as sent, and replay it unchanged; truncate before the first send, not on replay.",
-  thinking_rewritten: "replay reasoning blocks exactly as the provider returned them.",
-  messages_merged: "replay steps with the message boundaries they were sent with.",
-  messages_split: "replay steps with the message boundaries they were sent with.",
-  messages_reordered: "replay history in the order it was sent.",
-  message_inserted: "append new messages at the end; inserting into history moves everything after it.",
-  message_removed: "do not drop sent messages; if this was a deliberate compaction, revert or refused exchange, declare it with allowBreak (\"compaction\", \"revert\", \"refusal\").",
-  oldest_messages_removed:
-    "a window that slides on every call re-reads the whole history each time: drop history in chunks at a saved boundary (cut rarely, and replay from the same cut until the next one), or keep history append-only.",
-  history_truncated: "if this was a deliberate compaction or revert, declare it with allowBreak (\"compaction\", \"revert\").",
-  history_rewound: "if this was a deliberate revert, declare it with { allowBreak: \"revert\" }.",
-  compaction: "a compaction always breaks the prefix; mark it with { allowBreak: { reason: \"compaction\" } }.",
 }
 
 function comparable(value: RequestLike, options: PrefixOptions) {
@@ -226,21 +208,6 @@ function comparable(value: RequestLike, options: PrefixOptions) {
 function isTraceRecord(value: RequestLike): value is TraceRecord {
   const record = value as Partial<TraceRecord>
   return !Array.isArray(value) && record.v === 1 && typeof record.fidelity === "string"
-}
-
-function describeBlock(prev: Block[], next: Block[], index: number): ChangedBlock {
-  const was = prev[index] ? labelOf(prev, index) : undefined
-  const now = next[index] ? labelOf(next, index) : undefined
-  const label = !was ? `${now}, added` : !now ? `${was}, removed` : was === now ? was : `${was}, now ${now}`
-  return { number: index + 1, kind: (prev[index] ?? next[index])!.kind, label }
-}
-
-function labelOf(blocks: Block[], index: number): string {
-  const block = blocks[index]!
-  const position = blocks.slice(0, index + 1).filter((candidate) => candidate.kind === block.kind).length
-  if (block.kind === "tool") return block.key ? `tool "${block.key}"` : `tool #${position}`
-  if (block.kind === "system") return `system part ${position}`
-  return `message #${position}${block.key ? `, ${block.key}` : ""}`
 }
 
 function range(from: number, to: number) {

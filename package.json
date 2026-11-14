@@ -40,8 +40,8 @@
       "default": "./dist/index.js"
     },
     "./test": {
-      "types": "./dist/assert.d.ts",
-      "default": "./dist/assert.js"
+      "types": "./dist/test.d.ts",
+      "default": "./dist/test.js"
     },
     "./pricing.json": "./pricing.json",
     "./package.json": "./package.json"

@@ -90,7 +90,8 @@ export function copyResponse(response: Response, body: ReadableStream<Uint8Array
   return copy
 }
 
-async function bodyOf(body: RequestInit["body"] | undefined, request: Request | undefined): Promise<string | Uint8Array | undefined> {
+/** The body of a request as its caller gave it: text or bytes; undefined for a body of another kind. */
+export async function bodyOf(body: RequestInit["body"] | undefined, request: Request | undefined): Promise<string | Uint8Array | undefined> {
   if (typeof body === "string" || body instanceof Uint8Array) return body
   if (body instanceof ArrayBuffer) return new Uint8Array(body)
   if (body === undefined && request) return new Uint8Array(await request.clone().arrayBuffer())
