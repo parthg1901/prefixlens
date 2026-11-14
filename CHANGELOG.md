@@ -4,6 +4,8 @@ All notable changes to prefixlens are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-14
+
 ### Added
 
 - **Test sessions** (`prefixlens/test`). `recordRequests()` returns a session whose `fetch` takes the model provider's place in a test of a framework or an agent loop: it records every Anthropic Messages, OpenAI Chat Completions and OpenAI Responses request, answers it in that format with no network (as a stream when the request asks for one), and `session.assertStable()` asserts that every request keeps the prefix of the one before it in its conversation. Side calls such as a title generator's get a lane of their own. `reply` scripts the model's answers, text or tool calls; `callTools` is the script for a tool loop. `allowBreakAt` allows a break at one call, e.g. `{ 7: "compaction" }`. `session.explain()`, `session.requests` and `session.writeTrace(file)` give the comparisons, the request bodies and a trace file. `assertSessionStable(bodies)` does the same for request bodies you already have.
@@ -41,6 +43,7 @@ First public release.
 - **Privacy defaults.** Credentials and all but four request headers are never written. Identifying request fields and the bytes of images and documents are left out unless asked for. Trace and report files are created readable by their owner only. Control characters in trace content are written visibly on the terminal. No telemetry. See [SECURITY.md](SECURITY.md).
 - **Runtimes.** Node.js 22 or later and Bun, with type declarations and no runtime dependencies.
 
-[Unreleased]: https://github.com/parthg1901/prefixlens/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/parthg1901/prefixlens/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/parthg1901/prefixlens/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/parthg1901/prefixlens/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/parthg1901/prefixlens/releases/tag/v0.5.0
