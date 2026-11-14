@@ -125,20 +125,20 @@ export function recordRequests(options: SessionOptions = {}): RequestSession {
       return refuse(
         `prefixlens test session: ${method} ${url} is not a request it can answer${format && !body ? " (the body is not a JSON object)" : ""}. session.fetch answers POST requests to .../messages (Anthropic Messages), .../chat/completions (OpenAI Chat Completions) and .../responses (OpenAI Responses). Use one of those providers for the model, and give any other endpoint (embeddings, a count_tokens call) its own fetch.`,
       )
-    const request: RecordedRequest = { call: requests.length + 1, format, lane: call.lane, url, body }
-    requests.push(request)
+    // A harness that names its sessions in a header has lanes per session.
+    const request: RecordedRequest = { call: requests.length + 1, format, lane: call.session ? `${call.session}/${call.lane}` : call.lane, url, body }
     const reply = readReply(script, request)
     if (typeof reply === "string") return refuse(reply)
     const answer = ANSWERS[format](body, reply, id)
-    const record = call.finish(answer.json)
-    if (record) records.push(record)
+    requests.push(request)
+    // The reply always reports usage, so the call always has a record.
+    records.push(call.finish(answer.json)!)
     if (body.stream !== true) return Response.json(answer.json)
     return new Response(answer.events().join(""), { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" } })
   }
 
   const explain = (given: StabilityOptions = {}) =>
     explainCalls(
-      // The lane of a call includes its session, when the harness names one in a header.
       records.map((record, index) => ({ call: index + 1, lane: laneKey(record), name: requests[index]!.lane, request: record })),
       given,
     )
