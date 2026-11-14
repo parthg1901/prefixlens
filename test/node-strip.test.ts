@@ -19,18 +19,18 @@ function exportsUnderNode(file: string) {
 }
 
 describe.skipIf(!strips)(`the TypeScript sources under plain Node (${version || "node not found"})`, () => {
-  test("prefixlens/test loads from src/assert.ts", () => {
-    const loaded = exportsUnderNode("assert.ts")
+  test("prefixlens/test loads from src/test.ts", () => {
+    const loaded = exportsUnderNode("test.ts")
     expect(loaded.stderr).not.toContain("ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX")
     expect(loaded.exitCode).toBe(0)
-    expect(loaded.names).toEqual(expect.arrayContaining(["assertPrefixStable", "explainPrefixDiff", "PrefixBreakError"]))
+    expect(loaded.names.toSorted()).toEqual(["PrefixBreakError", "assertPrefixStable", "assertSessionStable", "callTools", "explainPrefixDiff", "recordRequests"])
   })
 
   test("the main entry point loads from src/index.ts, proxy and importers included", () => {
     const loaded = exportsUnderNode("index.ts")
     expect(loaded.stderr).not.toContain("ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX")
     expect(loaded.exitCode).toBe(0)
-    expect(loaded.names).toEqual(expect.arrayContaining(["analyze", "startProxy", "findAdapter"]))
+    expect(loaded.names).toEqual(expect.arrayContaining(["analyze", "classifyMisses", "startProxy", "findAdapter"]))
   })
 })
 

@@ -43,7 +43,7 @@ function pack() {
   console.log(`tarball ${result.filename}: ${(result.size / 1024).toFixed(1)} kB packed, ${(result.unpackedSize / 1024).toFixed(1)} kB unpacked, ${files.length} files`)
   const allowed = /^(dist\/.+\.(js|d\.ts)|pricing\.json|SPEC\.md|README\.md|LICENSE|CHANGELOG\.md|SECURITY\.md|package\.json)$/
   check("only dist, pricing.json, the docs and package.json ship", files.every((file) => allowed.test(file)), files.filter((file) => !allowed.test(file)).join(", "))
-  check("the CLI, both entry points and their declarations ship", ["dist/cli.js", "dist/index.js", "dist/index.d.ts", "dist/assert.js", "dist/assert.d.ts"].every((file) => files.includes(file)))
+  check("the CLI, both entry points and their declarations ship", ["dist/cli.js", "dist/index.js", "dist/index.d.ts", "dist/test.js", "dist/test.d.ts"].every((file) => files.includes(file)))
   const tarball = path.join(out, result.filename)
   const unpacked = path.join(temp, "unpacked")
   mkdirSync(unpacked)
@@ -104,6 +104,10 @@ function runCli(runtime, prefixlens, project) {
   check(`${runtime}: report (terminal)`, terminal.status === 0 && terminal.stdout.includes("5 model calls"), terminal.stderr)
   const json = prefixlens(["report", trace, "--json"])
   check(`${runtime}: report --json`, json.status === 0 && JSON.parse(json.stdout).summary.turns === 5, json.stderr)
+  const gate = prefixlens(["check", trace])
+  check(`${runtime}: check exits 1 and names the call that broke the cache`, gate.status === 1 && gate.stdout.includes("turn 5: avoidable miss [tools_changed]"), gate.stdout + gate.stderr)
+  const verdicts = prefixlens(["check", trace, "--allow", "tools_changed", "--json"])
+  check(`${runtime}: check --allow --json exits 0 with a verdict per call`, verdicts.status === 0 && JSON.parse(verdicts.stdout).calls.length === 5, verdicts.stdout + verdicts.stderr)
   const html = prefixlens(["report", trace, "--html", path.join(project, "report.html")])
   check(`${runtime}: report --html`, html.status === 0 && readFileSync(path.join(project, "report.html"), "utf8").includes("<html"), html.stderr)
   const shown = prefixlens(["pricing", "show", "claude-opus-5-5"])
@@ -113,12 +117,41 @@ function runCli(runtime, prefixlens, project) {
 function assertionTest(runner) {
   return `import { test } from "${runner}"
 import assert from "node:assert/strict"
-import { assertPrefixStable, PrefixBreakError } from "prefixlens/test"
+import { assertPrefixStable, assertSessionStable, callTools, PrefixBreakError, recordRequests } from "prefixlens/test"
 
 const first = { model: "claude-test-1", system: "Synthetic.", messages: [{ role: "user", content: "Hi." }] }
 test("an extension is stable; a rewritten system prompt is not", () => {
   assertPrefixStable(first, { ...first, messages: [...first.messages, { role: "assistant", content: "Hello." }] })
   assert.throws(() => assertPrefixStable(first, { ...first, system: "Synthetic, at 10:02." }), PrefixBreakError)
+})
+
+// A stand-in for a framework: it keeps one history and sends it through the fetch it was given.
+async function agent(fetch, system, prompts) {
+  const messages = []
+  for (const prompt of prompts) {
+    messages.push({ role: "user", content: prompt })
+    for (;;) {
+      const body = { model: "claude-test-1", max_tokens: 100, system: system(), tools: [{ name: "read_file", input_schema: { type: "object" } }], messages }
+      const reply = await (await fetch("https://api.anthropic.com/v1/messages", { method: "POST", body: JSON.stringify(body) })).json()
+      messages.push({ role: "assistant", content: reply.content })
+      const uses = reply.content.filter((part) => part.type === "tool_use")
+      if (uses.length === 0) break
+      messages.push({ role: "user", content: uses.map((use) => ({ type: "tool_result", tool_use_id: use.id, content: "contents" })) })
+    }
+  }
+}
+
+test("a recorded session: a tool loop is stable; a clock in the system prompt is not", async () => {
+  const session = recordRequests({ reply: callTools([{ name: "read_file", args: { path: "a.txt" } }]) })
+  await agent(session.fetch, () => "Synthetic.", ["Hi.", "Go on."])
+  assert.equal(session.requests.length, 4)
+  assert.equal(session.assertStable().length, 3)
+  assert.equal(assertSessionStable(session.requests.map((request) => request.body)).length, 3)
+
+  let tick = 0
+  const clocked = recordRequests()
+  await agent(clocked.fetch, () => "Synthetic, at 10:0" + ++tick + ".", ["Hi.", "Go on."])
+  assert.throws(() => clocked.assertStable(), (error) => error instanceof PrefixBreakError && error.message.startsWith("prefix not stable at call 2 (lane main, compared with call 1): system prompt changed"))
 })
 `
 }
@@ -126,8 +159,8 @@ test("an extension is stable; a rewritten system prompt is not", () => {
 function typecheck(project) {
   writeFileSync(
     path.join(project, "consumer.ts"),
-    `import Default, { createLens, wrap, startProxy, type TraceRecord } from "prefixlens"
-import { assertPrefixStable, explainPrefixDiff } from "prefixlens/test"
+    `import Default, { analyze, classifyMisses, createLens, loadPricing, wrap, startProxy, type Check, type MissClass, type TraceRecord } from "prefixlens"
+import { assertPrefixStable, assertSessionStable, callTools, explainPrefixDiff, recordRequests, type CallExplanation, type RecordedRequest, type Reply } from "prefixlens/test"
 
 const client = wrap({ fetch: globalThis.fetch }, { trace: false, onRecord: (record: TraceRecord) => console.log(record.usage.cache_read_tokens) })
 const lens = createLens({ trace: false })
@@ -137,7 +170,20 @@ assertPrefixStable({ messages: [] }, { messages: [] })
 const proxy: Promise<{ url: string; stop(): Promise<void> }> = startProxy({ provider: "anthropic", port: 0, trace: "x.trace.jsonl" })
 // @ts-expect-error provider must be anthropic or openai
 void startProxy({ provider: "gemini", trace: "x" })
-void [client, fetchFn, explanation, proxy, Default.wrap]
+const session = recordRequests({ reply: (request: RecordedRequest): Reply => (request.call === 1 ? { toolCalls: [{ name: "read_file", args: { path: "a.txt" } }] } : "Done.") })
+const sessionFetch: typeof fetch = recordRequests({ reply: callTools([{ name: "read_file" }], "Done.") }).fetch
+const steps: CallExplanation[] = session.assertStable({ allowBreakAt: { 7: "compaction", 9: { after: "system", reason: "revert" } }, ignoreParams: ["truncation"] })
+const step: { call: number; previous: number; lane: string; stable: boolean } | undefined = session.explain()[0]
+const format: "anthropic-messages" | "openai-chat" | "openai-responses" | undefined = session.requests[0]?.format
+assertSessionStable([{ messages: [] }, { messages: [] }], { provider: "anthropic" })
+session.writeTrace("session.trace.jsonl")
+// @ts-expect-error a reply is a string, or an object with text and/or toolCalls
+recordRequests({ reply: () => 42 })
+const verdict: Promise<Check> = loadPricing().then((pricing) => classifyMisses(analyze([], { pricing }), { failOn: ["expiry", "provider-side"], allow: ["compaction"] }))
+const failing: MissClass = "avoidable"
+// @ts-expect-error not a class of call
+void classifyMisses(analyze([], { pricing: { version: 1, currency: "USD", unit: "per_million_tokens", models: [] } }), { failOn: ["expired"] })
+void [client, fetchFn, explanation, proxy, Default.wrap, sessionFetch, steps, step, format, verdict, failing]
 `,
   )
   writeFileSync(

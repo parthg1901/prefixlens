@@ -108,3 +108,18 @@ test("pricing show, and pricing update from a saved catalogue", (t) => {
   assert.equal(statSync(path.join(cache, "prefixlens", "models.dev.json")).mode & 0o777, 0o600)
   assert.equal(statSync(path.join(cache, "prefixlens")).mode & 0o777, 0o700)
 })
+
+test("check: exit 1 with the offending call, 0 when allowed, 2 when it cannot check", () => {
+  const trace = path.join(fixtures, "agent-session.jsonl")
+  const failed = run(["check", trace])
+  assert.equal(failed.code, 1)
+  assert.match(failed.stdout, /^prefixlens check: agent-session\.jsonl\nFAIL: 1 of 5 calls\n\n  turn 4: avoidable miss \[tools_changed\], tool list changed/)
+  assert.match(failed.stdout, /5 calls: 1 avoidable miss, 1 cold start, 3 ok\n$/)
+  const json = run(["check", trace, "--json"])
+  assert.equal(json.code, 1)
+  assert.deepEqual(JSON.parse(json.stdout).calls.map((call) => call.class), ["cold-start", "ok", "ok", "avoidable", "ok"])
+  assert.equal(run(["check", trace, "--allow", "tools_changed"]).code, 0)
+  assert.equal(run(["check", trace, "--allow", "tools_changed", "--fail-on", "cold-start"]).code, 1)
+  assert.equal(run(["check", path.join(fixtures, "no-such.jsonl")]).code, 2)
+  assert.equal(run(["check", trace, "--fail-on", "nonsense"]).code, 2)
+})
