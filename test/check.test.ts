@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { analyze, classifyMisses, parsePricing, serializeTrace, type CheckOptions, type TraceRecord } from "../src/index.ts"
+import { analyze, classifyMisses, parsePricing, renderCheck, renderCheckJson, serializeTrace, type CheckOptions, type TraceRecord } from "../src/index.ts"
 import { recordRequests } from "../src/test.ts"
 import { assistant, body, fullRecord, resetClock, TEST_PRICING, TOOLS, usage, usageRecord, user } from "./helpers.ts"
 
@@ -59,6 +59,9 @@ describe("classifyMisses", () => {
     expect(result.calls[2]!.diff).toContain("+ web_fetch")
     expect(result.calls[2]!.miss_cost).toBeGreaterThan(0)
     expect(result.calls[5]!.summary).toEndWith("(declared: compaction)")
+    // What `prefixlens check` prints, from the same object.
+    expect(renderCheck(result, { title: "run.trace.jsonl" })).toStartWith("prefixlens check: run.trace.jsonl\nFAIL: 1 of 6 calls\n\n  turn 3: avoidable miss [tools_changed], tool list changed (+1 tool: 3 → 4)\n")
+    expect(JSON.parse(renderCheckJson(result, { trace: "run.trace.jsonl" }))).toMatchObject({ check: "prefixlens", trace: "run.trace.jsonl", ok: false, counts: result.counts })
   })
 
   test("failOn turns the passing classes into failures; allow makes a cause intentional", () => {
@@ -173,7 +176,7 @@ describe("prefixlens check", () => {
     expect(strict.stdout).toContain("FAIL: 2 of 6 calls")
     expect(strict.stdout).toContain("  turn 4: cache expiry [cache_expired], prefix unchanged, cache expired: 6m 40s since the previous call (TTL 5m)")
     expect(strict.stdout).toContain("  turn 5: provider-side miss [provider_side], prefix unchanged and within TTL")
-    expect(strict.stdout).toContain("6 calls: 2 intentional break, 1 cache expiry, 1 provider-side miss, 1 cold start, 1 ok")
+    expect(strict.stdout).toContain("6 calls: 2 intentional breaks, 1 cache expiry, 1 provider-side miss, 1 cold start, 1 ok")
   })
 
   test("--json prints the verdict for every call and the counts", () => {

@@ -48,7 +48,8 @@ export function renderCheck(check: Check, options: CheckRenderOptions = {}): str
     if (lines.length > DIFF_LINES) out.push(`    ... (${lines.length - DIFF_LINES} more lines in --json)`)
     if (call.fix) out.push(`    fix: ${call.fix}`)
   }
-  const counted = (Object.keys(LABEL) as MissClass[]).filter((name) => check.counts[name] > 0).map((name) => `${check.counts[name]} ${LABEL[name]}`)
+  const plural = (name: MissClass) => (name === "ok" ? "ok" : name === "expiry" ? "cache expiries" : name.endsWith("change") ? "undeclared prefix changes" : LABEL[name].replace(/(miss)$/, "$1e") + "s")
+  const counted = (Object.keys(LABEL) as MissClass[]).filter((name) => check.counts[name] > 0).map((name) => `${check.counts[name]} ${check.counts[name] === 1 ? LABEL[name] : plural(name)}`)
   out.push("", `${check.calls.length} ${check.calls.length === 1 ? "call" : "calls"}: ${counted.join(", ")}`)
   // Lanes, tool names and diffs come from the trace; this goes to a terminal and into CI logs.
   return printable(out.join("\n")) + "\n"
