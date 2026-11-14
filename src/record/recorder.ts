@@ -3,8 +3,9 @@
 
 import zlib from "node:zlib"
 import { canonicalizeRequest, canonicalizeRequestAsync, isRecord, type CanonicalRequest } from "../canonical.ts"
-import { openTraceWriter, prefixBlocks, type Billing, type Block, type TraceRecord } from "../trace.ts"
+import { openTraceWriter, type Billing, type TraceRecord } from "../trace.ts"
 import { apiFromBody, apiFromPath, noUsageReason, PROVIDER_OF, readResponse, recordFrom, type Api } from "./exchange.ts"
+import { Lanes, type Lane } from "./lanes.ts"
 
 export interface RecorderOptions {
   /** Trace file to append to; `false` keeps records in memory only (use `onRecord`). */
@@ -25,6 +26,8 @@ export interface RecorderOptions {
   billing?: Billing
   /** Keep base64 binary parts in block content instead of their SHA-256 and size. Default false. */
   keepBinary?: boolean
+  /** Lane rule 4 (`Lanes`): also continue an idle lane that starts with the same block. For the test session; default false. */
+  joinOnSharedStart?: boolean
 }
 
 /** Header a harness may send to choose the lane (and session) of a call itself; the proxy strips it before forwarding. */
@@ -62,23 +65,9 @@ export interface CallInput {
   session?: string
 }
 
-interface Lane {
-  name: string
-  session?: string
-  /** Lanes of one subagent within its root session (`subagent:<id>`); undefined for the session's own. */
-  group?: string
-  /** The cache key of its latest call: the session-id header, else prompt_cache_key. */
-  cacheKey?: string
-  blocks: Block[]
-  /** Calls in this lane that may still be in flight for a call beginning now: `began` and `ended` are call sequence numbers. */
-  calls: { began: number; ended?: number }[]
-  used: number
-}
-
 export class Recorder {
   private readonly writer
-  private readonly lanes: Lane[] = []
-  private clock = 0
+  private readonly lanes: Lanes
   private sequence = 0
   // Calls are prepared one after another, so lanes are assigned in the order calls began.
   private queue: Promise<unknown> = Promise.resolve()
@@ -88,6 +77,7 @@ export class Recorder {
 
   constructor(options: RecorderOptions) {
     this.options = options
+    this.lanes = new Lanes(options.joinOnSharedStart ? { joinOnSharedStart: true } : {})
     this.writer = options.trace === false || options.trace === undefined ? undefined : openTraceWriter(options.trace)
     // A trace that already has records (a proxy restarted on the same file) holds conversations this
     // recorder may be asked to continue: without their lanes, its first call would open `main` again and
@@ -95,7 +85,7 @@ export class Recorder {
     for (const lane of this.writer?.lanes() ?? []) {
       // The recorder names a subagent's lanes `subagent:<id>`, then `subagent:<id>:2` and so on.
       const group = /^subagent:[^:]+/.exec(lane.name)?.[0]
-      this.lanes.push({ name: lane.name, ...(lane.session ? { session: lane.session } : {}), ...(group ? { group } : {}), ...(lane.cacheKey === undefined ? {} : { cacheKey: lane.cacheKey }), blocks: prefixBlocks(lane.blocks), calls: [], used: ++this.clock })
+      this.lanes.restore({ name: lane.name, ...(lane.session ? { session: lane.session } : {}), ...(group ? { group } : {}), ...(lane.cacheKey === undefined ? {} : { cacheKey: lane.cacheKey }), blocks: lane.blocks })
     }
   }
 
@@ -120,7 +110,7 @@ export class Recorder {
     const prepared = this.queue
       .then(() => canonicalizeRequestAsync(PROVIDER_OF[call.api], call.body))
       .then((canonical) => {
-        const lane = this.assignLane(canonical.blocks, call.session, call.forced, call.cacheKey, entry.began, call.group)
+        const lane = this.lanes.assign(canonical.blocks, { ...laneCall(call), began: entry.began })
         lane.calls.push(entry)
         return { canonical, lane }
       })
@@ -145,10 +135,20 @@ export class Recorder {
 
   /** Records a call whose response is complete, at once (`lens.observe`). Returns undefined when it cannot be recorded. */
   record(input: CallInput, response: unknown): TraceRecord | undefined {
+    return this.open(input)?.finish(response)
+  }
+
+  /**
+   * Starts a call at once and says which lane it is in before its response exists: the test session
+   * chooses its reply knowing the lane. `finish` builds and writes the record, as `record` does.
+   * Returns undefined when the call cannot be recorded.
+   */
+  open(input: CallInput): { lane: string; finish(response: unknown): TraceRecord | undefined } | undefined {
     const call = this.read(input)
     if (!call) return undefined
     const canonical = canonicalizeRequest(PROVIDER_OF[call.api], call.body)
-    return this.write(call, canonical, this.assignLane(canonical.blocks, call.session, call.forced, call.cacheKey, ++this.sequence, call.group), response)
+    const lane = this.lanes.assign(canonical.blocks, { ...laneCall(call), began: ++this.sequence })
+    return { lane: lane.name, finish: (response) => this.write(call, canonical, lane, response) }
   }
 
   private read(input: CallInput) {
@@ -211,68 +211,15 @@ export class Recorder {
     this.options.onRecord?.(built)
     return built
   }
-
-  /**
-   * Calls that build on each other's prefix belong in one lane; independent
-   * conversations through the same proxy (subagents, side queries) need their
-   * own, or each would be compared with the other. A call joins:
-   * 1. the lane whose latest request is an unchanged prefix of it (the usual case);
-   * 2. else the lane it shares the most leading messages with (an edit, a tool-list change);
-   * 3. else an idle lane with the same tools and system prompt (compaction, rewind);
-   * 4. else a new lane.
-   * Rules 2 and 3 skip a lane whose cache key differs: a harness that names its
-   * conversations (Codex sends its thread id as session-id) started another one.
-   */
-  private assignLane(sent: Block[], session: string | undefined, forced: string | undefined, cacheKey: string | undefined, began: number, group?: string): Lane {
-    // Lanes follow the prompt prefix, which deferred tools are not part of.
-    const blocks = prefixBlocks(sent)
-    const candidates = this.lanes.filter((lane) => lane.session === session && (forced !== undefined || lane.group === group))
-    // Calls that ended before this one began can never be in flight for a later call either.
-    for (const lane of candidates) lane.calls = lane.calls.filter((other) => other.ended === undefined || other.ended >= began)
-    const chosen = forced !== undefined ? candidates.find((lane) => lane.name === forced) : pickLane(candidates, blocks, cacheKey, began)
-    const lane = chosen ?? this.newLane(forced, session, group)
-    lane.blocks = blocks
-    if (cacheKey === undefined) delete lane.cacheKey
-    else lane.cacheKey = cacheKey
-    lane.used = ++this.clock
-    return lane
-  }
-
-  private newLane(name: string | undefined, session: string | undefined, group: string | undefined): Lane {
-    const count = this.lanes.filter((lane) => lane.session === session && lane.group === group).length
-    const base = group ?? "main"
-    const lane = { name: name ?? (count === 0 ? base : group ? `${group}:${count + 1}` : `lane-${count + 1}`), ...(session ? { session } : {}), ...(group && !name ? { group } : {}), blocks: [], calls: [], used: 0 }
-    this.lanes.push(lane)
-    return lane
-  }
 }
 
-function pickLane(lanes: Lane[], blocks: Block[], cacheKey: string | undefined, began: number): Lane | undefined {
-  const hashes = (list: Block[], kind: Block["kind"]) => list.filter((block) => block.kind === kind).map((block) => block.hash).join()
-  const scored = lanes.map((lane) => {
-    const shared = sharedPrefix(lane.blocks, blocks)
-    const messages = sharedPrefix(
-      lane.blocks.filter((block) => block.kind === "message"),
-      blocks.filter((block) => block.kind === "message"),
-    )
-    const sameTools = hashes(lane.blocks, "tool") === hashes(blocks, "tool")
-    const sameSystem = hashes(lane.blocks, "system") === hashes(blocks, "system")
-    const idle = lane.calls.every((other) => other.ended !== undefined && other.ended < began)
-    const sameKey = lane.cacheKey === undefined || cacheKey === undefined || lane.cacheKey === cacheKey
-    // A call running alongside the lane's latest one is another conversation unless it shares the start of the request.
-    const related = sameKey && (shared > 0 || (idle && (sameTools || sameSystem)))
-    const score =
-      shared === lane.blocks.length && shared > 0 ? 3e6 + shared : messages > 0 && related ? 2e6 + messages : sameKey && idle && sameTools && sameSystem ? 1e6 : -1
-    return { lane, score }
-  })
-  const best = scored.filter((entry) => entry.score >= 0).sort((a, b) => b.score - a.score || b.lane.used - a.lane.used)[0]
-  return best?.lane
-}
-
-function sharedPrefix(a: Block[], b: Block[]): number {
-  let index = 0
-  while (index < a.length && index < b.length && a[index]!.hash === b[index]!.hash) index++
-  return index
+function laneCall(call: { session?: string | undefined; forced?: string | undefined; cacheKey?: string | undefined; group?: string | undefined }) {
+  return {
+    ...(call.session === undefined ? {} : { session: call.session }),
+    ...(call.forced === undefined ? {} : { forced: call.forced }),
+    ...(call.cacheKey === undefined ? {} : { cacheKey: call.cacheKey }),
+    ...(call.group === undefined ? {} : { group: call.group }),
+  }
 }
 
 // Request bodies arrive as text, bytes (possibly compressed: the ChatGPT sign-in flow accepts zstd) or an object.

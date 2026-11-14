@@ -50,6 +50,19 @@ describe("lane assignment", () => {
     ).toEqual(["main", "lane-2", "lane-3"])
   })
 
+  test("with no tools on either side, a side query that repeats the first message does not join the conversation, and the next step still does", async () => {
+    const first = [user("Fix the bug.")]
+    expect(
+      await sequential([
+        body(first, { tools: [] }),
+        body(first, { tools: [], system: "Write a title." }),
+        body([...first, assistant("Looking."), user("Go on.")], { tools: [] }),
+        // The same conversation with its system prompt rewritten: one more message than the lane had, so it continues it.
+        body([...first, assistant("Looking."), user("Go on."), assistant("Done."), user("Thanks.")], { tools: [], system: "You are a synthetic test assistant. It is 10:02." }),
+      ]),
+    ).toEqual(["main", "lane-2", "main", "main"])
+  })
+
   test("a side query with other tools and system prompt does not join the conversation", async () => {
     expect(await sequential([body([user("Fix the bug.")]), body([user("Fix the bug.")], { tools: [], system: "Write a title." })])).toEqual(["main", "lane-2"])
   })
