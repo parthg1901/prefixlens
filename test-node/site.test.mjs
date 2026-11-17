@@ -53,7 +53,7 @@ test("the copy button copies the instructions exactly as agent.md has them, nami
   assert.equal(text(sheet[1]), prompt.replace(/\n$/, ""))
   assert.ok(prompt.includes(`at exactly version ${version}`))
   assert.doesNotMatch(prompt, /\^\d/, "the instructions give a version range")
-  for (const part of ["assertPrefixStable", "recordRequests", "session.assertStable()", "allowBreakAt", "## 6. Report"]) assert.ok(prompt.includes(part), `the instructions lack ${part}`)
+  for (const part of ["assertPrefixStable", "recordRequests", "session.assertStable()", "allowBreakAt", "## 1. Understand the harness", "## 7. Report"]) assert.ok(prompt.includes(part), `the instructions lack ${part}`)
 })
 
 test("each recipe is on the page as its file has it", () => {
