@@ -1,0 +1,8 @@
+PrefixBreakError: prefix not stable at call 7 (lane main, compared with call 6): 2 oldest messages removed from the start of history (9 kept, 2 appended)
+
+  first changed block: 2 of 12 (message #1, user); block 1 still matches, everything from block 2 on is re-read
+
+  fix: a window that slides on every call re-reads the whole history each time: drop history in chunks at a saved boundary (cut rarely, and replay from the same cut until the next one), or keep history append-only.
+  if this change is intentional, pass { allowBreakAt: { 7: { reason: "..." } } }
+
+  1 more call changes the prefix: call 8 (2 oldest messages removed from the start of history (9 kept, 2 appended))
