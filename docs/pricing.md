@@ -14,6 +14,10 @@ A report's costs are what the calls would cost billed per token at the table's p
 
 A trace records how a call was billed when its writer knows (`"billing"`: `"per_token"` or `"subscription"`), and a report words its cost lines accordingly. When no record says, the report notes that costs are list prices.
 
+## In test assertions
+
+A failed assertion in `prefixlens/test` prices the tokens its break re-reads the way a report prices a miss, with the same matching rules. Only the pricing table bundled with the package is used, unless the test passes its own with the `pricing` option. `PREFIXLENS_PRICING` and the models.dev catalogue are not read, so a test prints the same price on every machine. A dated price is the one in effect on the day the test runs. See [the size of a break](assertions.md#the-size-of-a-break).
+
 ## The table
 
 What an entry of `models` holds:

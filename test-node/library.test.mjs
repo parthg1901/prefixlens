@@ -24,6 +24,17 @@ test("assertPrefixStable passes an extension and names a reordered tool list", (
   assert.equal(explainPrefixDiff(first, { ...first, tools: tools.toReversed() }, { allowBreak: { after: "start", reason: "test" } }).ok, true)
 })
 
+test("a break's size is estimated from the request, and priced from the bundled pricing table", () => {
+  const opus = { ...first, model: "claude-opus-5-5" }
+  const { size } = explainPrefixDiff(opus, { ...opus, tools: tools.toReversed() })
+  const entry = pricing.models.find((model) => model.names?.includes("claude-opus-5-5") && !model.when_params)
+  assert.equal(size.matching, 0)
+  assert.ok(size.reread > 0)
+  assert.equal(size.cost.model, "claude-opus-5-5")
+  assert.ok(Math.abs(size.cost.extra - (size.reread * (entry.input - entry.cache_read)) / 1e6) < 1e-12)
+  assert.equal(explainPrefixDiff(first, { ...first, tools: tools.toReversed() }).size.cost, undefined)
+})
+
 test("recordRequests answers the Anthropic and OpenAI SDKs under Node, streamed and not, and asserts on a tool loop", async (t) => {
   const key = "sk-" + "synthetic-node"
   const session = recordRequests({ reply: callTools([{ name: "read_file", args: { path: "a.txt" } }], "Fixed.") })

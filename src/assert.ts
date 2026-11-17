@@ -1,15 +1,18 @@
 // prefixlens/test: prefix-stability assertions for a harness's own tests.
 //
-// Pure functions, no network. Give them two consecutive requests a harness
+// No network. Give them two consecutive requests a harness
 // built (request bodies as sent, canonical requests, or trace records) and they
 // say whether the second one keeps the first one's cached prefix, and if not,
-// which block changed and how.
+// which block changed, how, and about how many tokens that re-reads. A break is
+// priced from the pricing table bundled with the package, read from disk once.
 
 import { changeStart, declaredBreaks, defaultAfter, describePosition, isPosition, keptBlocks, POSITIONS, type DeclaredBreak, type Position } from "./breaks.ts"
 import { canonicalizeRequest, isItemReference, isRecord, type CanonicalRequest, type Provider } from "./canonical.ts"
 import { describeBlock, fixFor, type ChangedBlock } from "./advice.ts"
+import { breakSize, sizeLine, type BreakCost, type BreakSize } from "./break-size.ts"
 import { comparePrefix, type PrefixChange } from "./diff.ts"
 import { keptConversation, type KeptConversation } from "./kept.ts"
+import type { PricingTable } from "./pricing.ts"
 import { printable } from "./printable.ts"
 import { apiFromBody, PROVIDER_OF } from "./record/exchange.ts"
 import { prefixBlocks, type Block, type Hint, type TraceRecord } from "./trace.ts"
@@ -22,7 +25,7 @@ import { prefixBlocks, type Block, type Hint, type TraceRecord } from "./trace.t
  */
 export type RequestLike = Record<string, unknown> | TraceRecord | CanonicalRequest | Block[]
 
-export type { ChangedBlock, Position }
+export type { BreakCost, BreakSize, ChangedBlock, Position }
 
 export interface PrefixOptions {
   /** Request format, when it cannot be told from the body (always needed for Gemini). */
@@ -45,6 +48,11 @@ export interface PrefixOptions {
    * `next` when it is a trace record.
    */
   hints?: Hint[]
+  /**
+   * The pricing table a break's re-read is priced with (`loadPricing` or `parsePricing` from "prefixlens"),
+   * or false for tokens only. Default: the table bundled with prefixlens. A model with no entry gets no price.
+   */
+  pricing?: PricingTable | false
 }
 
 export interface PrefixExplanation {
@@ -74,6 +82,12 @@ export interface PrefixExplanation {
    * Absent when there are none.
    */
   references?: number
+  /**
+   * For a change: about how many tokens it re-reads and how many still match, estimated from the request
+   * content (four characters of JSON to a token), and the extra cost of this call's re-read at list prices
+   * when the model has a price. Absent when stable or not compared.
+   */
+  size?: BreakSize
   /** What to do about it. */
   fix?: string
   /** Plain-English explanation; the assertion's failure message. */
@@ -158,6 +172,13 @@ export function explainPair(prev: RequestLike, next: RequestLike, options: Prefi
   const ok = covering.length > 0
   const block = change.block_index === undefined ? undefined : describeBlock(before.blocks, after.blocks, change.block_index)
   const fix = fixFor(change.cause, "test")
+  const size = breakSize(before.blocks, after.blocks, changedAt, {
+    model: after.model,
+    ...(after.provider ? { provider: after.provider } : {}),
+    params: after.params,
+    ...(options.pricing !== undefined ? { table: options.pricing } : {}),
+    ...(isTraceRecord(next) ? { ts: next.ts } : {}),
+  })
   // The allowance that reaches furthest, to say how far a break was allowed when none reaches far enough.
   const widest = allowances.toSorted((a, b) => keptBlocks(a.after, before.blocks) - keptBlocks(b.after, before.blocks))[0]
   const reason = ok ? [...new Set(covering.map((entry) => entry.reason))].join(", ") : (widest?.reason ?? "an intentional break")
@@ -171,13 +192,14 @@ export function explainPair(prev: RequestLike, next: RequestLike, options: Prefi
     ...(block ? { block } : {}),
     ...(ok ? { allowed: reason } : {}),
     ...(references > 0 ? { references } : {}),
+    size,
     ...(fix ? { fix } : {}),
     // The message names tools, models and parameters and quotes the diff, all taken from the requests;
     // it ends up in a test runner's output and in CI logs.
     message: printable(
       ok
         ? `prefix changed at block ${changedAt + 1}, allowed (${reason}): ${change.summary}`
-        : failureMessage(wording, change, before.blocks, changedAt, block, fix, widest && keep !== undefined ? { reason, keep, after: widest.after } : undefined),
+        : failureMessage(wording, change, before.blocks, changedAt, block, fix, widest && keep !== undefined ? { reason, keep, after: widest.after } : undefined, sizeLine(size)),
     ),
   }
 }
@@ -196,7 +218,7 @@ export function assertPrefixStable(prev: RequestLike, next: RequestLike, options
   return explanation
 }
 
-function failureMessage(wording: Wording, change: PrefixChange, blocks: Block[], changedAt: number, block: ChangedBlock | undefined, fix: string | undefined, allowed: { reason: string; keep: number; after: Position } | undefined): string {
+function failureMessage(wording: Wording, change: PrefixChange, blocks: Block[], changedAt: number, block: ChangedBlock | undefined, fix: string | undefined, allowed: { reason: string; keep: number; after: Position } | undefined, size: string | undefined): string {
   const evidence = change.detail.evidence as Record<string, string> | undefined
   const where =
     change.region === "model"
@@ -204,7 +226,7 @@ function failureMessage(wording: Wording, change: PrefixChange, blocks: Block[],
       : change.region === "params"
         ? `a cache-relevant request parameter changed (${Object.entries(evidence ?? {}).map(([key, value]) => `${key}: ${value}`).join(", ")}); it invalidates ${changedAt >= blocks.length ? "nothing already sent" : changedAt === 0 ? `the whole request (${range(1, blocks.length)})` : range(changedAt + 1, blocks.length)}`
         : `first changed block: ${block!.number} of ${blocks.length} (${block!.label}); ${changedAt === 0 ? "nothing before it matches, so the whole request is re-read" : `${range(1, changedAt)} still ${changedAt === 1 ? "matches" : "match"}, everything from block ${changedAt + 1} on is re-read`}`
-  const lines = [`${wording.heading}: ${change.summary}`, "", `  ${where}`]
+  const lines = [`${wording.heading}: ${change.summary}`, "", `  ${where}`, ...(size ? [`  ${size}`] : [])]
   if (allowed) lines.push(`  a break was allowed (${allowed.reason}) only after block ${allowed.keep} (${describePosition(allowed.after)} must stay), and this one is earlier`)
   if (change.diff) lines.push("", ...clip(change.diff.split("\n"), 16).map((line) => `    ${line}`))
   if (fix) lines.push("", `  fix: ${fix}`)
