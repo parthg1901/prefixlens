@@ -4,6 +4,8 @@ All notable changes to prefixlens are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-17
+
 ### Fixed
 
 - A request that continues a conversation the provider keeps (Anthropic's `thread`, OpenAI's `previous_response_id` or `conversation`) carries only what is new, and was reported as a cache break: "request parameters changed: thread" in a test session, a changed prefix in `prefixlens check`. Such a call is no longer compared with the one before it. `session.assertStable()`, `assertSessionStable` and `assertPrefixStable` throw an `Error` that names the calls they could not check, so a test does not pass on requests it never compared; `explain` lists them with `notChecked`. In a trace the call is judged by its usage alone, and the report says how many calls that applies to. A recorder keeps such a call in the lane of the reply it names.
@@ -47,7 +49,8 @@ First public release.
 - **Privacy defaults.** Credentials and all but four request headers are never written. Identifying request fields and the bytes of images and documents are left out unless asked for. Trace and report files are created readable by their owner only. Control characters in trace content are written visibly on the terminal. No telemetry. See [SECURITY.md](SECURITY.md).
 - **Runtimes.** Node.js 22 or later and Bun, with type declarations and no runtime dependencies.
 
-[Unreleased]: https://github.com/parthg1901/prefixlens/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/parthg1901/prefixlens/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/parthg1901/prefixlens/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/parthg1901/prefixlens/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/parthg1901/prefixlens/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/parthg1901/prefixlens/releases/tag/v0.5.0
