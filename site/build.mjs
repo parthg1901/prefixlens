@@ -12,7 +12,7 @@
 // Runs under Node 22 or later, or Bun, with no dependencies.
 
 import { spawnSync } from "node:child_process"
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -205,6 +205,13 @@ const page = read("index.html").replace(/\{\{([a-z_]+)\}\}/g, (whole, key) => {
 
 const favicon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#0b0b0c"/><rect x="5" y="9" width="22" height="5" fill="#ffffff"/><rect x="5" y="18" width="9" height="5" fill="#ffffff"/><rect x="16" y="18" width="11" height="5" fill="#ff4d00"/></svg>\n`
 
+// A report states when it was generated. When nothing else in it changed, the one already there is kept, so that
+// building again does not touch a committed file.
+const stamp = / · generated [^<]*/
+const previousReport = existsSync(path.join(out, "report.html")) ? readFileSync(path.join(out, "report.html"), "utf8") : null
+const newReport = readFileSync(path.join(work, "report.html"), "utf8")
+const reportText = previousReport !== null && previousReport.replace(stamp, "") === newReport.replace(stamp, "") ? previousReport : newReport
+
 rmSync(out, { recursive: true, force: true })
 mkdirSync(out, { recursive: true })
 writeFileSync(path.join(out, "index.html"), `${page}\n`)
@@ -216,9 +223,8 @@ writeFileSync(
   path.join(out, "_headers"),
   ["/*", "  Referrer-Policy: strict-origin-when-cross-origin", "  X-Content-Type-Options: nosniff", "", "/agent.md", "  Content-Type: text/markdown; charset=utf-8", "  Access-Control-Allow-Origin: *", ""].join("\n"),
 )
-copyFileSync(path.join(work, "report.html"), path.join(out, "report.html"))
 // prefixlens writes a report readable by its owner only, since a real one holds prompts. This one is published.
-chmodSync(path.join(out, "report.html"), 0o644)
+writeFileSync(path.join(out, "report.html"), reportText, { mode: 0o644 })
 rmSync(work, { recursive: true, force: true })
 
 console.log(`site: wrote index.html, agent.md, report.html, favicon.svg, robots.txt and _headers to ${path.relative(process.cwd(), out) || "."} (prefixlens ${version})`)
