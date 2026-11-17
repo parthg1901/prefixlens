@@ -21,6 +21,7 @@ pull request.
 | `src/styles.css`, `src/app.js` | Inlined into the page. The script only copies text and switches the recipe tabs. |
 | `src/agent.md` | The instructions the "Copy instructions for your agent" button copies. Served as `/agent.md` too. |
 | `src/recipes/` | The code shown under "Or wire it yourself", and the output of the Mastra test. |
+| `src/og.png` | The link-preview image, 1200 by 630. To make it again: `node site/build.mjs --og <dir>` writes `og.html` there; screenshot it at 1200 by 630 in a headless browser and save the picture here. |
 | `build.mjs` | Fills the page and writes `public/`. The ledger, the terminal output and `report.html` come from running prefixlens on `test/fixtures/agent-session.jsonl`. |
 | `public/` | The built site, committed: what the host serves. Never edit it by hand. |
 

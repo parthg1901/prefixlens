@@ -10,6 +10,16 @@
 <meta property="og:description" content="Prompt-cache regression tests for agent harnesses and frameworks. Names the call, the block that changed, what it cost and the fix.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://prefixlens.parthg.dev/">
+<meta property="og:site_name" content="prefixlens">
+<meta property="og:image" content="https://prefixlens.parthg.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A session of five model calls: the fourth reads nothing from the prompt cache because the tool list changed, and 49,000 cached tokens are paid for again.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="prefixlens: find the request that broke your prompt cache">
+<meta name="twitter:description" content="Prompt-cache regression tests for agent harnesses and frameworks. Names the call, the block that changed, what it cost and the fix.">
+<meta name="twitter:image" content="https://prefixlens.parthg.dev/og.png">
+<meta name="author" content="Parth Gupta">
 <meta name="theme-color" content="#f2f3f5">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="alternate" type="text/markdown" href="/agent.md" title="Instructions for a coding agent">
@@ -20,7 +30,7 @@
 /* Grey paper, black ink, square edges, and one orange that always means the same thing: this was paid for twice. */
 :root {
   --bg: #f2f3f5; --surface: #ffffff; --surface-2: #f2f3f5;
-  --text: #0b0b0c; --text-2: #45474d; --text-3: #787b83;
+  --text: #0b0b0c; --text-2: #45474d; --text-3: #63666e;
   --line: #dcdee3; --line-strong: #0b0b0c; --panel-line: #0b0b0c;
   --shadow: none;
   --cta: #0b0b0c; --cta-hover: #2b2c30; --cta-text: #ffffff; --focus: #0b0b0c;
@@ -67,7 +77,7 @@ h1 { margin: 0; font: var(--display-weight) var(--display-size) / var(--display-
 h1 em { font-style: normal; color: var(--miss-text); }
 .lede { margin: 24px 0 0; max-width: 33em; font-size: var(--lede-size); line-height: 1.55; color: var(--text-2); }
 .actions { margin-top: 32px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-.fine { margin: 24px 0 0; max-width: 40em; font-size: 13.5px; line-height: 1.6; color: var(--text-3); }
+.fine { margin: 24px 0 0; max-width: 40em; font-size: 13.5px; line-height: 1.6; color: var(--text-2); }
 
 .btn { appearance: none; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); color: var(--text); font: 500 14.5px/1.2 var(--font-body); padding: 13px 18px; cursor: pointer; text-align: left; transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.15s ease; }
 .btn:hover { background: var(--surface-2); }
@@ -197,7 +207,9 @@ h1 em { font-style: normal; color: var(--miss-text); }
 .foot__nav { display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 14px; color: var(--text-2); }
 .foot__nav a { text-decoration: none; }
 .foot__nav a:hover { color: var(--text); }
-.foot__fine { grid-column: 1 / -1; margin: 10px 0 0; font-size: 13px; color: var(--text-3); }
+.foot__by { grid-column: 1 / -1; margin: 14px 0 0; font-size: 14px; color: var(--text-2); }
+.foot__by a { color: var(--text); }
+.foot__fine { grid-column: 1 / -1; margin: 4px 0 0; font-size: 13px; color: var(--text-3); }
 
 /* One entrance, in order */
 .rise { animation: rise 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both; animation-delay: calc(var(--d) * 0.07s); }
@@ -223,6 +235,13 @@ h1 em { font-style: normal; color: var(--miss-text); }
   .rise, .row__bar { animation: none; }
   .btn { transition: none; }
 }
+
+/* The link-preview image (site/build.mjs --og): the page's own headline and ledger at 1200 by 630. */
+body.og { width: 1200px; height: 630px; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) 520px; gap: 56px; align-items: center; padding: 0 64px; }
+.og .mark { display: block; font-size: 24px; margin-bottom: 44px; }
+.og h1 { font-size: 70px; }
+.og__sub { margin: 28px 0 0; font-size: 23px; line-height: 1.4; color: var(--text-2); max-width: 20em; }
+.og .rise, .og .row__bar { animation: none; }
 </style>
 </head>
 <body>
@@ -322,13 +341,13 @@ h1 em { font-style: normal; color: var(--miss-text); }
   </header>
   <div class="agent">
     <div class="agent__text">
-      <p>Paste these instructions into the coding agent that works in your harness's repository. It reads how your requests are built, adds the matching test with your real system prompt, tools and memory settings, runs it, and tells you about any cache break it finds.</p>
+      <p>Paste these instructions into the coding agent that works in your harness's repository. It reads how your requests are built, adds the matching test with your real system prompt, tools and memory settings, runs it, and tells you about any cache break it finds. It asks before it changes your own code, your CI or your repository's layout.</p>
       <ol class="steps">
         <li>Finds whether you build the request yourself or a framework does, and whether the code is JavaScript at all.</li>
         <li>Adds <code>prefixlens</code> as a dev dependency.</li>
         <li>Writes the test in your own test runner, beside your other tests.</li>
-        <li>Runs it. A failure is a real cache break: it fixes the small safe ones and shows you the rest.</li>
-        <li>Checks that your CI picks the test up.</li>
+        <li>Runs it. A failure is a real cache break: it shows you the message and a fix, and applies the fix only when you say so.</li>
+        <li>Checks that your CI picks the test up, and commits or pushes nothing unless you ask.</li>
       </ol>
       <p class="note">The test makes no network call and needs no API key: a stand-in answers every model call. Read the instructions before you paste them. They are all here, and the same text is at <a href="/agent.md">/agent.md</a>.</p>
       <button class="btn btn--primary" type="button" data-copy-from="prompt" data-done="Copied. Paste it to your agent">
@@ -339,7 +358,7 @@ h1 em { font-style: normal; color: var(--miss-text); }
       <div class="sheet__bar"><span>agent.md</span><button class="sheet__copy" type="button" data-copy-from="prompt" data-done="Copied">Copy</button></div>
 <pre class="sheet__body" id="prompt" tabindex="0"><span class="p-h p-h1"># Add a prompt-cache regression test with prefixlens</span>
 
-This repository sends requests to an LLM API, directly or through a framework. Add a test that fails when a code change breaks the provider's prompt cache. Use prefixlens: the npm package `prefixlens`, version 0.6.0 or later (https://github.com/parthg1901/prefixlens).
+This repository sends requests to an LLM API, directly or through a framework. Add a test that fails when a code change breaks the provider's prompt cache. Use prefixlens: the npm package `prefixlens`, at exactly version 0.6.0 (https://github.com/parthg1901/prefixlens).
 
 Why it matters: a provider caches the start of a request. When anything early in the request differs from the previous call of the same conversation (the tool list or its order, the system prompt, an earlier message), everything after that point is billed at full price, and nothing reports it. prefixlens compares consecutive requests and names the first block that changed.
 
@@ -355,11 +374,11 @@ When A and B are both true, do case B on the main agent loop: it covers more.
 
 <span class="p-h">## 2. Install</span>
 
-Add `prefixlens` as a dev dependency with the package manager the project already uses. It needs Node.js 22 or later, or Bun, and has no dependencies of its own. In case C the project has no JavaScript package manager: step 3 says where it goes.
+Add `prefixlens` as a dev dependency at exactly version 0.6.0, with the package manager the project already uses (for example `npm install --save-dev --save-exact prefixlens@0.6.0`), and keep the lockfile change. It needs Node.js 22 or later, or Bun, and has no dependencies of its own. In case C the project has no JavaScript package manager: step 3 says where it goes.
 
 <span class="p-h">## 3. Write the test</span>
 
-Use the project's own test runner and put the test beside its other tests. Build the agent the way production does: the real system prompt, tools, memory and history settings. A simplified copy protects nothing.
+Use the project's own test runner and put the test beside its other tests. Build the agent the way production does: the real system prompt, tools, memory and history settings. A simplified copy protects nothing. Writing the test should not need a change to the project's own code.
 
 Case A, two consecutive requests of one conversation:
 
@@ -380,28 +399,33 @@ Case B, a whole run with a stand-in provider:
 <span class="p-code"></span>
 <span class="p-code">// The session answers every model call itself: no network, no API key, no cost.</span>
 <span class="p-code">const session = recordRequests({ reply: callTools([{ name: &quot;&lt;one of the agent's tools&gt;&quot;, args: {} }]) })</span>
-<span class="p-code">// Give session.fetch to the model provider the agent uses, for example:</span>
-<span class="p-code">//   createAnthropic({ apiKey: &quot;test&quot;, fetch: session.fetch })      Vercel AI SDK, Mastra</span>
-<span class="p-code">//   new OpenAI({ apiKey: &quot;test&quot;, fetch: session.fetch })           a provider's SDK</span>
+<span class="p-code">// Hand session.fetch to the model provider the agent uses. Take the first of these that applies:</span>
+<span class="p-code">//   1. The code already accepts a fetch function or a client: pass it.</span>
+<span class="p-code">//        createAnthropic({ apiKey: &quot;test&quot;, fetch: session.fetch })      Vercel AI SDK, Mastra</span>
+<span class="p-code">//        new OpenAI({ apiKey: &quot;test&quot;, fetch: session.fetch })           a provider's SDK</span>
+<span class="p-code">//   2. It does not: replace the global fetch for this test only. Set it and the provider's API key</span>
+<span class="p-code">//      variable (&quot;test&quot;) before the agent's module is imported, and put the real fetch back afterwards.</span>
+<span class="p-code">//        globalThis.fetch = session.fetch</span>
+<span class="p-code">//   3. Neither works: stop and ask before changing the project's code (see Rules).</span>
 <span class="p-code">// Then run the real agent in one conversation for at least eight user turns,</span>
 <span class="p-code">// so that a history window or a compaction, if there is one, is reached.</span>
 <span class="p-code">session.assertStable()</span>
 <span class="p-code">```</span>
 
-Case C, request bodies captured by the project's own tests:
+Case C, request bodies captured by the project's own tests. This adds a small Node.js tool to a project that has none: tell the user what you are about to add (the two files below, and Node.js 22 in CI) and ask before adding it.
 
 1. In the project's test runner, write a test that collects the JSON bodies of consecutive model requests of one conversation, in the order they are sent and exactly as they go to the provider. Either call the project's request builder for each step, as in case A, or run the agent against the fake provider or the HTTP mock its tests already use and capture each body, as in case B, for at least eight user turns.
 2. Add the checker in a directory of its own, so that it stays apart from the project's code:
 
 <span class="p-code">```</span>
-<span class="p-code">tools/prefixlens/package.json    { &quot;private&quot;: true, &quot;type&quot;: &quot;module&quot;, &quot;devDependencies&quot;: { &quot;prefixlens&quot;: &quot;^0.6.0&quot; } }</span>
+<span class="p-code">tools/prefixlens/package.json    { &quot;private&quot;: true, &quot;type&quot;: &quot;module&quot;, &quot;devDependencies&quot;: { &quot;prefixlens&quot;: &quot;0.6.0&quot; } }</span>
 <span class="p-code">tools/prefixlens/check.mjs       import { readFileSync } from &quot;node:fs&quot;</span>
 <span class="p-code">                                 import { assertSessionStable } from &quot;prefixlens/test&quot;</span>
 <span class="p-code"></span>
 <span class="p-code">                                 assertSessionStable(JSON.parse(readFileSync(process.argv[2], &quot;utf8&quot;)))</span>
 <span class="p-code">```</span>
 
-3. Install it with `npm install --prefix tools/prefixlens`, and keep `tools/prefixlens/node_modules` out of version control.
+3. Install it with `npm install --prefix tools/prefixlens`. Keep its `package-lock.json`, and keep `tools/prefixlens/node_modules` out of version control.
 4. In the test, write the bodies to a temporary file as one JSON array, run `node tools/prefixlens/check.mjs &lt;file&gt;`, and fail the test when it exits with anything but 0, showing what it printed. That output is prefixlens's message.
 
 When the tests cannot produce request bodies without a real provider, stop and tell the user. The other route records a real run through a local proxy (`npx prefixlens record`, then `npx prefixlens check` on the trace); it makes real model calls, so set it up only when the user asks for it.
@@ -410,23 +434,28 @@ When the tests cannot produce request bodies without a real provider, stop and t
 
 - <span class="p-b">**It passes.**</span> Go to step 5.
 - <span class="p-b">**It fails.**</span> The message names the call, the first changed block, a diff and a fix. That is a real cache break in this project, not a problem with the test. Do not loosen the test, shorten the run or change the agent's settings to make it pass.
-  - When the fix is small and safe (a timestamp or an id in the system prompt, tools sent in an unstable order), make it and say what you changed. Keep what the model needs: fix a value once per session or send it in a new message, and delete it only when nothing uses it.
-  - When the break is deliberate (a compaction, a history window the team chose), stop and show the user the message. If they confirm it, allow it at that call only: `session.assertStable({ allowBreakAt: { 7: &quot;compaction&quot; } })`, or the same option as the second argument of `assertSessionStable` in case C.
-  - Otherwise stop and show the user the message. Do not commit a failing test without telling them.
+  - When the fix looks small (a timestamp or an id in the system prompt, tools sent in an unstable order), show it to the user as a diff and ask before applying it. Keep what the model needs: fix a value once per session or send it in a new message, and delete it only when nothing uses it. When the user has already told you to apply fixes, make it, in a commit of its own if you are committing, and say what you changed.
+  - When the break is deliberate (a compaction, a history window the team chose), stop and show the user the message. If they confirm it, allow it at that call only: `session.assertStable({ allowBreakAt: { 7: &quot;compaction&quot; } })`, or the same option as the second argument of `assertSessionStable` in case C. The number is the call's number in the failure message; calls are counted from 1.
+  - Otherwise stop and show the user the message.
+  - Leave the failing test in place, and say that it fails and why.
 
 <span class="p-h">## 5. Make sure CI runs it</span>
 
-Check that the command CI already runs picks the new test up. Add a workflow only when the project has none that runs tests. In case C, CI also needs Node.js 22 or later and the `npm install --prefix tools/prefixlens` step before the tests.
+Check that the command CI already runs picks the new test up. When the project has no workflow that runs tests, say so and ask before adding one. In case C, CI also needs Node.js 22 or later and `npm ci --prefix tools/prefixlens` before the tests: tell the user, and change a workflow only when they agree.
 
 <span class="p-h">## 6. Report</span>
 
-Say which case it was, the files you added or changed, the test's output, any cache break you found with prefixlens's message for it, and what the test does not cover.
+Say which case it was, the files you added or changed, the test's output, any cache break you found with prefixlens's message for it, anything you are waiting for an answer on, and what the test does not cover. Quote only the lines prefixlens names: do not paste a whole system prompt, or anything that looks like a secret.
 
 <span class="p-h">## Rules</span>
 
 - Send no real model requests and use no real API key.
-- Change production code only for a fix described in step 4, or to let a test hand the model provider a `fetch` function when the code has no way to do that yet. Keep that change as small as it can be.
+- Ask before changing the project's own code. That covers any fix from step 4, and any change made only so that a test can reach the model provider. Show the change as a diff first, and keep it as small as it can be.
+- Ask before adding a CI workflow, or the `tools/prefixlens/` directory of case C.
+- When there is nobody to ask, stop at that point and put the question in your report.
+- Install exactly version 0.6.0, and keep the lockfile change.
 - Commit no trace files: a trace holds prompts.
+- Do not commit, push or open a pull request unless the user asks you to.
 - More detail, when you need it: https://github.com/parthg1901/prefixlens/blob/main/docs/assertions.md</pre>
     </div>
   </div>
@@ -608,6 +637,7 @@ npx prefixlens check run.trace.jsonl            <span class="h-c"># exits 1 when
     <a href="https://github.com/parthg1901/prefixlens/blob/main/SPEC.md">Trace format</a>
     <a href="/agent.md">agent.md</a>
   </nav>
+  <p class="foot__by">Built by <a href="https://parthg.dev">Parth Gupta</a> · <a href="https://parthg.dev">parthg.dev</a> · The thinking behind it: <a href="https://parthg.dev/posts/most-prompt-cache-misses-are-self-inflicted/">Most prompt cache misses are self-inflicted</a></p>
   <p class="foot__fine">MIT licence. prefixlens 0.6.0, the npm package; not related to the Python package of the same name on PyPI.</p>
 </footer>
 
