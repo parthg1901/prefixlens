@@ -40,10 +40,16 @@
   "sameAs": ["https://github.com/parthg1901/prefixlens", "https://www.npmjs.com/package/prefixlens"]
 }
 </script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="preload" href="/schibsted-grotesk.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/spline-sans-mono.woff2" as="font" type="font/woff2" crossorigin>
 <style>
+/* The two typefaces are served from this site: one variable file each, Latin only. Until a file arrives, text is set
+   in a local font resized to the same average letter width, so that the swap does not move a line. */
+@font-face { font-family: "Schibsted Grotesk"; src: url("/schibsted-grotesk.woff2") format("woff2"); font-weight: 400 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "Spline Sans Mono"; src: url("/spline-sans-mono.woff2") format("woff2"); font-weight: 400 600; font-style: normal; font-display: swap; }
+@font-face { font-family: "Schibsted Grotesk Fallback"; src: local("Arial"), local("Helvetica Neue"), local("Liberation Sans"); font-weight: 400 500; size-adjust: 104.9%; ascent-override: 93.1%; descent-override: 24.6%; line-gap-override: 0%; }
+@font-face { font-family: "Schibsted Grotesk Fallback"; src: local("Arial Bold"), local("Helvetica Neue Bold"), local("Liberation Sans Bold"); font-weight: 600 700; size-adjust: 101.5%; ascent-override: 96.2%; descent-override: 25.4%; line-gap-override: 0%; }
+
 /* Grey paper, black ink, square edges, and one orange that always means the same thing: this was paid for twice. */
 :root {
   --bg: #f2f3f5; --surface: #ffffff; --surface-2: #f2f3f5;
@@ -56,8 +62,8 @@
   --write: #8d9099; --lens: #0b0b0c; --lens-glass: rgba(255, 255, 255, 0.4);
   --code-bg: #0b0b0c; --code-line: #2a2b2f; --code-text: #e6e7ea; --code-dim: #7d8089; --code-strong: #ffffff;
   --code-hit: #c9ccd3; --code-miss: #ff6a2b; --code-note: #ffb38a; --code-key: #ff9a66;
-  --font-display: "Schibsted Grotesk", "Helvetica Neue", Arial, sans-serif;
-  --font-body: "Schibsted Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Schibsted Grotesk", "Schibsted Grotesk Fallback", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Schibsted Grotesk", "Schibsted Grotesk Fallback", "Helvetica Neue", Arial, sans-serif;
   --font-mono: "Spline Sans Mono", ui-monospace, Menlo, Consolas, monospace;
   --display-weight: 700; --display-size: clamp(2.7rem, 5.8vw, 4.9rem); --display-leading: 0.98; --display-tracking: -0.045em;
   --heading-weight: 700; --heading-tracking: -0.025em; --mark-weight: 700; --mark-tracking: -0.03em;
