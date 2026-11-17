@@ -3,7 +3,7 @@
 // whole.
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { after, test } from "node:test"
@@ -21,7 +21,7 @@ const text = (html) => html.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replac
 
 test("the site builds, with every placeholder filled", () => {
   assert.equal(built.status, 0, built.stderr)
-  assert.deepEqual(readdirSync(out).sort(), ["_headers", "agent.md", "favicon.svg", "index.html", "og.png", "report.html", "robots.txt"])
+  assert.deepEqual(readdirSync(out).sort(), ["404.html", "_headers", "agent.md", "favicon.svg", "index.html", "llms.txt", "og.png", "report.html", "robots.txt", "sitemap.xml"])
   assert.doesNotMatch(page, /\{\{[a-z_]+\}\}/)
   assert.doesNotMatch(prompt, /\{\{[a-z_]+\}\}/)
 })
@@ -70,4 +70,23 @@ test("the report is prefixlens's own HTML report, and the page names no coding a
   const words = text(page.replace(/<(style|script)>[\s\S]*?<\/\1>/g, ""))
   assert.doesNotMatch(words, /Claude Code|Codex|Cursor|Copilot|opencode/)
   assert.doesNotMatch(prompt, /Claude Code|Codex|Cursor|Copilot|opencode/)
+})
+
+test("crawlers and agents get a sitemap, an llms.txt, structured data, and a 404 for an unknown address", () => {
+  const file = (name) => readFileSync(path.join(out, name), "utf8")
+  assert.match(file("robots.txt"), /^Sitemap: https:\/\/prefixlens\.parthg\.dev\/sitemap\.xml$/m)
+  assert.match(file("sitemap.xml"), /<loc>https:\/\/prefixlens\.parthg\.dev\/<\/loc>/)
+  const llms = file("llms.txt")
+  assert.match(llms, /^# prefixlens\n\n> /)
+  assert.ok(llms.includes(`prefixlens@${version}`))
+  assert.ok(llms.includes("https://prefixlens.parthg.dev/agent.md"))
+  assert.doesNotMatch(llms, /\{\{[a-z_]+\}\}|Claude Code|Codex|Cursor|Copilot|opencode/)
+  // Every document it links in the repository exists.
+  for (const [, linked] of llms.matchAll(/github\.com\/parthg1901\/prefixlens\/blob\/main\/([^)\s]+)/g)) assert.ok(existsSync(path.join(root, linked)), `llms.txt links ${linked}, which is not in the repository`)
+  const data = JSON.parse(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(page)[1])
+  assert.equal(data["@type"], "SoftwareApplication")
+  assert.equal(data.softwareVersion, version)
+  // Cloudflare Pages answers an unknown address with this file and status 404; without it, with the page and 200.
+  assert.match(file("404.html"), /<meta name="robots" content="noindex">/)
+  assert.match(file("_headers"), /^\/llms\.txt$/m)
 })

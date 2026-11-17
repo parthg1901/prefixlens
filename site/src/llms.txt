@@ -1,0 +1,31 @@
+# prefixlens
+
+> prefixlens finds the LLM request that broke the prompt cache: which call, which block changed, what it cost and how to fix it. It is an npm package for teams that build agent harnesses and frameworks, with test assertions for CI, a recording proxy and a command-line report.
+
+A provider caches the start of a request. When the tool list, the system prompt or an earlier message differs from the previous call of the same conversation, everything after that point is billed at full price, and nothing reports it. prefixlens compares consecutive requests and names the first block that changed. It reads Anthropic Messages, OpenAI Chat Completions and OpenAI Responses requests.
+
+- Install: `npm install --save-dev --save-exact prefixlens@{{version}}`. It needs Node.js 22 or later, or Bun, and has no dependencies.
+- Licence: MIT.
+- It is the npm package. It is not related to the Python package of the same name on PyPI.
+
+## Add it to a repository
+
+- [Instructions for a coding agent](https://prefixlens.parthg.dev/agent.md): the steps to add a prompt-cache regression test to a repository: read how the harness sends a conversation, write the test with its real system prompt and tools, run it, and report any cache break. For JavaScript and TypeScript projects, and for other languages through a small Node script.
+
+## Docs
+
+- [README](https://github.com/parthg1901/prefixlens/blob/main/README.md): what it does, a quick start, and what each cause of a miss means
+- [Assertions](https://github.com/parthg1901/prefixlens/blob/main/docs/assertions.md): `assertPrefixStable`, `recordRequests` and its session, `assertSessionStable`, options and lanes
+- [check](https://github.com/parthg1901/prefixlens/blob/main/docs/check.md): `prefixlens check <trace>`, a pass-or-fail gate for CI, with its classes and exit codes
+- [Proxy](https://github.com/parthg1901/prefixlens/blob/main/docs/proxy.md): record a real run through a local proxy
+- [Report](https://github.com/parthg1901/prefixlens/blob/main/docs/report.md): the terminal, HTML and JSON reports, and how verdicts are decided
+- [Library](https://github.com/parthg1901/prefixlens/blob/main/docs/library.md): record from inside a program
+- [Intentional breaks](https://github.com/parthg1901/prefixlens/blob/main/docs/intentional-breaks.md): declare a compaction or a model switch so that it is not counted as a miss
+- [Trace format](https://github.com/parthg1901/prefixlens/blob/main/SPEC.md): the file format, for a harness in any language
+
+## Optional
+
+- [A sample report](https://prefixlens.parthg.dev/report.html): the HTML report of a five-call session with one miss
+- [Changelog](https://github.com/parthg1901/prefixlens/blob/main/CHANGELOG.md)
+- [npm package](https://www.npmjs.com/package/prefixlens)
+- [Most prompt cache misses are self-inflicted](https://parthg.dev/posts/most-prompt-cache-misses-are-self-inflicted/): the measurements behind the tool
