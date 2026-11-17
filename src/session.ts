@@ -8,6 +8,7 @@
 
 import { explainPair, keptBy, PrefixBreakError, type PrefixExplanation, type PrefixOptions, type RequestLike } from "./assert.ts"
 import { canonicalizeRequest, isRecord } from "./canonical.ts"
+import { estimateTokens as tokens } from "./estimate.ts"
 import { printable } from "./printable.ts"
 import { apiFromBody, apiFromPath, PROVIDER_OF, type Api } from "./record/exchange.ts"
 import { bodyOf, type Fetch } from "./record/fetch.ts"
@@ -329,11 +330,6 @@ type Ids = (prefix: string) => string
 
 // A fixed time, so replies are the same on every run: 2026-01-01T10:00:00Z.
 const CREATED = 1_767_261_600
-
-/** A rough token count: four characters of JSON to a token. */
-function tokens(value: unknown): number {
-  return Math.max(1, Math.ceil(JSON.stringify(value).length / 4))
-}
 
 function sse(data: unknown, event?: string): string {
   return `${event ? `event: ${event}\n` : ""}data: ${JSON.stringify(data)}\n\n`
