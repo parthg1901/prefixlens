@@ -1,6 +1,6 @@
-# prefixlens
+# prefixlens: prompt-cache diagnostics for LLM agents
 
-Explains prompt-cache hits and misses for any agent, harness or framework that calls a model API.
+Explains LLM prompt-cache hits and misses for any agent, harness or framework that calls a model API.
 
 Cache regressions are silent and expensive: one reordered tool list or a timestamp in the system prompt, and every later request pays full price. prefixlens shows which request broke the cache, why, and what it cost. It also catches the break in CI, before it reaches your bill.
 
@@ -30,7 +30,7 @@ Misses
 npm install --save-dev prefixlens    # or: bun add -d prefixlens
 ```
 
-Requires Node.js 22 or later, or Bun (tested with 1.4). There are no runtime dependencies.
+Requires Node.js 22 or later, or Bun (tested with 1.4). There are no runtime dependencies. This is the npm package; it is not related to the Python package of the same name on PyPI.
 
 ## Quickstart
 
