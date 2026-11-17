@@ -87,7 +87,7 @@ Check that the command CI already runs picks the new test up. When the project h
 
 ## 6. Report
 
-Say which case it was, the files you added or changed, the test's output, any cache break you found with prefixlens's message for it, anything you are waiting for an answer on, and what the test does not cover. Quote only the lines prefixlens names: do not paste a whole system prompt, or anything that looks like a secret.
+Say which case it was, the files you added or changed, the test's output, any cache break you found with prefixlens's message for it, anything you are waiting for an answer on, and what the test does not cover.
 
 ## Rules
 
@@ -97,5 +97,6 @@ Say which case it was, the files you added or changed, the test's output, any ca
 - When there is nobody to ask, stop at that point and put the question in your report.
 - Install exactly version 0.6.0, and keep the lockfile change.
 - Commit no trace files: a trace holds prompts.
+- In your report, quote only the lines prefixlens names; don't paste full system prompts or anything that looks like a secret.
 - Do not commit, push or open a pull request unless the user asks you to.
 - More detail, when you need it: https://github.com/parthg1901/prefixlens/blob/main/docs/assertions.md
