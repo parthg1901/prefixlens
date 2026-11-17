@@ -343,6 +343,7 @@ body.og { width: 1200px; height: 630px; overflow: hidden; display: grid; grid-te
     <div class="agent__text">
       <p>Paste these instructions into the coding agent that works in your harness's repository. It reads how your requests are built, adds the matching test with your real system prompt, tools and memory settings, runs it, and tells you about any cache break it finds. It asks before it changes your own code, your CI or your repository's layout.</p>
       <ol class="steps">
+        <li>Reads how your harness sends a conversation: in full or kept by the provider, what trims it, what changes mid-session.</li>
         <li>Finds whether you build the request yourself or a framework does, and whether the code is JavaScript at all.</li>
         <li>Adds <code>prefixlens</code> as a dev dependency.</li>
         <li>Writes the test in your own test runner, beside your other tests.</li>
@@ -362,9 +363,20 @@ This repository sends requests to an LLM API, directly or through a framework. A
 
 Why it matters: a provider caches the start of a request. When anything early in the request differs from the previous call of the same conversation (the tool list or its order, the system prompt, an earlier message), everything after that point is billed at full price, and nothing reports it. prefixlens compares consecutive requests and names the first block that changed.
 
-<span class="p-h">## 1. Find how requests are built</span>
+<span class="p-h">## 1. Understand the harness</span>
 
-Read the code that builds or sends model requests, and decide which case this is:
+Before you write anything, read the code that builds and sends model requests, and find out:
+
+- <span class="p-b">**Where the conversation lives.**</span> Is it sent in full with every request, or does the provider keep it (Anthropic's `thread`, OpenAI's `previous_response_id` or `conversation`)?
+- <span class="p-b">**What trims it.**</span> A history window, a compaction, a token limit.
+- <span class="p-b">**What changes during a session.**</span> Reminders, memory, instructions that are loaded again, a tool list that depends on a mode or a setting.
+- <span class="p-b">**Where cache breakpoints are set**</span>, if the code sets any (`cache_control`, a cache key).
+
+Write what you found in two or three lines; they open your report.
+
+When the provider keeps the conversation, a request carries only what is new. Consecutive requests are then not meant to extend each other, and prefixlens cannot judge them. Test the path that sends the conversation in full, if the harness has a setting for it, and say in your report that the path the provider keeps is not covered. With no such setting, stop and say so.
+
+<span class="p-h">## 2. Decide which case this is</span>
 
 - <span class="p-b">**Case A: the project builds the request body itself.**</span> There is a function that returns the body for the Anthropic Messages, OpenAI Chat Completions or OpenAI Responses API.
 - <span class="p-b">**Case B: a framework or an SDK builds it.**</span> The Vercel AI SDK, Mastra, LangChain, or a provider's SDK called from an agent loop.
@@ -372,11 +384,13 @@ Read the code that builds or sends model requests, and decide which case this is
 
 When A and B are both true, do case B on the main agent loop: it covers more.
 
-<span class="p-h">## 2. Install</span>
+<span class="p-h">## 3. Install</span>
 
-Add `prefixlens` as a dev dependency at exactly version 0.6.0, with the package manager the project already uses (for example `npm install --save-dev --save-exact prefixlens@0.6.0`), and keep the lockfile change. It needs Node.js 22 or later, or Bun, and has no dependencies of its own. In case C the project has no JavaScript package manager: step 3 says where it goes.
+Add `prefixlens` as a dev dependency at exactly version 0.6.0, with the package manager the project already uses (for example `npm install --save-dev --save-exact prefixlens@0.6.0`), and keep the lockfile change. It needs Node.js 22 or later, or Bun, and has no dependencies of its own. In case C the project has no JavaScript package manager: step 4 says where it goes.
 
-<span class="p-h">## 3. Write the test</span>
+When the project's own policy refuses a version this new (a minimum release age, an allowlist), do not add an exception to it. Stop, and say when the version becomes installable or what the user would have to allow.
+
+<span class="p-h">## 4. Write the test</span>
 
 Use the project's own test runner and put the test beside its other tests. Build the agent the way production does: the real system prompt, tools, memory and history settings. A simplified copy protects nothing. Writing the test should not need a change to the project's own code.
 
@@ -430,27 +444,27 @@ Case C, request bodies captured by the project's own tests. This adds a small No
 
 When the tests cannot produce request bodies without a real provider, stop and tell the user. The other route records a real run through a local proxy (`npx prefixlens record`, then `npx prefixlens check` on the trace); it makes real model calls, so set it up only when the user asks for it.
 
-<span class="p-h">## 4. Run it</span>
+<span class="p-h">## 5. Run it</span>
 
-- <span class="p-b">**It passes.**</span> Go to step 5.
-- <span class="p-b">**It fails.**</span> The message names the call, the first changed block, a diff and a fix. That is a real cache break in this project, not a problem with the test. Do not loosen the test, shorten the run or change the agent's settings to make it pass.
+- <span class="p-b">**It passes.**</span> Go to step 6.
+- <span class="p-b">**It fails.**</span> The message names the call, the first changed block, a diff and a fix. Almost always that is a real cache break in this project, not a problem with the test: do not loosen the test, shorten the run or change the agent's settings to make it pass. When what you learned in step 1 says the change cannot cost a cache read, do not allow it on your own either: show the user the message and your reasoning.
   - When the fix looks small (a timestamp or an id in the system prompt, tools sent in an unstable order), show it to the user as a diff and ask before applying it. Keep what the model needs: fix a value once per session or send it in a new message, and delete it only when nothing uses it. When the user has already told you to apply fixes, make it, in a commit of its own if you are committing, and say what you changed.
   - When the break is deliberate (a compaction, a history window the team chose), stop and show the user the message. If they confirm it, allow it at that call only: `session.assertStable({ allowBreakAt: { 7: &quot;compaction&quot; } })`, or the same option as the second argument of `assertSessionStable` in case C. The number is the call's number in the failure message; calls are counted from 1.
   - Otherwise stop and show the user the message.
   - Leave the failing test in place, and say that it fails and why.
 
-<span class="p-h">## 5. Make sure CI runs it</span>
+<span class="p-h">## 6. Make sure CI runs it</span>
 
 Check that the command CI already runs picks the new test up. When the project has no workflow that runs tests, say so and ask before adding one. In case C, CI also needs Node.js 22 or later and `npm ci --prefix tools/prefixlens` before the tests: tell the user, and change a workflow only when they agree.
 
-<span class="p-h">## 6. Report</span>
+<span class="p-h">## 7. Report</span>
 
-Say which case it was, the files you added or changed, the test's output, any cache break you found with prefixlens's message for it, anything you are waiting for an answer on, and what the test does not cover.
+Start with what you found in step 1. Then say which case it was, the files you added or changed, the test's output, any cache break you found with prefixlens's message for it, anything you are waiting for an answer on, and what the test does not cover.
 
 <span class="p-h">## Rules</span>
 
 - Send no real model requests and use no real API key.
-- Ask before changing the project's own code. That covers any fix from step 4, and any change made only so that a test can reach the model provider. Show the change as a diff first, and keep it as small as it can be.
+- Ask before changing the project's own code. That covers any fix from step 5, and any change made only so that a test can reach the model provider. Show the change as a diff first, and keep it as small as it can be.
 - Ask before adding a CI workflow, or the `tools/prefixlens/` directory of case C.
 - When there is nobody to ask, stop at that point and put the question in your report.
 - Install exactly version 0.6.0, and keep the lockfile change.

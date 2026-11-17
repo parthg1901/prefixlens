@@ -98,6 +98,7 @@
     <div class="agent__text">
       <p>Paste these instructions into the coding agent that works in your harness's repository. It reads how your requests are built, adds the matching test with your real system prompt, tools and memory settings, runs it, and tells you about any cache break it finds. It asks before it changes your own code, your CI or your repository's layout.</p>
       <ol class="steps">
+        <li>Reads how your harness sends a conversation: in full or kept by the provider, what trims it, what changes mid-session.</li>
         <li>Finds whether you build the request yourself or a framework does, and whether the code is JavaScript at all.</li>
         <li>Adds <code>prefixlens</code> as a dev dependency.</li>
         <li>Writes the test in your own test runner, beside your other tests.</li>
