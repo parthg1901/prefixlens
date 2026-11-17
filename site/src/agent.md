@@ -10,10 +10,10 @@ Before you write anything, read the code that builds and sends model requests, a
 
 - **Where the conversation lives.** Is it sent in full with every request, or does the provider keep it (Anthropic's `thread`, OpenAI's `previous_response_id` or `conversation`)?
 - **What trims it.** A history window, a compaction, a token limit.
-- **What changes during a session.** Reminders, memory, instructions that are loaded again, a tool list that depends on a mode or a setting.
+- **What can change a request during a session.** Find every such thing this harness has, not a sample of them: reminders, memory and reloaded instructions are only the common ones.
 - **Where cache breakpoints are set**, if the code sets any (`cache_control`, a cache key).
 
-Write what you found in two or three lines; they open your report.
+Write what you found in a few lines; they open your report. The list of what can change a request is what the test has to cover.
 
 When the provider keeps the conversation, a request carries only what is new. Consecutive requests are then not meant to extend each other, and prefixlens cannot judge them. Test the path that sends the conversation in full, if the harness has a setting for it, and say in your report that the path the provider keeps is not covered. With no such setting, stop and say so.
 
@@ -33,7 +33,7 @@ When the project's own policy refuses a version this new (a minimum release age,
 
 ## 4. Write the test
 
-Use the project's own test runner and put the test beside its other tests. Build the agent the way production does: the real system prompt, tools, memory and history settings. A simplified copy protects nothing. Writing the test should not need a change to the project's own code.
+Use the project's own test runner and put the test beside its other tests. Build the agent the way production does: the real system prompt, tools, memory and history settings. A simplified copy protects nothing. Exercise everything from step 1 that can change a request; what one conversation cannot hold goes in a second one. Writing the test should not need a change to the project's own code.
 
 Case A, two consecutive requests of one conversation:
 
@@ -100,7 +100,7 @@ Check that the command CI already runs picks the new test up. When the project h
 
 ## 7. Report
 
-Start with what you found in step 1. Then say which case it was, the files you added or changed, the test's output, any cache break you found with prefixlens's message for it, anything you are waiting for an answer on, and what the test does not cover.
+Start with what you found in step 1. Then say which case it was, the files you added or changed, the test's output, any cache break you found with prefixlens's message for it, anything you are waiting for an answer on, and what the test does not cover: name each thing from step 1 that it leaves out, and why.
 
 ## Rules
 
