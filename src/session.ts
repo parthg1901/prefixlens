@@ -33,6 +33,8 @@ export interface RecordedRequest {
   url: string
   /** The request body exactly as sent, parsed from JSON. */
   body: Record<string, unknown>
+  /** The step it was sent in: the name last given to `session.step()` before the call was made. Absent before the first step. */
+  step?: string
 }
 
 /** A tool call for the model to make. */
@@ -62,6 +64,23 @@ export interface StabilityOptions extends PrefixOptions {
    * `{ 7: "compaction" }` when call 7 is the first after a compaction. `allowBreak` itself applies to every call.
    */
   allowBreakAt?: Record<number, AllowedBreak>
+  /**
+   * Intentional breaks by step: a step's name to what `allowBreak` takes, e.g. `{ compaction: "compaction" }`.
+   * It allows one break per step of that name: the first call in the step whose prefix changed, in any lane.
+   * A later change in the same step, or a change in any other step, still fails. `allowBreakAt` for a call
+   * comes before it.
+   */
+  allowBreakIn?: Record<string, AllowedBreak>
+}
+
+/** `assertSessionStable`'s options: those of `session.assertStable()`, and the steps of the bodies. */
+export interface SessionStableOptions extends StabilityOptions {
+  /**
+   * Where each step begins: a call number (a position in `bodies`, from 1) to the step's name, e.g.
+   * `{ 1: "first question", 4: "reload instructions" }`. A step holds its first call and every call up to
+   * the next step. Bodies before the first one have no step.
+   */
+  steps?: Record<number, string>
 }
 
 /**
@@ -75,6 +94,36 @@ export interface CallExplanation extends PrefixExplanation {
   /** The call it is compared with: the one before it in the same lane. */
   previous: number
   lane: string
+  /** The step the later call was sent in. Absent for a call sent before the first step. */
+  step?: string
+}
+
+/**
+ * What a step's calls came to, the worst first: `"break"` (a change that is not allowed), `"not checked"`
+ * (a call continues a conversation the provider keeps), `"allowed"`, `"stable"`, `"nothing to compare"`
+ * (each call is the first of its lane) or `"no calls"`.
+ */
+export type StepStatus = "break" | "not checked" | "allowed" | "stable" | "nothing to compare" | "no calls"
+
+/** One step of a session, with its calls and how they compare with the calls before them. */
+export interface StepResult {
+  /** Its name, as given to `session.step()`; undefined for the calls sent before the first step. */
+  step: string | undefined
+  /** The calls sent in it. */
+  calls: number[]
+  status: StepStatus
+  /** The result in one line, as the summary prints it, e.g. `break at call 3: system prompt changed (1 → 2 parts)`. */
+  result: string
+  /** The comparisons of its calls, as `explain()` gives them. */
+  explanations: CallExplanation[]
+}
+
+/** One result per step of a session. */
+export interface SessionSummary {
+  /** In the order they were marked; the calls before the first step, if any, come first. */
+  steps: StepResult[]
+  /** The steps as a table to print, one line each. */
+  text: string
 }
 
 export interface RequestSession {
@@ -86,12 +135,21 @@ export interface RequestSession {
   readonly fetch: Fetch
   /** Every request answered so far, in order. */
   readonly requests: readonly RecordedRequest[]
+  /**
+   * Marks what the test does next: every call made after it, until the next `step()`, belongs to the step
+   * `name`. Failure messages, `explain()` and `summary()` name it, and `allowBreakIn` allows a break by it.
+   * Call it just before the action, e.g. `session.step("reload instructions")`.
+   */
+  step(name: string): void
   /** Compares each call with the one before it in its lane. Never throws for a change, or for a call it cannot check; `ok` says whether it is allowed. */
   explain(options?: StabilityOptions): CallExplanation[]
+  /** One result per step, from the comparisons `explain()` makes. Never throws for a change. */
+  summary(options?: StabilityOptions): SessionSummary
   /**
    * Throws a `PrefixBreakError` naming the first call that does not keep the prefix of the call before it in
-   * its lane. Also throws when a call could not be checked (it continues a conversation the provider keeps),
-   * when there was nothing to compare, or when a request could not be answered. Returns the explanations otherwise.
+   * its lane; in a session with steps, the message also lists every step that breaks. Also throws when a call
+   * could not be checked (it continues a conversation the provider keeps), when a step recorded no call, when
+   * there was nothing to compare, or when a request could not be answered. Returns the explanations otherwise.
    */
   assertStable(options?: StabilityOptions): CallExplanation[]
   /** Writes the session as a trace file, for `prefixlens report` and `prefixlens check`. Replaces the file. */
@@ -109,6 +167,10 @@ export function recordRequests(options: SessionOptions = {}): RequestSession {
   const requests: RecordedRequest[] = []
   const records: TraceRecord[] = []
   const problems: string[] = []
+  // The steps marked so far, in order; the same name marked twice is two steps.
+  const steps: string[] = []
+  // The step of each call, by its index in `steps`.
+  const stepOf: (number | undefined)[] = []
   const recorder = new Recorder({ trace: false, name: "test", joinOnSharedStart: true })
   const script = options.reply ?? (() => "OK.")
   let ids = 0
@@ -120,6 +182,8 @@ export function recordRequests(options: SessionOptions = {}): RequestSession {
   }
 
   const fetch: Fetch = async (input, init) => {
+    // The step the call was made in, read before anything is awaited: the test may mark the next one meanwhile.
+    const marked = steps.length === 0 ? undefined : steps.length - 1
     const given = input instanceof Request ? input : undefined
     const url = given ? given.url : String(input)
     const method = (init?.method ?? given?.method ?? "GET").toUpperCase()
@@ -131,28 +195,39 @@ export function recordRequests(options: SessionOptions = {}): RequestSession {
         `prefixlens test session: ${method} ${url} is not a request it can answer${format && !body ? " (the body is not a JSON object)" : ""}. session.fetch answers POST requests to .../messages (Anthropic Messages), .../chat/completions (OpenAI Chat Completions) and .../responses (OpenAI Responses). Use one of those providers for the model, and give any other endpoint (embeddings, a count_tokens call) its own fetch.`,
       )
     // A harness that names its sessions in a header has lanes per session.
-    const request: RecordedRequest = { call: requests.length + 1, format, lane: call.session ? `${call.session}/${call.lane}` : call.lane, url, body }
+    const request: RecordedRequest = { call: requests.length + 1, format, lane: call.session ? `${call.session}/${call.lane}` : call.lane, url, body, ...(marked === undefined ? {} : { step: steps[marked]! }) }
     const reply = readReply(script, request)
     if (typeof reply === "string") return refuse(reply)
     const answer = ANSWERS[format](body, reply, id)
     requests.push(request)
+    stepOf.push(marked)
     // The reply always reports usage, so the call always has a record.
     records.push(call.finish(answer.json)!)
     if (body.stream !== true) return Response.json(answer.json)
     return new Response(answer.events().join(""), { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" } })
   }
 
-  const calls = () => records.map((record, index) => ({ call: index + 1, lane: laneKey(record), name: requests[index]!.lane, request: record }))
-  const explain = (given: StabilityOptions = {}) => explainCalls(calls(), given).explanations
+  const calls = (): Call[] =>
+    records.map((record, index) => ({ call: index + 1, lane: laneKey(record), name: requests[index]!.lane, request: record, ...(stepOf[index] === undefined ? {} : { step: stepOf[index] }) }))
+  const explain = (given: StabilityOptions = {}) => explainCalls(calls(), given, steps).explanations
   return {
     fetch,
     requests,
+    step(name) {
+      if (typeof name !== "string" || name.trim() === "") throw new TypeError(`prefixlens test session: session.step(name) takes the name of what the test does next, as a non-empty string; it was given ${JSON.stringify(name) ?? String(name)}`)
+      steps.push(name)
+    },
     explain,
+    summary(given = {}) {
+      const all = calls()
+      return summarize(all, explainCalls(all, given, steps), steps)
+    },
     assertStable(given = {}) {
       if (problems.length > 0) throw new Error(problems.length === 1 ? problems[0] : `${problems[0]}\n(${problems.length - 1} more: ${problems.slice(1).join("; ")})`)
       if (requests.length === 0)
         throw new Error("prefixlens test session: no request was recorded, so there is nothing to check. Give session.fetch to the model provider your agent uses, e.g. createAnthropic({ fetch: session.fetch }).")
-      return assertCalls(explainCalls(calls(), given), requests.length)
+      const all = calls()
+      return assertCalls(all, explainCalls(all, given, steps), steps)
     },
     writeTrace(file) {
       writePrivateFile(file, serializeTrace(records))
@@ -179,10 +254,12 @@ export function callTools(calls: ToolCall[], answer = "Done."): ReplyScript {
  * `session.assertStable()` for request bodies you already have, in the order they were sent: puts
  * them in lanes the way a session does, and throws a `PrefixBreakError` for the first one that does
  * not keep the prefix of the body before it in its lane. Call numbers are positions in `bodies`, from 1.
+ * `steps` says where each step begins, and the messages then name the steps as a session's do.
  */
-export function assertSessionStable(bodies: readonly Record<string, unknown>[], options: StabilityOptions = {}): CallExplanation[] {
+export function assertSessionStable(bodies: readonly Record<string, unknown>[], options: SessionStableOptions = {}): CallExplanation[] {
+  const { steps: marks, ...given } = options
   const lanes = new Lanes({ joinOnSharedStart: true })
-  const calls = bodies.map((body, index) => {
+  const calls: Call[] = bodies.map((body, index) => {
     if (!isRecord(body)) throw new TypeError(`assertSessionStable: bodies[${index}] is not a request body object`)
     const canonical = canonicalizeRequest(options.provider ?? PROVIDER_OF[apiFromBody(body)], body)
     const kept = keptBy(body)
@@ -190,7 +267,28 @@ export function assertSessionStable(bodies: readonly Record<string, unknown>[], 
     return { call: index + 1, lane, name: lane, request: body }
   })
   if (calls.length === 0) throw new Error("assertSessionStable: no request bodies were given, so there is nothing to check")
-  return assertCalls(explainCalls(calls, options), calls.length)
+  const starts = stepStarts(marks, calls.length)
+  for (const call of calls) {
+    const step = starts.findLastIndex(([first]) => first <= call.call)
+    if (step >= 0) call.step = step
+  }
+  const steps = starts.map(([, name]) => name)
+  return assertCalls(calls, explainCalls(calls, given, steps), steps)
+}
+
+/** `assertSessionStable`'s `steps`, checked, as [first call, name] in call order. */
+function stepStarts(marks: Record<number, string> | undefined, count: number): [number, string][] {
+  if (marks === undefined) return []
+  if (!isRecord(marks)) throw new TypeError("assertSessionStable: steps is not an object of call numbers to step names, e.g. { 1: \"first question\", 4: \"compaction\" }")
+  return Object.entries(marks)
+    .map(([key, name]): [number, string] => {
+      const number = Number(key)
+      if (!Number.isInteger(number) || number < 1 || number > count)
+        throw new TypeError(`assertSessionStable: steps names call ${key}, but there ${count === 1 ? "is 1 call" : `are ${count} calls`} (numbered from 1)`)
+      if (typeof name !== "string" || name.trim() === "") throw new TypeError(`assertSessionStable: the step at call ${key} has no name; give each step a non-empty string`)
+      return [number, name]
+    })
+    .toSorted((a, b) => a[0] - b[0])
 }
 
 interface Call {
@@ -200,7 +298,11 @@ interface Call {
   /** The lane as shown. */
   name: string
   request: RequestLike
+  /** Its step, as an index into the session's steps. */
+  step?: number
 }
+
+type Explained = ReturnType<typeof explainCalls>
 
 /** A call that was not compared, and the request field that says why. */
 interface Unchecked {
@@ -208,8 +310,8 @@ interface Unchecked {
   by: string
 }
 
-function explainCalls(calls: Call[], options: StabilityOptions): { explanations: CallExplanation[]; unchecked: Unchecked[] } {
-  const { allowBreakAt, ...shared } = options
+function explainCalls(calls: Call[], options: StabilityOptions, steps: readonly string[]): { explanations: CallExplanation[]; unchecked: Unchecked[] } {
+  const { allowBreakAt, allowBreakIn, ...shared } = options
   // Per lane: its latest call, and its latest call that carried the conversation in full.
   const latest = new Map<string, Call>()
   const full = new Map<string, Call>()
@@ -230,49 +332,133 @@ function explainCalls(calls: Call[], options: StabilityOptions): { explanations:
     if (!pairs.some((pair) => pair.next.call === number))
       throw new TypeError(`prefixlens/test: allowBreakAt names call ${key}, but it is the first call of its lane ("${calls[number - 1]!.name}"): there is no earlier request for it to break`)
   }
+  const nameOf = (call: Call) => (call.step === undefined ? undefined : steps[call.step])
+  const named = allowBreakIn ?? {}
+  for (const name of Object.keys(named)) {
+    if (!steps.includes(name))
+      throw new TypeError(
+        `prefixlens/test: allowBreakIn names step ${quote(name)}, but ${steps.length === 0 ? "no step was marked (session.step(name) marks one)" : `no step has that name (the steps: ${[...new Set(steps)].map(quote).join(", ")})`}`,
+      )
+    if (!pairs.some((pair) => nameOf(pair.next) === name))
+      throw new TypeError(
+        `prefixlens/test: allowBreakIn names step ${quote(name)}, but ${calls.some((call) => nameOf(call) === name) ? "each call in it is the first of its lane: there is no earlier request for it to break" : "it recorded no call"}`,
+      )
+  }
+  // A step named in allowBreakIn allows one break: its first call whose prefix changed takes the allowance.
+  const taken = new Map<number, number>()
   const explanations = pairs.map(({ previous, next }) => {
-    const allowBreak = allowBreakAt?.[next.call] ?? shared.allowBreak
+    const step = nameOf(next)
+    const allowance = step !== undefined && Object.hasOwn(named, step) ? named[step] : undefined
+    const takenBy = next.step === undefined ? undefined : taken.get(next.step)
+    const allowBreak = allowBreakAt?.[next.call] ?? (allowance !== undefined && takenBy === undefined ? allowance : shared.allowBreak)
+    const where = step === undefined ? `lane ${next.name}` : `step ${quote(step)}, lane ${next.name}`
+    const allow =
+      step === undefined
+        ? `pass { allowBreakAt: { ${next.call}: { reason: "..." } } }`
+        : allowance !== undefined && takenBy !== undefined
+          ? `give it a step of its own: step ${quote(step)} allows one break, and call ${takenBy} took it`
+          : `pass { allowBreakIn: { ${quote(step)}: { reason: "..." } } }`
     const explanation = explainPair(previous.request, next.request, { ...shared, ...(allowBreak === undefined ? {} : { allowBreak }) }, {
-      heading: `prefix not stable at call ${next.call} (lane ${next.name}, compared with call ${previous.call})`,
-      allow: `pass { allowBreakAt: { ${next.call}: { reason: "..." } } }`,
-      skipped: `call ${next.call} not checked (lane ${next.name})`,
+      heading: `prefix not stable at call ${next.call} (${where}, compared with call ${previous.call})`,
+      allow,
+      skipped: `call ${next.call} not checked (${where})`,
     })
-    return { call: next.call, previous: previous.call, lane: next.name, ...explanation }
+    if (allowance !== undefined && takenBy === undefined && !explanation.stable && !explanation.notChecked) taken.set(next.step!, next.call)
+    return { call: next.call, previous: previous.call, lane: next.name, ...(step === undefined ? {} : { step }), ...explanation }
   })
   return { explanations, unchecked }
 }
 
-function assertCalls({ explanations, unchecked }: ReturnType<typeof explainCalls>, calls: number): CallExplanation[] {
+function assertCalls(calls: Call[], { explanations, unchecked }: Explained, steps: readonly string[]): CallExplanation[] {
+  const count = calls.length
   const [first, ...others] = explanations.filter((explanation) => !explanation.ok && !explanation.notChecked)
   if (first) {
-    const listed = others.slice(0, 5).map((other) => `call ${other.call} (${other.change?.summary})`)
-    const more =
-      others.length === 0 ? "" : `\n\n  ${others.length === 1 ? "1 more call changes" : `${others.length} more calls change`} the prefix: ${printable(listed.join(", "))}${others.length > listed.length ? ", …" : ""}`
+    let more: string
+    if (steps.length === 0) {
+      const listed = others.slice(0, 5).map((other) => `call ${other.call} (${other.change?.summary})`)
+      more = others.length === 0 ? "" : `\n\n  ${others.length === 1 ? "1 more call changes" : `${others.length} more calls change`} the prefix: ${printable(listed.join(", "))}${others.length > listed.length ? ", …" : ""}`
+    } else {
+      // Every step that breaks, one line each, after the first break's full message.
+      const rows = summarize(calls, { explanations, unchecked }, steps).steps
+      const broken = rows.filter((row) => row.status === "break")
+      more = `\n\n  ${broken.length} of ${rows.length} ${rows.length === 1 ? "step breaks" : `steps ${broken.length === 1 ? "breaks" : "break"}`} the prefix:\n\n${table(broken, "    ")}`
+    }
     throw new PrefixBreakError({ ...first, message: first.message + more })
   }
   // A test that compared only some of its calls must not pass as if it had compared them all.
   if (unchecked.length > 0) {
     const by = [...new Set(unchecked.map((entry) => entry.by))].join(", ")
+    const names = [...new Set(unchecked.flatMap((entry) => (calls[entry.call - 1]!.step === undefined ? [] : [steps[calls[entry.call - 1]!.step!]!])))]
+    const inSteps = names.length === 0 ? "" : `, in ${names.length === 1 ? "step" : "steps"} ${names.map(quote).join(", ")}`
     throw new Error(
-      `prefixlens/test: ${unchecked.length} of the ${calls} calls ${unchecked.length === 1 ? "was" : "were"} not checked (${numbered(unchecked.map((entry) => entry.call))}): ${unchecked.length === 1 ? "it continues" : "each continues"} a conversation the provider keeps (${by}), so its request carries only what is new and there is nothing to compare it with.\n\n  Run the agent with that turned off, so that every request carries the conversation in full, and say that the path the provider keeps is not covered by this test.`,
+      `prefixlens/test: ${unchecked.length} of the ${count} calls ${unchecked.length === 1 ? "was" : "were"} not checked (${numbered(unchecked.map((entry) => entry.call))}${inSteps}): ${unchecked.length === 1 ? "it continues" : "each continues"} a conversation the provider keeps (${by}), so its request carries only what is new and there is nothing to compare it with.\n\n  Run the agent with that turned off, so that every request carries the conversation in full, and say that the path the provider keeps is not covered by this test.`,
     )
   }
+  // A step that recorded no call checked nothing, and the calls it was meant for are counted in the next one.
+  const empty = steps.filter((_, index) => !calls.some((call) => call.step === index))
+  if (empty.length > 0)
+    throw new Error(
+      `prefixlens/test: ${empty.length === 1 ? `step ${quote(empty[0]!)} recorded no call, so nothing in it was` : `${empty.length} steps recorded no call (${empty.map(quote).join(", ")}), so nothing in them was`} checked. A step holds the calls made after session.step() marks it and before the next mark: mark it just before the action, and make the call that shows the change before marking the next step.`,
+    )
   if (explanations.length === 0)
     throw new Error(
-      `prefixlens/test: nothing to compare: ${calls === 1 ? "1 request was recorded" : `each of the ${calls} requests is the first of its lane`}. A conversation needs at least two model calls (a second user message, or a tool call and its result) before its prefix can be checked.`,
+      `prefixlens/test: nothing to compare: ${count === 1 ? "1 request was recorded" : `each of the ${count} requests is the first of its lane`}. A conversation needs at least two model calls (a second user message, or a tool call and its result) before its prefix can be checked.`,
     )
   return explanations
 }
 
+/** One result per step: the calls before the first step (if any), then each step in the order it was marked. */
+function summarize(calls: Call[], { explanations }: Explained, steps: readonly string[]): SessionSummary {
+  const groups: (number | undefined)[] = [...(calls.some((call) => call.step === undefined) ? [undefined] : []), ...steps.map((_, index) => index)]
+  const rows = groups.map((index): StepResult => {
+    const own = calls.filter((call) => call.step === index).map((call) => call.call)
+    const compared = explanations.filter((explanation) => own.includes(explanation.call))
+    return { step: index === undefined ? undefined : steps[index], calls: own, ...verdict(own, compared), explanations: compared }
+  })
+  return { steps: rows, text: table(rows) }
+}
+
+function verdict(calls: number[], compared: CallExplanation[]): { status: StepStatus; result: string } {
+  if (calls.length === 0) return { status: "no calls", result: "no calls" }
+  const broken = compared.filter((explanation) => !explanation.ok && !explanation.notChecked)
+  if (broken.length > 0) {
+    const also = broken.length === 1 ? "" : `; also at ${numbered(broken.slice(1).map((explanation) => explanation.call))}`
+    return { status: "break", result: `break at call ${broken[0]!.call}: ${broken[0]!.change?.summary}${also}` }
+  }
+  const skipped = compared.filter((explanation) => explanation.notChecked)
+  if (skipped.length > 0) return { status: "not checked", result: `not checked at ${numbered(skipped.map((explanation) => explanation.call))}: ${skipped.length === 1 ? "it continues" : "each continues"} a conversation the provider keeps` }
+  const allowed = compared.filter((explanation) => !explanation.stable)
+  if (allowed.length > 0) return { status: "allowed", result: `allowed at ${numbered(allowed.map((explanation) => explanation.call))} (${allowed[0]!.allowed}): ${allowed[0]!.change?.summary}` }
+  if (compared.length > 0) return { status: "stable", result: "stable" }
+  return { status: "nothing to compare", result: `nothing to compare: ${calls.length === 1 ? "the call is the first of its lane" : "each call is the first of its lane"}` }
+}
+
+/** Steps as aligned columns, with a heading line. */
+function table(rows: StepResult[], indent = ""): string {
+  const cells = [["step", "calls", "result"], ...rows.map((row) => [row.step ?? "(no step)", row.calls.length === 0 ? "-" : ranges(row.calls), row.result])]
+  const width = (column: number) => Math.max(...cells.map((cell) => cell[column]!.length))
+  const [name, numbers] = [width(0), width(1)]
+  return printable(cells.map(([step, calls, result]) => `${indent}${step!.padEnd(name)}  ${calls!.padEnd(numbers)}  ${result}`).join("\n"))
+}
+
+function quote(name: string): string {
+  return JSON.stringify(name)
+}
+
 /** Call numbers as ranges: "call 2", "calls 2-9, 12". */
 function numbered(calls: number[]): string {
+  return `${calls.length === 1 ? "call" : "calls"} ${ranges(calls)}`
+}
+
+/** Numbers as ranges: "2", "2-9, 12". */
+function ranges(numbers: number[]): string {
   const runs: [number, number][] = []
-  for (const call of calls) {
+  for (const number of numbers) {
     const run = runs.at(-1)
-    if (run && call === run[1] + 1) run[1] = call
-    else runs.push([call, call])
+    if (run && number === run[1] + 1) run[1] = number
+    else runs.push([number, number])
   }
-  return `${calls.length === 1 ? "call" : "calls"} ${runs.map(([from, to]) => (from === to ? `${from}` : `${from}-${to}`)).join(", ")}`
+  return runs.map(([from, to]) => (from === to ? `${from}` : `${from}-${to}`)).join(", ")
 }
 
 function parseBody(raw: string | Uint8Array | undefined): Record<string, unknown> | undefined {

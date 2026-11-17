@@ -7,4 +7,4 @@
 export { assertPrefixStable, explainPrefixDiff, PrefixBreakError } from "./assert.ts"
 export type { BreakCost, BreakSize, ChangedBlock, Position, PrefixExplanation, PrefixOptions, RequestLike } from "./assert.ts"
 export { assertSessionStable, callTools, recordRequests } from "./session.ts"
-export type { AllowedBreak, CallExplanation, RecordedRequest, Reply, ReplyScript, RequestFormat, RequestSession, SessionOptions, StabilityOptions, ToolCall } from "./session.ts"
+export type { AllowedBreak, CallExplanation, RecordedRequest, Reply, ReplyScript, RequestFormat, RequestSession, SessionOptions, SessionStableOptions, SessionSummary, StabilityOptions, StepResult, StepStatus, ToolCall } from "./session.ts"
