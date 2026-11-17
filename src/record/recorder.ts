@@ -5,6 +5,7 @@ import zlib from "node:zlib"
 import { canonicalizeRequest, canonicalizeRequestAsync, isRecord, type CanonicalRequest } from "../canonical.ts"
 import { openTraceWriter, type Billing, type TraceRecord } from "../trace.ts"
 import { apiFromBody, apiFromPath, noUsageReason, PROVIDER_OF, readResponse, recordFrom, type Api } from "./exchange.ts"
+import { keptConversation } from "../kept.ts"
 import { Lanes, type Lane } from "./lanes.ts"
 
 export interface RecorderOptions {
@@ -207,14 +208,18 @@ export class Recorder {
       return undefined
     }
     const built = recordFrom(input, canonical)
+    // A later request that names this reply continues this lane.
+    if (built.id) lane.reply = built.id
     this.writer?.append(built)
     this.options.onRecord?.(built)
     return built
   }
 }
 
-function laneCall(call: { session?: string | undefined; forced?: string | undefined; cacheKey?: string | undefined; group?: string | undefined }) {
+function laneCall(call: { body: Record<string, unknown>; session?: string | undefined; forced?: string | undefined; cacheKey?: string | undefined; group?: string | undefined }) {
+  const kept = keptConversation(call.body)
   return {
+    ...(kept ? { continues: kept.id } : {}),
     ...(call.session === undefined ? {} : { session: call.session }),
     ...(call.forced === undefined ? {} : { forced: call.forced }),
     ...(call.cacheKey === undefined ? {} : { cacheKey: call.cacheKey }),

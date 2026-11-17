@@ -4,6 +4,10 @@ All notable changes to prefixlens are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Fixed
+
+- A request that continues a conversation the provider keeps (Anthropic's `thread`, OpenAI's `previous_response_id` or `conversation`) carries only what is new, and was reported as a cache break: "request parameters changed: thread" in a test session, a changed prefix in `prefixlens check`. Such a call is no longer compared with the one before it. `session.assertStable()`, `assertSessionStable` and `assertPrefixStable` throw an `Error` that names the calls they could not check, so a test does not pass on requests it never compared; `explain` lists them with `notChecked`. In a trace the call is judged by its usage alone, and the report says how many calls that applies to. A recorder keeps such a call in the lane of the reply it names.
+
 ## [0.6.0] - 2026-11-14
 
 ### Added

@@ -6,9 +6,10 @@
 // which block changed and how.
 
 import { changeStart, declaredBreaks, defaultAfter, describePosition, isPosition, keptBlocks, POSITIONS, type DeclaredBreak, type Position } from "./breaks.ts"
-import { canonicalizeRequest, isItemReference, type CanonicalRequest, type Provider } from "./canonical.ts"
+import { canonicalizeRequest, isItemReference, isRecord, type CanonicalRequest, type Provider } from "./canonical.ts"
 import { describeBlock, fixFor, type ChangedBlock } from "./advice.ts"
 import { comparePrefix, type PrefixChange } from "./diff.ts"
+import { keptConversation, type KeptConversation } from "./kept.ts"
 import { printable } from "./printable.ts"
 import { apiFromBody, PROVIDER_OF } from "./record/exchange.ts"
 import { prefixBlocks, type Block, type Hint, type TraceRecord } from "./trace.ts"
@@ -62,6 +63,12 @@ export interface PrefixExplanation {
   /** Set when the change was allowed: the reason given in `allowBreak`. */
   allowed?: string
   /**
+   * Set when the two requests were not compared, with the reason: one of them continues a conversation
+   * the provider keeps (Anthropic's `thread`, OpenAI's `previous_response_id` or `conversation`), so it
+   * carries only what is new. `stable` and `ok` are then false and `change` is null: nothing is known.
+   */
+  notChecked?: string
+  /**
    * How many of the unchanged blocks are OpenAI Responses `item_reference` items. They are compared
    * by the id they name: the item itself was not in the request, so its content and size are unknown.
    * Absent when there are none.
@@ -91,16 +98,31 @@ export function explainPrefixDiff(prev: RequestLike, next: RequestLike, options:
   return explainPair(prev, next, options, PAIR_WORDING)
 }
 
-/** How a failure is worded: what it opens with, and the option that would allow the change. */
+/** How a failure is worded: what it opens with, the option that would allow the change, and what a pair that was not compared opens with. */
 export interface Wording {
   heading: string
   allow: string
+  skipped: string
 }
 
-const PAIR_WORDING: Wording = { heading: "prefix not stable", allow: 'pass { allowBreak: { reason: "..." } }' }
+const PAIR_WORDING: Wording = { heading: "prefix not stable", allow: 'pass { allowBreak: { reason: "..." } }', skipped: "not checked" }
+
+/** How `request` continues a conversation the provider keeps; undefined when it carries the conversation itself. */
+export function keptBy(request: RequestLike): KeptConversation | undefined {
+  if (Array.isArray(request)) return undefined
+  const fields = request as Record<string, unknown>
+  // A canonical request and a trace record hold the request's top-level fields in `params`; a body is those fields.
+  return keptConversation(isRecord(fields.params) ? fields.params : fields)
+}
 
 /** `explainPrefixDiff` with the failure worded by the caller: the test session names the two calls and its per-call option. */
 export function explainPair(prev: RequestLike, next: RequestLike, options: PrefixOptions, wording: Wording): PrefixExplanation {
+  const later = keptBy(next)
+  const kept = later ?? keptBy(prev)
+  if (kept) {
+    const notChecked = `the ${later ? "later" : "earlier"} request continues a conversation the provider keeps (${kept.by}), so it carries only what is new: the two are not meant to extend each other, and there is nothing to compare`
+    return { stable: false, ok: false, appended: 0, unchanged: 0, change: null, notChecked, message: printable(`${wording.skipped}: ${notChecked}`) }
+  }
   const before = comparable(prev, options)
   const after = comparable(next, options)
   const given = typeof options.allowBreak === "string" ? { reason: options.allowBreak } : options.allowBreak
@@ -163,10 +185,13 @@ export function explainPair(prev: RequestLike, next: RequestLike, options: Prefi
 /**
  * Throws a PrefixBreakError, with a message naming the first changed block and
  * what changed, unless `next` keeps `prev`'s prefix (or the change is allowed
- * by `options.allowBreak`). Returns the explanation otherwise.
+ * by `options.allowBreak`). Returns the explanation otherwise. Throws an Error
+ * when the two cannot be compared (`notChecked`): an assertion that checked
+ * nothing does not pass.
  */
 export function assertPrefixStable(prev: RequestLike, next: RequestLike, options: PrefixOptions = {}): PrefixExplanation {
   const explanation = explainPrefixDiff(prev, next, options)
+  if (explanation.notChecked) throw new Error(`prefixlens/test: ${explanation.message}. Compare two requests that carry the conversation in full.`)
   if (!explanation.ok) throw new PrefixBreakError(explanation)
   return explanation
 }

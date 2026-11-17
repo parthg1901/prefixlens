@@ -6,7 +6,7 @@
 // No test-runner imports and no globals: it works the same under node:test,
 // bun:test, vitest and jest.
 
-import { explainPair, PrefixBreakError, type PrefixExplanation, type PrefixOptions, type RequestLike } from "./assert.ts"
+import { explainPair, keptBy, PrefixBreakError, type PrefixExplanation, type PrefixOptions, type RequestLike } from "./assert.ts"
 import { canonicalizeRequest, isRecord } from "./canonical.ts"
 import { printable } from "./printable.ts"
 import { apiFromBody, apiFromPath, PROVIDER_OF, type Api } from "./record/exchange.ts"
@@ -63,7 +63,11 @@ export interface StabilityOptions extends PrefixOptions {
   allowBreakAt?: Record<number, AllowedBreak>
 }
 
-/** How one call compares with the call before it in its lane. */
+/**
+ * How one call compares with the call before it in its lane. A call that continues a conversation the
+ * provider keeps is not compared (`notChecked`); the next call sent in full is compared with the last
+ * one that was.
+ */
 export interface CallExplanation extends PrefixExplanation {
   /** The later call's number. */
   call: number
@@ -81,12 +85,12 @@ export interface RequestSession {
   readonly fetch: Fetch
   /** Every request answered so far, in order. */
   readonly requests: readonly RecordedRequest[]
-  /** Compares each call with the one before it in its lane. Never throws for a change; `ok` says whether it is allowed. */
+  /** Compares each call with the one before it in its lane. Never throws for a change, or for a call it cannot check; `ok` says whether it is allowed. */
   explain(options?: StabilityOptions): CallExplanation[]
   /**
    * Throws a `PrefixBreakError` naming the first call that does not keep the prefix of the call before it in
-   * its lane. Also throws when there was nothing to compare, or a request could not be answered.
-   * Returns the explanations otherwise.
+   * its lane. Also throws when a call could not be checked (it continues a conversation the provider keeps),
+   * when there was nothing to compare, or when a request could not be answered. Returns the explanations otherwise.
    */
   assertStable(options?: StabilityOptions): CallExplanation[]
   /** Writes the session as a trace file, for `prefixlens report` and `prefixlens check`. Replaces the file. */
@@ -137,11 +141,8 @@ export function recordRequests(options: SessionOptions = {}): RequestSession {
     return new Response(answer.events().join(""), { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" } })
   }
 
-  const explain = (given: StabilityOptions = {}) =>
-    explainCalls(
-      records.map((record, index) => ({ call: index + 1, lane: laneKey(record), name: requests[index]!.lane, request: record })),
-      given,
-    )
+  const calls = () => records.map((record, index) => ({ call: index + 1, lane: laneKey(record), name: requests[index]!.lane, request: record }))
+  const explain = (given: StabilityOptions = {}) => explainCalls(calls(), given).explanations
   return {
     fetch,
     requests,
@@ -150,7 +151,7 @@ export function recordRequests(options: SessionOptions = {}): RequestSession {
       if (problems.length > 0) throw new Error(problems.length === 1 ? problems[0] : `${problems[0]}\n(${problems.length - 1} more: ${problems.slice(1).join("; ")})`)
       if (requests.length === 0)
         throw new Error("prefixlens test session: no request was recorded, so there is nothing to check. Give session.fetch to the model provider your agent uses, e.g. createAnthropic({ fetch: session.fetch }).")
-      return assertCalls(explain(given), requests.length)
+      return assertCalls(explainCalls(calls(), given), requests.length)
     },
     writeTrace(file) {
       writePrivateFile(file, serializeTrace(records))
@@ -183,7 +184,8 @@ export function assertSessionStable(bodies: readonly Record<string, unknown>[], 
   const calls = bodies.map((body, index) => {
     if (!isRecord(body)) throw new TypeError(`assertSessionStable: bodies[${index}] is not a request body object`)
     const canonical = canonicalizeRequest(options.provider ?? PROVIDER_OF[apiFromBody(body)], body)
-    const lane = lanes.assign(canonical.blocks, { began: index + 1, ...(typeof body.prompt_cache_key === "string" ? { cacheKey: body.prompt_cache_key } : {}) }).name
+    const kept = keptBy(body)
+    const lane = lanes.assign(canonical.blocks, { began: index + 1, ...(typeof body.prompt_cache_key === "string" ? { cacheKey: body.prompt_cache_key } : {}), ...(kept ? { continues: kept.id } : {}) }).name
     return { call: index + 1, lane, name: lane, request: body }
   })
   if (calls.length === 0) throw new Error("assertSessionStable: no request bodies were given, so there is nothing to check")
@@ -199,12 +201,25 @@ interface Call {
   request: RequestLike
 }
 
-function explainCalls(calls: Call[], options: StabilityOptions): CallExplanation[] {
+/** A call that was not compared, and the request field that says why. */
+interface Unchecked {
+  call: number
+  by: string
+}
+
+function explainCalls(calls: Call[], options: StabilityOptions): { explanations: CallExplanation[]; unchecked: Unchecked[] } {
   const { allowBreakAt, ...shared } = options
+  // Per lane: its latest call, and its latest call that carried the conversation in full.
   const latest = new Map<string, Call>()
+  const full = new Map<string, Call>()
+  const unchecked: Unchecked[] = []
   const pairs = calls.flatMap((next) => {
-    const previous = latest.get(next.lane)
+    const kept = keptBy(next.request)
+    // A call the provider continues has nothing to be compared with; it is listed against the call before it.
+    const previous = (kept ? latest : full).get(next.lane)
     latest.set(next.lane, next)
+    if (kept) unchecked.push({ call: next.call, by: kept.by })
+    else full.set(next.lane, next)
     return previous ? [{ previous, next }] : []
   })
   for (const key of Object.keys(allowBreakAt ?? {})) {
@@ -214,27 +229,49 @@ function explainCalls(calls: Call[], options: StabilityOptions): CallExplanation
     if (!pairs.some((pair) => pair.next.call === number))
       throw new TypeError(`prefixlens/test: allowBreakAt names call ${key}, but it is the first call of its lane ("${calls[number - 1]!.name}"): there is no earlier request for it to break`)
   }
-  return pairs.map(({ previous, next }) => {
+  const explanations = pairs.map(({ previous, next }) => {
     const allowBreak = allowBreakAt?.[next.call] ?? shared.allowBreak
     const explanation = explainPair(previous.request, next.request, { ...shared, ...(allowBreak === undefined ? {} : { allowBreak }) }, {
       heading: `prefix not stable at call ${next.call} (lane ${next.name}, compared with call ${previous.call})`,
       allow: `pass { allowBreakAt: { ${next.call}: { reason: "..." } } }`,
+      skipped: `call ${next.call} not checked (lane ${next.name})`,
     })
     return { call: next.call, previous: previous.call, lane: next.name, ...explanation }
   })
+  return { explanations, unchecked }
 }
 
-function assertCalls(explanations: CallExplanation[], calls: number): CallExplanation[] {
+function assertCalls({ explanations, unchecked }: ReturnType<typeof explainCalls>, calls: number): CallExplanation[] {
+  const [first, ...others] = explanations.filter((explanation) => !explanation.ok && !explanation.notChecked)
+  if (first) {
+    const listed = others.slice(0, 5).map((other) => `call ${other.call} (${other.change?.summary})`)
+    const more =
+      others.length === 0 ? "" : `\n\n  ${others.length === 1 ? "1 more call changes" : `${others.length} more calls change`} the prefix: ${printable(listed.join(", "))}${others.length > listed.length ? ", …" : ""}`
+    throw new PrefixBreakError({ ...first, message: first.message + more })
+  }
+  // A test that compared only some of its calls must not pass as if it had compared them all.
+  if (unchecked.length > 0) {
+    const by = [...new Set(unchecked.map((entry) => entry.by))].join(", ")
+    throw new Error(
+      `prefixlens/test: ${unchecked.length} of the ${calls} calls ${unchecked.length === 1 ? "was" : "were"} not checked (${numbered(unchecked.map((entry) => entry.call))}): ${unchecked.length === 1 ? "it continues" : "each continues"} a conversation the provider keeps (${by}), so its request carries only what is new and there is nothing to compare it with.\n\n  Run the agent with that turned off, so that every request carries the conversation in full, and say that the path the provider keeps is not covered by this test.`,
+    )
+  }
   if (explanations.length === 0)
     throw new Error(
       `prefixlens/test: nothing to compare: ${calls === 1 ? "1 request was recorded" : `each of the ${calls} requests is the first of its lane`}. A conversation needs at least two model calls (a second user message, or a tool call and its result) before its prefix can be checked.`,
     )
-  const [first, ...others] = explanations.filter((explanation) => !explanation.ok)
-  if (!first) return explanations
-  const listed = others.slice(0, 5).map((other) => `call ${other.call} (${other.change?.summary})`)
-  const more =
-    others.length === 0 ? "" : `\n\n  ${others.length === 1 ? "1 more call changes" : `${others.length} more calls change`} the prefix: ${printable(listed.join(", "))}${others.length > listed.length ? ", …" : ""}`
-  throw new PrefixBreakError({ ...first, message: first.message + more })
+  return explanations
+}
+
+/** Call numbers as ranges: "call 2", "calls 2-9, 12". */
+function numbered(calls: number[]): string {
+  const runs: [number, number][] = []
+  for (const call of calls) {
+    const run = runs.at(-1)
+    if (run && call === run[1] + 1) run[1] = call
+    else runs.push([call, call])
+  }
+  return `${calls.length === 1 ? "call" : "calls"} ${runs.map(([from, to]) => (from === to ? `${from}` : `${from}-${to}`)).join(", ")}`
 }
 
 function parseBody(raw: string | Uint8Array | undefined): Record<string, unknown> | undefined {
