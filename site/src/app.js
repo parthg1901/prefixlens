@@ -22,11 +22,13 @@
 
   document.querySelectorAll("[data-copy], [data-copy-from]").forEach(function (button) {
     var label = button.querySelector(".btn__label") || button
-    var original = label.textContent
+    var original = label.innerHTML
     var timer = null
     button.addEventListener("click", function () {
       var from = button.getAttribute("data-copy-from")
       var text = from ? document.getElementById(from).textContent : button.getAttribute("data-copy")
+      // A shorter label must not shrink the button: beside another button it would jump to that one's line.
+      if (!button.style.minWidth) button.style.minWidth = button.getBoundingClientRect().width + "px"
       copy(text).then(
         function () {
           button.classList.add("is-done")
@@ -39,7 +41,8 @@
         clearTimeout(timer)
         timer = setTimeout(function () {
           button.classList.remove("is-done")
-          label.textContent = original
+          label.innerHTML = original
+          button.style.minWidth = ""
         }, 2400)
       })
     })
