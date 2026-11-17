@@ -173,7 +173,7 @@ A declaration excuses one call, and only a change its reason allows. See [intent
 - Costs are API list prices from a bundled table, not your bill. Subscriptions, discounts and batch tiers are not applied, and the table can be out of date. See [pricing](https://github.com/parthg1901/prefixlens/blob/main/docs/pricing.md).
 - Gemini's native API and WebSocket transports are not recorded. Chat Completions streams are recorded only when they report usage (`stream_options: {"include_usage": true}`).
 - A trace holds your prompts, tool output and the files your agent read. Keep it private and never commit it. See [SECURITY.md](SECURITY.md).
-- The fields of `report --json` and `check --json` may change in a minor version before 1.0. What has been checked on real traffic is listed in [verification](https://github.com/parthg1901/prefixlens/blob/main/docs/verification.md).
+- The fields of `report --json` and `check --json` may change in a minor version before 1.0.
 
 ## Documentation
 
