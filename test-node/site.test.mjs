@@ -21,7 +21,7 @@ const text = (html) => html.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replac
 
 test("the site builds, with every placeholder filled", () => {
   assert.equal(built.status, 0, built.stderr)
-  assert.deepEqual(readdirSync(out).sort(), ["404.html", "_headers", "agent.md", "favicon.svg", "index.html", "llms.txt", "og.png", "report.html", "robots.txt", "sitemap.xml"])
+  assert.deepEqual(readdirSync(out).sort(), ["404.html", "_headers", "agent.md", "favicon.svg", "index.html", "llms.txt", "og.png", "report.html", "robots.txt", "schibsted-grotesk.woff2", "sitemap.xml", "spline-sans-mono.woff2"])
   assert.doesNotMatch(page, /\{\{[a-z_]+\}\}/)
   assert.doesNotMatch(prompt, /\{\{[a-z_]+\}\}/)
 })

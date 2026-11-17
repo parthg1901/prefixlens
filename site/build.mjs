@@ -28,6 +28,8 @@ const cli = path.join(root, "dist", "cli.js")
 const fixture = path.join(root, "test", "fixtures", "agent-session.jsonl")
 const { version } = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))
 const ORIGIN = "https://prefixlens.parthg.dev"
+// Served from the site itself, so that the page waits on no other host (licences: src/fonts/*.OFL.txt).
+const FONTS = ["schibsted-grotesk.woff2", "spline-sans-mono.woff2"]
 
 if (!existsSync(cli)) {
   console.error("site: dist/cli.js is missing. Build the package first: npm run build")
@@ -208,12 +210,13 @@ const page = read("index.html").replace(/\{\{([a-z_]+)\}\}/g, (whole, key) => {
 })
 
 if (ogDir !== null) {
-  const head = /<link rel="preconnect"[\s\S]*?rel="stylesheet">/.exec(read("index.html"))[0]
+  // The picture is taken from a file, where "/name.woff2" leads nowhere: the fonts are read from src/fonts.
+  const styles = values.styles.replaceAll('url("/', `url("file://${path.join(src, "fonts")}/`)
   const ledger = /<figure class="ledger[\s\S]*?<\/figure>/.exec(page)[0]
   mkdirSync(ogDir, { recursive: true })
   writeFileSync(
     path.join(ogDir, "og.html"),
-    `<!doctype html>\n<html lang="en"><head><meta charset="utf-8">${head}<style>${values.styles}</style></head>\n<body class="og">\n<div><span class="mark"><span class="mark__prefix">prefix</span><span class="mark__lens">lens</span></span><h1>Find the request that <em>broke</em> your prompt cache.</h1><p class="og__sub">Prompt-cache regression tests for agent harnesses and frameworks.</p></div>\n${ledger}\n</body></html>\n`,
+    `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><style>${styles}</style></head>\n<body class="og">\n<div><span class="mark"><span class="mark__prefix">prefix</span><span class="mark__lens">lens</span></span><h1>Find the request that <em>broke</em> your prompt cache.</h1><p class="og__sub">Prompt-cache regression tests for agent harnesses and frameworks.</p></div>\n${ledger}\n</body></html>\n`,
   )
   rmSync(work, { recursive: true, force: true })
   console.log(`site: wrote og.html to ${path.relative(process.cwd(), ogDir) || "."}`)
@@ -241,13 +244,14 @@ writeFileSync(path.join(out, "llms.txt"), `${read("llms.txt").replaceAll("{{vers
 // With this file the host answers an unknown address with 404, not with the page.
 copyFileSync(path.join(src, "404.html"), path.join(out, "404.html"))
 copyFileSync(path.join(src, "og.png"), path.join(out, "og.png"))
+for (const font of FONTS) copyFileSync(path.join(src, "fonts", font), path.join(out, font))
 // Cloudflare Pages reads response headers from this file. The instructions are served as Markdown that any page may fetch.
 writeFileSync(
   path.join(out, "_headers"),
-  ["/*", "  Referrer-Policy: strict-origin-when-cross-origin", "  X-Content-Type-Options: nosniff", "", "/agent.md", "  Content-Type: text/markdown; charset=utf-8", "  Access-Control-Allow-Origin: *", "", "/llms.txt", "  Content-Type: text/plain; charset=utf-8", "  Access-Control-Allow-Origin: *", ""].join("\n"),
+  ["/*", "  Referrer-Policy: strict-origin-when-cross-origin", "  X-Content-Type-Options: nosniff", "", "/agent.md", "  Content-Type: text/markdown; charset=utf-8", "  Access-Control-Allow-Origin: *", "", "/llms.txt", "  Content-Type: text/plain; charset=utf-8", "  Access-Control-Allow-Origin: *", ...FONTS.flatMap((font) => ["", `/${font}`, "  Cache-Control: public, max-age=31536000, immutable"]), ""].join("\n"),
 )
 // prefixlens writes a report readable by its owner only, since a real one holds prompts. This one is published.
 writeFileSync(path.join(out, "report.html"), reportText, { mode: 0o644 })
 rmSync(work, { recursive: true, force: true })
 
-console.log(`site: wrote index.html, agent.md, llms.txt, report.html, 404.html, og.png, favicon.svg, robots.txt, sitemap.xml and _headers to ${path.relative(process.cwd(), out) || "."} (prefixlens ${version})`)
+console.log(`site: wrote index.html, agent.md, llms.txt, report.html, 404.html, og.png, favicon.svg, two fonts, robots.txt, sitemap.xml and _headers to ${path.relative(process.cwd(), out) || "."} (prefixlens ${version})`)

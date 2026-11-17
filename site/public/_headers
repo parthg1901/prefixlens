@@ -9,3 +9,9 @@
 /llms.txt
   Content-Type: text/plain; charset=utf-8
   Access-Control-Allow-Origin: *
+
+/schibsted-grotesk.woff2
+  Cache-Control: public, max-age=31536000, immutable
+
+/spline-sans-mono.woff2
+  Cache-Control: public, max-age=31536000, immutable
