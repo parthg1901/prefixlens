@@ -1,7 +1,11 @@
-// Builds the landing page into site/dist (or the directory given as the first argument): one index.html with its
+// Builds the landing page into site/public (or the directory given as the first argument): one index.html with its
 // styles and script inlined, the instructions for a coding agent as agent.md, and a real HTML report of the sample
 // session. Everything the page shows of prefixlens's output is produced here by the built command line
-// (dist/cli.js) from test/fixtures/agent-session.jsonl, so the page cannot drift from the tool.
+// (dist/cli.js) from test/fixtures/agent-session.jsonl.
+//
+// site/public is committed, and it is what the host serves: no build runs at deploy time. Run this after a change
+// to site/src or to what prefixlens prints, and commit the result; test-node/site.test.mjs fails while the
+// committed page is not what this script gives.
 //
 //   npm run build && node site/build.mjs [out-dir]
 //
@@ -16,7 +20,7 @@ import { fileURLToPath } from "node:url"
 const site = path.dirname(fileURLToPath(import.meta.url))
 const root = path.join(site, "..")
 const src = path.join(site, "src")
-const out = path.resolve(process.argv[2] ?? path.join(site, "dist"))
+const out = path.resolve(process.argv[2] ?? path.join(site, "public"))
 const cli = path.join(root, "dist", "cli.js")
 const fixture = path.join(root, "test", "fixtures", "agent-session.jsonl")
 const { version } = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))
