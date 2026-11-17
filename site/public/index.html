@@ -343,7 +343,7 @@ body.og { width: 1200px; height: 630px; overflow: hidden; display: grid; grid-te
     <div class="agent__text">
       <p>Paste these instructions into the coding agent that works in your harness's repository. It reads how your requests are built, adds the matching test with your real system prompt, tools and memory settings, runs it, and tells you about any cache break it finds. It asks before it changes your own code, your CI or your repository's layout.</p>
       <ol class="steps">
-        <li>Reads how your harness sends a conversation: in full or kept by the provider, what trims it, what changes mid-session.</li>
+        <li>Reads how your harness sends a conversation: in full or kept by the provider, what trims it, and everything that can change a request mid-session.</li>
         <li>Finds whether you build the request yourself or a framework does, and whether the code is JavaScript at all.</li>
         <li>Adds <code>prefixlens</code> as a dev dependency.</li>
         <li>Writes the test in your own test runner, beside your other tests.</li>
@@ -369,10 +369,10 @@ Before you write anything, read the code that builds and sends model requests, a
 
 - <span class="p-b">**Where the conversation lives.**</span> Is it sent in full with every request, or does the provider keep it (Anthropic's `thread`, OpenAI's `previous_response_id` or `conversation`)?
 - <span class="p-b">**What trims it.**</span> A history window, a compaction, a token limit.
-- <span class="p-b">**What changes during a session.**</span> Reminders, memory, instructions that are loaded again, a tool list that depends on a mode or a setting.
+- <span class="p-b">**What can change a request during a session.**</span> Find every such thing this harness has, not a sample of them: reminders, memory and reloaded instructions are only the common ones.
 - <span class="p-b">**Where cache breakpoints are set**</span>, if the code sets any (`cache_control`, a cache key).
 
-Write what you found in two or three lines; they open your report.
+Write what you found in a few lines; they open your report. The list of what can change a request is what the test has to cover.
 
 When the provider keeps the conversation, a request carries only what is new. Consecutive requests are then not meant to extend each other, and prefixlens cannot judge them. Test the path that sends the conversation in full, if the harness has a setting for it, and say in your report that the path the provider keeps is not covered. With no such setting, stop and say so.
 
@@ -392,7 +392,7 @@ When the project's own policy refuses a version this new (a minimum release age,
 
 <span class="p-h">## 4. Write the test</span>
 
-Use the project's own test runner and put the test beside its other tests. Build the agent the way production does: the real system prompt, tools, memory and history settings. A simplified copy protects nothing. Writing the test should not need a change to the project's own code.
+Use the project's own test runner and put the test beside its other tests. Build the agent the way production does: the real system prompt, tools, memory and history settings. A simplified copy protects nothing. Exercise everything from step 1 that can change a request; what one conversation cannot hold goes in a second one. Writing the test should not need a change to the project's own code.
 
 Case A, two consecutive requests of one conversation:
 
@@ -459,7 +459,7 @@ Check that the command CI already runs picks the new test up. When the project h
 
 <span class="p-h">## 7. Report</span>
 
-Start with what you found in step 1. Then say which case it was, the files you added or changed, the test's output, any cache break you found with prefixlens's message for it, anything you are waiting for an answer on, and what the test does not cover.
+Start with what you found in step 1. Then say which case it was, the files you added or changed, the test's output, any cache break you found with prefixlens's message for it, anything you are waiting for an answer on, and what the test does not cover: name each thing from step 1 that it leaves out, and why.
 
 <span class="p-h">## Rules</span>
 
