@@ -23,7 +23,7 @@ pull request.
 | `src/llms.txt` | What prefixlens is and where its documents are, for a program that reads the site. Served as `/llms.txt`. |
 | `src/404.html` | The page for an unknown address. With it the host answers 404; without it, the page with status 200. |
 | `src/fonts/` | The two typefaces, one variable Latin file each, with their licences (SIL Open Font License). Served from the site, so the page waits on no other host. |
-| `src/recipes/` | The code shown under "Or wire it yourself", and the output of the Mastra test. |
+| `src/recipes/` | The code shown under "Or wire it yourself", and the output of the Mastra test. The output is shown without its `size:` line: the example conversation is a few messages long, and the cost of so small a break says nothing about a real one. |
 | `src/og.png` | The link-preview image, 1200 by 630. To make it again: `node site/build.mjs --og <dir>` writes `og.html` there; screenshot it at 1200 by 630 in a headless browser and save the picture here. |
 | `build.mjs` | Fills the page and writes `public/`, with `robots.txt`, `sitemap.xml` and the response headers. The ledger, the terminal output and `report.html` come from running prefixlens on `test/fixtures/agent-session.jsonl`. |
 | `public/` | The built site, committed: what the host serves. Never edit it by hand. |
