@@ -52,7 +52,7 @@ session.assertStable()
 
 - **It passes.** Go to step 5.
 - **It fails.** The message names the call, the first changed block, a diff and a fix. That is a real cache break in this project, not a problem with the test. Do not loosen the test, shorten the run or change the agent's settings to make it pass.
-  - When the fix is small and safe (a timestamp or an id in the system prompt, tools sent in an unstable order), make it and say what you changed.
+  - When the fix is small and safe (a timestamp or an id in the system prompt, tools sent in an unstable order), make it and say what you changed. Keep what the model needs: fix a value once per session or send it in a new message, and delete it only when nothing uses it.
   - When the break is deliberate (a compaction, a history window the team chose), stop and show the user the message. If they confirm it, allow it at that call only: `session.assertStable({ allowBreakAt: { 7: "compaction" } })`.
   - Otherwise stop and show the user the message. Do not commit a failing test without telling them.
 
@@ -67,6 +67,6 @@ Say which case it was, the files you added or changed, the test's output, any ca
 ## Rules
 
 - Send no real model requests and use no real API key.
-- Change production code only for a fix described in step 4.
+- Change production code only for a fix described in step 4, or to let a test hand the model provider a `fetch` function when the code has no way to do that yet. Keep that change as small as it can be.
 - Commit no trace files: a trace holds prompts.
 - More detail, when you need it: https://github.com/parthg1901/prefixlens/blob/main/docs/assertions.md
