@@ -50,10 +50,11 @@ In your own test, call the function your harness builds its requests with, in pl
 | `block` | The first block that differs: its number, kind and label. Absent for model and parameter changes. |
 | `allowed` | The reason given in `allowBreak`, when the change was allowed. |
 | `references` | How many unchanged blocks are `item_reference` items (see below). |
+| `size` | For a change: about how many tokens it re-reads and how many still match, and what the re-read costs when the model has a price. See [the size of a break](#the-size-of-a-break). |
 | `fix` | What to do about the change. |
 | `message` | The explanation in plain English; the assertion's failure message. |
 
-Both are pure functions with no network. A `PrefixBreakError` carries the explanation as `error.explanation`.
+Neither touches the network. Both give the same answer for the same requests, except that a price can change with the day the test runs (see [the size of a break](#the-size-of-a-break)). A `PrefixBreakError` carries the explanation as `error.explanation`.
 
 `prev` and `next` can be:
 
@@ -64,12 +65,13 @@ Both are pure functions with no network. A `PrefixBreakError` carries the explan
 
 ### A failure
 
-A failure names the first changed block and what changed, shows a small diff, and says what to do:
+A failure names the first changed block and what changed, says about how many tokens that re-reads, shows a small diff, and says what to do:
 
 ```
 PrefixBreakError: prefix not stable: tool order changed (3 of 3 tools moved; same tools, different order)
 
   first changed block: 1 of 5 (tool "write_file", now tool "read_file"); nothing before it matches, so the whole request is re-read
+  size: about 21,000 tokens are re-read (an estimate from the request text); at claude-opus-5-5 list prices that is about $0.08 more than reading them from the cache, each time this happens
 
     - [0]: write_file
     - [1]: run_shell
@@ -84,6 +86,30 @@ PrefixBreakError: prefix not stable: tool order changed (3 of 3 tools moved; sam
 
 Control characters in the message are written visibly (`\x1b`), since it ends up in CI logs.
 
+### The size of a break
+
+The `size:` line, and the `size` field of the explanation, say how big a break is. The field holds:
+
+| field | holds |
+|---|---|
+| `reread` | Tokens the previous request sent from the first changed block on, which this request sends again and cannot read from the cache. A request that is shorter from there, such as one after a compaction, counts only what it sends. |
+| `matching` | Tokens before the first changed block. They still match and are read from the cache. |
+| `unsized` | Blocks whose size is unknown, which neither figure counts: `item_reference` items, binary data replaced by its hash, blocks a trace records without content. Absent when there are none. |
+| `cost` | `{ extra, currency, model }`: what the re-read costs above the cache-read price, at list prices, for this one call. Absent when the model has no price. |
+
+The tokens are an estimate. A request in a test has no provider usage, so they are counted from the request text at four characters of JSON to a token, the rule the test session uses for the usage it reports. A tokenizer gives other numbers, and the line says that it is an estimate. `reread` counts what a report counts as lost tokens ([SPEC.md section 8](../SPEC.md#8-how-prefixlens-analyzes-a-trace-informative)), from the request text instead of the provider's usage.
+
+The price is a report's miss cost for those tokens:
+
+- The model is looked up in the pricing table as in a report: by its id and the request's parameters (`speed: "fast"` selects fast mode), with prompt-size tiers applied. A price that applies only on set days is the one in effect on the day the test runs, or for a trace record, the day it was sent.
+- The re-read part up to the request's last cache breakpoint is written to the cache again, so it is priced at the cache-write price. The rest is priced at the input price.
+- From that, the cache-read price is taken off, since an unbroken prefix would have been read from the cache.
+- A model with no entry gets tokens only, with no note.
+
+It is the cost of one call. A break that happens on every call costs that each time. `assertStable()` gives the size of the first break only. Each call of `session.explain()` carries its own `size`. Nothing is totalled: the conversation in a test is scripted, so a total would measure the test, not your agent.
+
+The pricing table is the one bundled with prefixlens, read from disk once, on the first break. A table that cannot be read gives no price, not an error. `PREFIXLENS_PRICING` and the models.dev catalogue are not used, so the message is the same on every machine. Pass `pricing` to use another table, or `pricing: false` for tokens only.
+
 ### Options
 
 | option | meaning |
@@ -92,6 +118,7 @@ Control characters in the message are written visibly (`\x1b`), since it ends up
 | `ignoreParams` | Parameters to leave out of the comparison, e.g. `["truncation"]`. |
 | `hints` | Trace hints that name the change, e.g. `[{ kind: "compaction" }]`. |
 | `provider` | The request format, when the body shape is ambiguous. Also picks the parameter rules. |
+| `pricing` | The pricing table a break is priced with (`loadPricing()` or `parsePricing()` from `prefixlens`), or `false` for tokens only. Default: the table bundled with prefixlens. |
 
 #### `allowBreak`
 
@@ -200,6 +227,7 @@ const session = recordRequests({ reply: callTools([{ name: "get_weather", args: 
 PrefixBreakError: prefix not stable at call 13 (lane main, compared with call 12): 4 oldest messages removed from the start of history (19 kept, 2 appended)
 
   first changed block: 3 of 25 (message #1, user); blocks 1-2 still match, everything from block 3 on is re-read
+  size: about 9,600 tokens are re-read and about 2,400 still match (an estimate from the request text)
 
   fix: a window that slides on every call re-reads the whole history each time: drop history in chunks at a saved boundary (cut rarely, and replay from the same cut until the next one), or keep history append-only.
   if this change is intentional, pass { allowBreakAt: { 13: { reason: "..." } } }
@@ -225,7 +253,7 @@ Run the agent for the test with the setting that sends the conversation in full.
 
 `session.explain(options?)` returns the same comparisons without throwing: one [explanation](#assertprefixstable-and-explainprefixdiff) per call that has a call before it, with `call`, `previous` and `lane` added. `assertStable` returns that list when every call is `ok`.
 
-Both take the [options](#options) of `assertPrefixStable` (`allowBreak`, `ignoreParams`, `hints`, `provider`), which apply to every call, and one more:
+Both take the [options](#options) of `assertPrefixStable` (`allowBreak`, `ignoreParams`, `hints`, `provider`, `pricing`), which apply to every call, and one more:
 
 | option | meaning |
 |---|---|

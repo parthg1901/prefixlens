@@ -5,6 +5,6 @@
 // asserts on all of them at once. Nothing here touches the network.
 
 export { assertPrefixStable, explainPrefixDiff, PrefixBreakError } from "./assert.ts"
-export type { ChangedBlock, Position, PrefixExplanation, PrefixOptions, RequestLike } from "./assert.ts"
+export type { BreakCost, BreakSize, ChangedBlock, Position, PrefixExplanation, PrefixOptions, RequestLike } from "./assert.ts"
 export { assertSessionStable, callTools, recordRequests } from "./session.ts"
 export type { AllowedBreak, CallExplanation, RecordedRequest, Reply, ReplyScript, RequestFormat, RequestSession, SessionOptions, StabilityOptions, ToolCall } from "./session.ts"
