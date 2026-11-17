@@ -1,6 +1,6 @@
 # Add a prompt-cache regression test with prefixlens
 
-This repository sends requests to an LLM API, directly or through a framework. Add a test that fails when a code change breaks the provider's prompt cache. Use prefixlens: the npm package `prefixlens`, at exactly version 0.6.0 (https://github.com/parthg1901/prefixlens).
+This repository sends requests to an LLM API, directly or through a framework. Add a test that fails when a code change breaks the provider's prompt cache. Use prefixlens: the npm package `prefixlens`, at exactly version 0.6.1 (https://github.com/parthg1901/prefixlens).
 
 Why it matters: a provider caches the start of a request. When anything early in the request differs from the previous call of the same conversation (the tool list or its order, the system prompt, an earlier message), everything after that point is billed at full price, and nothing reports it. prefixlens compares consecutive requests and names the first block that changed.
 
@@ -27,7 +27,7 @@ When A and B are both true, do case B on the main agent loop: it covers more.
 
 ## 3. Install
 
-Add `prefixlens` as a dev dependency at exactly version 0.6.0, with the package manager the project already uses (for example `npm install --save-dev --save-exact prefixlens@0.6.0`), and keep the lockfile change. It needs Node.js 22 or later, or Bun, and has no dependencies of its own. In case C the project has no JavaScript package manager: step 4 says where it goes.
+Add `prefixlens` as a dev dependency at exactly version 0.6.1, with the package manager the project already uses (for example `npm install --save-dev --save-exact prefixlens@0.6.1`), and keep the lockfile change. It needs Node.js 22 or later, or Bun, and has no dependencies of its own. In case C the project has no JavaScript package manager: step 4 says where it goes.
 
 ## 4. Write the test
 
@@ -71,7 +71,7 @@ Case C, request bodies captured by the project's own tests. This adds a small No
 2. Add the checker in a directory of its own, so that it stays apart from the project's code:
 
 ```
-tools/prefixlens/package.json    { "private": true, "type": "module", "devDependencies": { "prefixlens": "0.6.0" } }
+tools/prefixlens/package.json    { "private": true, "type": "module", "devDependencies": { "prefixlens": "0.6.1" } }
 tools/prefixlens/check.mjs       import { readFileSync } from "node:fs"
                                  import { assertSessionStable } from "prefixlens/test"
 
@@ -106,7 +106,7 @@ Start with what you found in step 1. Then say which case it was, the files you a
 - Ask before changing the project's own code. That covers any fix from step 5, and any change made only so that a test can reach the model provider. Show the change as a diff first, and keep it as small as it can be.
 - Ask before adding a CI workflow, or the `tools/prefixlens/` directory of case C.
 - When there is nobody to ask, stop at that point and put the question in your report.
-- Install exactly version 0.6.0, and keep the lockfile change.
+- Install exactly version 0.6.1, and keep the lockfile change.
 - Commit no trace files: a trace holds prompts.
 - In your report, quote only the lines prefixlens names; don't paste full system prompts or anything that looks like a secret.
 - Do not commit, push or open a pull request unless the user asks you to.
