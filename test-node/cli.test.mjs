@@ -123,3 +123,17 @@ test("check: exit 1 with the offending call, 0 when allowed, 2 when it cannot ch
   assert.equal(run(["check", path.join(fixtures, "no-such.jsonl")]).code, 2)
   assert.equal(run(["check", trace, "--fail-on", "nonsense"]).code, 2)
 })
+
+test("check --requests: request bodies from JSON Lines, in a directory with no package.json", (t) => {
+  const dir = tempDir(t, "requests")
+  const step = (texts) => ({ model: "claude-test-1", max_tokens: 100, system: "You are a synthetic agent.", messages: texts.map((text, index) => ({ role: index % 2 === 0 ? "user" : "assistant", content: text })) })
+  writeFileSync(path.join(dir, "bodies.jsonl"), [step(["One."]), step(["One.", "OK.", "Two."])].map((body) => `${JSON.stringify(body)}\n`).join(""))
+  const passed = run(["check", "--requests", "bodies.jsonl"], { cwd: dir })
+  assert.equal(passed.code, 0, passed.stderr)
+  assert.equal(passed.stdout, "prefixlens check: bodies.jsonl\nok: 1 call compared, each keeps the prefix of the call before it in its lane (2 request bodies, 1 lane)\n")
+  writeFileSync(path.join(dir, "broken.json"), JSON.stringify([step(["One."]), step(["Edited.", "OK.", "Two."])]))
+  const failed = run(["check", "--requests", "broken.json"], { cwd: dir })
+  assert.equal(failed.code, 1)
+  assert.match(failed.stdout, /^prefixlens check: broken\.json\nFAIL: prefix not stable at call 2 \(lane main, compared with call 1\)/)
+  assert.equal(run(["check", "--requests", "missing.json"], { cwd: dir }).code, 2)
+})

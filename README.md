@@ -140,7 +140,7 @@ Any client of the Anthropic Messages, OpenAI Chat Completions or OpenAI Response
 | Test sessions | Any SDK or framework that accepts a `fetch` function and sends one of those three formats, streamed or not. |
 | Proxy, `wrap`, `lens.fetch`, `lens.observe`, `buildRecord` | Calls in those three formats, streamed or not. A gateway's or another provider's compatible endpoint is recorded in the format it uses. |
 | Caching | Implicit caches (OpenAI, Gemini) and explicit breakpoints (Anthropic `cache_control`, OpenAI `prompt_cache_breakpoint`). |
-| Other languages | The proxy, or a trace written to [SPEC.md](SPEC.md). |
+| Other languages | `prefixlens check --requests` on the request bodies your tests capture, the proxy, or a trace written to [SPEC.md](SPEC.md). |
 
 ## What it tells you
 
