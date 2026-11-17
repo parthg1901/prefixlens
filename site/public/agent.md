@@ -29,8 +29,6 @@ When A and B are both true, do case B on the main agent loop: it covers more.
 
 Add `prefixlens` as a dev dependency at exactly version 0.6.0, with the package manager the project already uses (for example `npm install --save-dev --save-exact prefixlens@0.6.0`), and keep the lockfile change. It needs Node.js 22 or later, or Bun, and has no dependencies of its own. In case C the project has no JavaScript package manager: step 4 says where it goes.
 
-When the project's own policy refuses a version this new (a minimum release age, an allowlist), do not add an exception to it. Stop, and say when the version becomes installable or what the user would have to allow.
-
 ## 4. Write the test
 
 Use the project's own test runner and put the test beside its other tests. Build the agent the way production does: the real system prompt, tools, memory and history settings. A simplified copy protects nothing. Exercise everything from step 1 that can change a request; what one conversation cannot hold goes in a second one. Writing the test should not need a change to the project's own code.
