@@ -10,7 +10,7 @@ A provider caches the start of a request. When the tool list, the system prompt 
 
 ## Add it to a repository
 
-- [Instructions for a coding agent](https://prefixlens.parthg.dev/agent.md): the steps to add a prompt-cache regression test to a repository: read how the harness sends a conversation, write the test with its real system prompt and tools, run it, and report any cache break. For JavaScript and TypeScript projects, and for other languages through a small Node script.
+- [Instructions for a coding agent](https://prefixlens.parthg.dev/agent.md): the steps to add a prompt-cache regression test to a repository: read how the harness sends a conversation, write the test with its real system prompt and tools, run it, and report any cache break. For JavaScript and TypeScript projects, and for other languages through one command that checks the request bodies their tests capture.
 
 ## Docs
 

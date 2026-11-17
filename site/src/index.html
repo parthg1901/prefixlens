@@ -217,7 +217,7 @@
   <ul class="limits">
     <li>It sees the request your code sends, not what the provider does with it. Eviction and routing show up as a miss with the prefix intact.</li>
     <li>Costs are list prices from a bundled table, not your bill. Discounts, batch tiers and subscriptions are not applied.</li>
-    <li>The test helpers are JavaScript and TypeScript. From another language, your tests hand the request bodies to a four-line Node script, which the instructions above set up, or you record through the proxy, or write the <a href="https://github.com/parthg1901/prefixlens/blob/main/SPEC.md">trace format</a>.</li>
+    <li>The test helpers are JavaScript and TypeScript. From another language, your tests write the request bodies to a file and one command checks them, as the instructions above set up, or you record through the proxy, or write the <a href="https://github.com/parthg1901/prefixlens/blob/main/SPEC.md">trace format</a>.</li>
     <li>Gemini's native API and WebSocket transports are not recorded.</li>
     <li>It is before 1.0: the JSON output may change in a minor version.</li>
   </ul>
