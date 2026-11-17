@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prefixlens: find the request that broke your prompt cache</title>
+<meta name="description" content="For teams that build agent harnesses and frameworks: prefixlens shows which LLM request broke the prompt cache, why, and what it cost, and fails the test in CI before it reaches the bill.">
+<link rel="canonical" href="https://prefixlens.parthg.dev/">
+<meta property="og:title" content="prefixlens: find the request that broke your prompt cache">
+<meta property="og:description" content="Prompt-cache regression tests for agent harnesses and frameworks. Names the call, the block that changed, what it cost and the fix.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://prefixlens.parthg.dev/">
+<meta name="theme-color" content="#f4f0e6">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="alternate" type="text/markdown" href="/agent.md" title="Instructions for a coding agent">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+{{styles}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+
+<header class="top">
+  <a class="mark" href="/" aria-label="prefixlens, home"><span class="mark__prefix">prefix</span><span class="mark__lens">lens</span></a>
+  <nav class="top__nav" aria-label="Sections">
+    <a href="#agent">For your agent</a>
+    <a href="#recipes">Recipes</a>
+    <a href="#report">Report</a>
+    <a href="https://github.com/parthg1901/prefixlens">GitHub</a>
+    <a href="https://www.npmjs.com/package/prefixlens">npm</a>
+  </nav>
+</header>
+
+<main id="main">
+
+<section class="hero">
+  <div class="hero__copy">
+    <p class="eyebrow rise" style="--d:0">For teams that build agent harnesses and frameworks</p>
+    <h1 class="rise" style="--d:1">Find the request that <em>broke</em> your prompt cache.</h1>
+    <p class="lede rise" style="--d:2">One reordered tool list, or a timestamp in the system prompt, and every later request pays full price. Nothing reports it. prefixlens names the call, the block that changed, what it cost and the fix, and fails the test in CI before it reaches the bill.</p>
+    <div class="actions rise" style="--d:3">
+      <button class="btn btn--primary" type="button" data-copy-from="prompt" data-done="Copied. Paste it to your agent">
+        <span class="btn__label">Copy instructions for your agent</span>
+      </button>
+      <button class="btn btn--quiet" type="button" data-copy="npm install --save-dev prefixlens" data-done="Copied" aria-label="Copy the install command">
+        <span class="btn__label"><span class="prompt-sign" aria-hidden="true">$</span> npm install --save-dev prefixlens</span>
+      </button>
+    </div>
+    <p class="fine rise" style="--d:4">Open source, MIT, version {{version}}. No account, no telemetry, no runtime dependencies. Reads Anthropic Messages, OpenAI Chat Completions and OpenAI Responses requests, from your own harness or through a framework.</p>
+  </div>
+
+  <figure class="ledger rise" style="--d:3" aria-labelledby="ledger-caption">
+    <figcaption id="ledger-caption"><span class="ledger__title">One session, five model calls</span> The agent's tool list grew before the fourth.</figcaption>
+    <div class="ledger__head" aria-hidden="true"><span>turn</span><span>prompt, by what it cost</span><span>hit</span><span>cost</span></div>
+    <ol class="ledger__rows">
+{{ledger}}
+    </ol>
+    <ul class="ledger__key" aria-label="Key">
+      <li><i class="key key--read"></i>read from the cache</li>
+      <li><i class="key key--write"></i>written to the cache</li>
+      <li><i class="key key--lost"></i>paid again after a break</li>
+    </ul>
+  </figure>
+</section>
+
+<section class="run" aria-labelledby="run-title">
+  <div class="run__text">
+    <h2 id="run-title" class="kicker">The same session, as a CI step</h2>
+    <p>The check fails for what your code did: a changed tool list, system prompt, history, model or cache-relevant parameter, or a prefix that changed without being declared.</p>
+    <p>It passes what your code did not do: cache expiry, a miss on the provider's side, a first call, and a break you declared, such as a compaction.</p>
+  </div>
+  <div class="terminal" role="img" aria-label="Output of prefixlens check on the session above: it fails, naming turn 4, the changed tool list, the 49,000 cached tokens lost and the fix.">
+    <div class="terminal__bar"><span class="terminal__cmd"><span class="prompt-sign">$</span> npx prefixlens check run.trace.jsonl</span><span class="terminal__exit">exit 1</span></div>
+<pre class="terminal__out">{{check_output}}</pre>
+  </div>
+</section>
+
+<section class="block" id="agent" aria-labelledby="agent-title">
+  <header class="block__head">
+    <span class="block__no">01</span>
+    <h2 id="agent-title">Hand it to your agent</h2>
+  </header>
+  <div class="agent">
+    <div class="agent__text">
+      <p>Paste these instructions into the coding agent that works in your harness's repository. It reads how your requests are built, adds the matching test with your real system prompt, tools and memory settings, runs it, and tells you about any cache break it finds.</p>
+      <ol class="steps">
+        <li>Finds whether you build the request yourself or a framework does.</li>
+        <li>Adds <code>prefixlens</code> as a dev dependency.</li>
+        <li>Writes the test in your own test runner, beside your other tests.</li>
+        <li>Runs it. A failure is a real cache break: it fixes the small safe ones and shows you the rest.</li>
+        <li>Checks that your CI picks the test up.</li>
+      </ol>
+      <p class="note">The test makes no network call and needs no API key: a stand-in answers every model call. Read the instructions before you paste them. They are all here, and the same text is at <a href="/agent.md">/agent.md</a>.</p>
+      <button class="btn btn--primary" type="button" data-copy-from="prompt" data-done="Copied. Paste it to your agent">
+        <span class="btn__label">Copy instructions for your agent</span>
+      </button>
+    </div>
+    <div class="sheet">
+      <div class="sheet__bar"><span>agent.md</span><button class="sheet__copy" type="button" data-copy-from="prompt" data-done="Copied">Copy</button></div>
+<pre class="sheet__body" id="prompt" tabindex="0">{{prompt}}</pre>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="recipes" aria-labelledby="recipes-title">
+  <header class="block__head">
+    <span class="block__no">02</span>
+    <h2 id="recipes-title">Or wire it yourself</h2>
+  </header>
+  <p class="block__lede">Three ways in, by where your request is built. Each of these was run before it was put here.</p>
+
+  <div class="tabs" data-tabs>
+    <div class="tabs__list" role="tablist" aria-label="Recipes">
+      <button role="tab" type="button" id="tab-own" aria-controls="panel-own" aria-selected="true">Your own request builder</button>
+      <button role="tab" type="button" id="tab-ai" aria-controls="panel-ai" aria-selected="false" tabindex="-1">Vercel AI SDK</button>
+      <button role="tab" type="button" id="tab-mastra" aria-controls="panel-mastra" aria-selected="false" tabindex="-1">Mastra</button>
+      <button role="tab" type="button" id="tab-proxy" aria-controls="panel-proxy" aria-selected="false" tabindex="-1">Any client, any language</button>
+    </div>
+
+    <div class="tabs__panel" role="tabpanel" id="panel-own" aria-labelledby="tab-own">
+      <p>Your harness has a function that builds the request body. Build it for two consecutive steps of one conversation and assert that the second keeps the first one's prefix.</p>
+      <div class="code"><div class="code__bar"><span>test/prefix.test.ts</span><button type="button" data-copy-from="recipe-own" data-done="Copied">Copy</button></div><pre id="recipe-own">{{recipe_own}}</pre></div>
+    </div>
+
+    <div class="tabs__panel" role="tabpanel" id="panel-ai" aria-labelledby="tab-ai" hidden>
+      <p>The request is built inside the SDK, so give its provider a session's <code>fetch</code>. The session answers every model call itself and compares each request with the one before it in the same conversation. Run with <code>ai</code> 7 and <code>@ai-sdk/anthropic</code> 4.</p>
+      <div class="code"><div class="code__bar"><span>test/prefix.test.ts</span><button type="button" data-copy-from="recipe-ai" data-done="Copied">Copy</button></div><pre id="recipe-ai">{{recipe_ai_sdk}}</pre></div>
+    </div>
+
+    <div class="tabs__panel" role="tabpanel" id="panel-mastra" aria-labelledby="tab-mastra" hidden>
+      <p>The same session, given to the model of a Mastra agent with memory. Run with <code>@mastra/core</code> 1.83 and <code>@mastra/memory</code> 1.41.</p>
+      <div class="code"><div class="code__bar"><span>test/prefix.test.ts</span><button type="button" data-copy-from="recipe-mastra" data-done="Copied">Copy</button></div><pre id="recipe-mastra">{{recipe_mastra}}</pre></div>
+      <p>With Mastra's default memory this test fails at the seventh call. The default keeps the last ten messages, so from then on the oldest ones leave on every request:</p>
+      <div class="code code--out"><div class="code__bar"><span>the test's output</span></div><pre>{{mastra_output}}</pre></div>
+      <p class="note">This is a trade-off Mastra documents, not a bug: its docs point long threads to observational memory, which keeps the prefix stable. The test shows you the call where a setting starts to cost you, whichever you choose.</p>
+    </div>
+
+    <div class="tabs__panel" role="tabpanel" id="panel-proxy" aria-labelledby="tab-proxy" hidden>
+      <p>No test to write, and it works for a harness in any language. Record a real run through a local proxy, then read the report or gate on it. The proxy forwards your credentials and never writes them.</p>
+      <div class="code"><div class="code__bar"><span>terminal</span><button type="button" data-copy-from="recipe-proxy" data-done="Copied">Copy</button></div><pre id="recipe-proxy">{{recipe_proxy}}</pre></div>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="report" aria-labelledby="report-title">
+  <header class="block__head">
+    <span class="block__no">03</span>
+    <h2 id="report-title">Read a report</h2>
+  </header>
+  <p class="block__lede">For every call: the tokens read from the cache, written and lost, the hit rate and the cost. For every miss: the first changed block, a diff and what it cost. This is the report of the session at the top of the page, exactly as <code>prefixlens report --html</code> writes it: one file, nothing loaded from elsewhere.</p>
+  <div class="frame">
+    <div class="frame__bar"><span>run.trace.html</span><a href="/report.html">Open it on its own</a></div>
+    <iframe src="/report.html" title="A prefixlens HTML report of a five-call session with one avoidable miss" loading="lazy"></iframe>
+  </div>
+</section>
+
+<section class="block" id="verdicts" aria-labelledby="verdicts-title">
+  <header class="block__head">
+    <span class="block__no">04</span>
+    <h2 id="verdicts-title">What it tells apart</h2>
+  </header>
+  <div class="verdicts">
+    <div class="verdicts__col verdicts__col--fail">
+      <h3><span class="stamp stamp--fail">fails</span> Your harness changed its own prefix</h3>
+      <ul>
+        <li><b>The tool list</b> gained, lost or reordered a tool, or a definition changed.</li>
+        <li><b>The system prompt</b> was edited, or carries a clock, an id or a relative date that is rendered again on each call.</li>
+        <li><b>History was rewritten</b>: a message edited, inserted, removed or reordered, tool output rendered again, a window that slides, a rewind.</li>
+        <li><b>The model or a parameter</b> that is part of the cached prefix changed.</li>
+        <li><b>A prefix changed with nothing cached yet</b>: a break waiting for a cache to hit.</li>
+      </ul>
+    </div>
+    <div class="verdicts__col verdicts__col--pass">
+      <h3><span class="stamp stamp--pass">passes</span> Not something your code did</h3>
+      <ul>
+        <li><b>Expiry</b>: the prefix was intact and the cache entry had run out.</li>
+        <li><b>The provider's side</b>: the prefix was intact and in time, and the provider read nothing.</li>
+        <li><b>A first call</b>, cold or warm.</li>
+        <li><b>A declared break</b>: a compaction, a revert or a settings change your harness says it meant, counted with its cost, apart from the rest.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="limits" aria-labelledby="limits-title">
+  <header class="block__head">
+    <span class="block__no">05</span>
+    <h2 id="limits-title">What it does not do</h2>
+  </header>
+  <ul class="limits">
+    <li>It sees the request your code sends, not what the provider does with it. Eviction and routing show up as a miss with the prefix intact.</li>
+    <li>Costs are list prices from a bundled table, not your bill. Discounts, batch tiers and subscriptions are not applied.</li>
+    <li>The test helpers are JavaScript and TypeScript. From another language, use the proxy or write the <a href="https://github.com/parthg1901/prefixlens/blob/main/SPEC.md">trace format</a>.</li>
+    <li>Gemini's native API and WebSocket transports are not recorded.</li>
+    <li>It is before 1.0: the JSON output may change in a minor version. <a href="https://github.com/parthg1901/prefixlens/blob/main/docs/verification.md">What has been checked on real traffic</a> is written down.</li>
+  </ul>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="foot__mark" aria-hidden="true"><span class="mark__prefix">prefix</span><span class="mark__lens">lens</span></div>
+  <nav class="foot__nav" aria-label="Links">
+    <a href="https://github.com/parthg1901/prefixlens">GitHub</a>
+    <a href="https://www.npmjs.com/package/prefixlens">npm</a>
+    <a href="https://github.com/parthg1901/prefixlens/blob/main/docs/assertions.md">Test helpers</a>
+    <a href="https://github.com/parthg1901/prefixlens/blob/main/docs/check.md">The CI check</a>
+    <a href="https://github.com/parthg1901/prefixlens/blob/main/docs/report.md">Reports</a>
+    <a href="https://github.com/parthg1901/prefixlens/blob/main/SPEC.md">Trace format</a>
+    <a href="/agent.md">agent.md</a>
+  </nav>
+  <p class="foot__fine">MIT licence. prefixlens {{version}}, the npm package; not related to the Python package of the same name on PyPI.</p>
+</footer>
+
+<script>
+{{script}}
+</script>
+</body>
+</html>
