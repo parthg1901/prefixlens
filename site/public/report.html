@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prefixlens: run.trace.jsonl</title>
+<style>
+:root { --bg: #ffffff; --fg: #1d2023; --muted: #5d6670; --line: #dde1e5; --card: #f5f7f9;
+  --read: #3f8f5f; --write: #d08a2e; --input: #8a95a1; --miss: #c8433b; --partial: #b7791f; --cold: #3a78b5; --intent: #6b5bd2;
+  --add-bg: #e6f4ea; --del-bg: #fbe9e7; color-scheme: light dark; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #15181b; --fg: #e6e8ea; --muted: #9aa3ad; --line: #2c3238; --card: #1d2125;
+  --read: #5bb37f; --write: #e0a04a; --input: #7c8792; --miss: #ef6b62; --partial: #d9a441; --cold: #6aa6df; --intent: #9d8ff0; --add-bg: #1d3325; --del-bg: #3a2220; } }
+:root[data-theme="dark"] { --bg: #15181b; --fg: #e6e8ea; --muted: #9aa3ad; --line: #2c3238; --card: #1d2125;
+  --read: #5bb37f; --write: #e0a04a; --input: #7c8792; --miss: #ef6b62; --partial: #d9a441; --cold: #6aa6df; --intent: #9d8ff0; --add-bg: #1d3325; --del-bg: #3a2220; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 22px; margin: 0 0 4px; overflow-wrap: anywhere; }
+h2 { font-size: 16px; margin: 28px 0 10px; }
+.sub, .legend, .facts, footer, .note, .label { color: var(--muted); }
+.headline { font-size: 17px; font-weight: 600; margin: 12px 0 0; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-top: 20px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+.card .label { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.card .value { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.card .note { font-size: 12px; }
+.notes p { margin: 6px 0; padding: 8px 12px; background: var(--card); border-left: 3px solid var(--partial); border-radius: 4px; }
+.chart { width: 100%; height: 180px; display: block; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+.chart .read, .sw.read { fill: var(--read); background: var(--read); }
+.chart .write, .sw.write { fill: var(--write); background: var(--write); }
+.chart .input, .sw.input { fill: var(--input); background: var(--input); }
+.chart .missmark, .sw.missmark { fill: var(--miss); background: var(--miss); }
+.chart .intentmark, .sw.intentmark { fill: var(--intent); background: var(--intent); }
+.card.intentional { border-left: 4px solid var(--intent); }
+.sw { display: inline-block; width: 10px; height: 10px; margin: 0 4px 0 12px; border-radius: 2px; vertical-align: -1px; }
+.sw:first-child { margin-left: 0; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td:last-child { white-space: normal; min-width: 240px; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; }
+.n { text-align: right; }
+.scroll { overflow-x: auto; }
+table.groups { width: auto; min-width: 360px; }
+tr.hit td { color: var(--muted); }
+tr.miss td:last-child, tr.miss td:last-child a { color: var(--miss); font-weight: 600; }
+tr.partial td:last-child, tr.partial td:last-child a { color: var(--partial); font-weight: 600; }
+tr.cold td:last-child { color: var(--cold); }
+details.miss { border: 1px solid var(--line); border-left: 4px solid var(--miss); border-radius: 6px; padding: 8px 12px; margin: 8px 0; background: var(--card); }
+details.miss.partial { border-left-color: var(--partial); }
+details.miss.intentional { border-left-color: var(--intent); }
+tr.intentional td:last-child, tr.intentional td:last-child a { color: var(--intent); }
+.facts.warn { color: var(--partial); }
+details.miss summary { cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+.facts { margin: 6px 0; font-size: 13px; }
+pre.diff { margin: 8px 0 0; padding: 8px; overflow-x: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+pre.diff span { display: block; white-space: pre; }
+pre.diff .add { background: var(--add-bg); }
+pre.diff .del { background: var(--del-bg); }
+pre.diff .ctx { color: var(--muted); }
+.filter { display: block; margin-bottom: 8px; color: var(--muted); }
+a { color: inherit; }
+footer { margin-top: 32px; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>prefixlens: run.trace.jsonl</h1>
+  <p class="sub">5 model calls · 1 lane · 5 full-request, 0 usage-only · generated 2026-11-17 08:33 UTC</p>
+  <p class="headline">1 miss cost $0.24 at list prices; 1 from tool-list changes</p>
+</header>
+
+<section class="cards">
+  <div class="card"><div class="label">Cache hit rate</div><div class="value">59.6%</div><div class="note">147k of 246k prompt tokens read from cache</div></div>
+  <div class="card"><div class="label">Cost at list prices</div><div class="value">$0.54</div><div class="note">$0.50 on uncached input and cache writes; API list prices, not what was paid</div></div>
+  <div class="card"><div class="label">Lost to misses</div><div class="value">$0.24</div><div class="note">1 call missed cached tokens unexpectedly</div></div>
+  
+  <div class="card"><div class="label">Calls</div><div class="value">5</div><div class="note">1 cold · 3 hit · 1 missed</div></div>
+  
+</section>
+
+<section class="notes"><p>Costs are at API list prices: what these calls would cost billed per token, not what was paid. Calls on a subscription (a Claude plan, ChatGPT sign-in, Codex) are not billed per token, and discounts, batch and priority tiers are not applied.</p><p>prices from the bundled pricing.json (as of 2026-11-12)</p></section>
+
+<section>
+  <h2>Prompt tokens per call</h2>
+  <svg class="chart" viewBox="0 0 960 180" preserveAspectRatio="none" role="img" aria-label="Prompt tokens per call"><g><title>turn 1: 48,212 prompt tokens</title><rect class="read" x="0.00" y="180.00" width="153.60" height="0.00"/><rect class="write" x="0.00" y="20.81" width="153.60" height="159.19"/><rect class="input" x="0.00" y="20.77" width="153.60" height="0.04"/></g><g><title>turn 2: 48,632 prompt tokens</title><rect class="read" x="192.00" y="20.81" width="153.60" height="159.19"/><rect class="write" x="192.00" y="19.42" width="153.60" height="1.39"/><rect class="input" x="192.00" y="19.38" width="153.60" height="0.04"/></g><g><title>turn 3: 49,012 prompt tokens</title><rect class="read" x="384.00" y="19.42" width="153.60" height="160.58"/><rect class="write" x="384.00" y="18.17" width="153.60" height="1.26"/><rect class="input" x="384.00" y="18.13" width="153.60" height="0.04"/></g><g><title>turn 4: 49,912 prompt tokens</title><rect class="read" x="576.00" y="180.00" width="153.60" height="0.00"/><rect class="write" x="576.00" y="15.20" width="153.60" height="164.80"/><rect class="input" x="576.00" y="15.16" width="153.60" height="0.04"/><rect class="missmark" x="576.00" y="0" width="153.60" height="6"/></g><g><title>turn 5: 50,262 prompt tokens</title><rect class="read" x="768.00" y="15.20" width="153.60" height="164.80"/><rect class="write" x="768.00" y="14.04" width="153.60" height="1.16"/><rect class="input" x="768.00" y="14.00" width="153.60" height="0.04"/></g></svg>
+  <p class="legend"><span class="sw read"></span>read from cache <span class="sw write"></span>written to cache <span class="sw input"></span>uncached input <span class="sw missmark"></span>miss <span class="sw intentmark"></span>intentional break</p>
+</section>
+
+<section>
+  <h2>Misses by cause</h2>
+  <table class="groups"><thead><tr><th>cause</th><th class="n">misses</th><th class="n">cost</th></tr></thead><tbody>
+  <tr><td>tool-list changes</td><td class="n">1</td><td class="n">$0.24</td></tr>
+  </tbody></table>
+</section>
+
+<section>
+  <h2>Misses</h2>
+  <details class="miss miss" id="turn-4" open>
+  <summary>turn 4: miss, tool list changed (+1 tool: 3 → 4), ~$0.24</summary>
+  <p class="facts">lost 49,000 of 49,000 cached tokens · vs turn 3 · confirmed · first changed block: #4 of the request (tools)</p>
+  <pre class="diff"><span class="add">+ web_search</span></pre>
+</details>
+</section>
+
+
+
+<section>
+  <h2>All calls</h2>
+  <label class="filter"><input type="checkbox" id="only-misses"> show only misses, intentional breaks and cold starts</label>
+  <div class="scroll">
+  <table class="turns" id="turns">
+    <thead><tr><th class="n">turn</th><th>time (UTC)</th><th>model</th><th class="n">prompt</th><th class="n">read</th><th class="n">write</th><th class="n">uncached</th><th class="n">out</th><th class="n">hit</th><th class="n">cost</th><th>status</th></tr></thead>
+    <tbody>
+    <tr class="cold" data-status="cold"><td class="n">1</td><td>10:00:02</td><td>claude-opus-5-5</td><td class="n">48,212</td><td class="n">0</td><td class="n">48,200</td><td class="n">12</td><td class="n">140</td><td class="n">0%</td><td class="n">$0.24</td><td>cold</td></tr>
+<tr class="hit" data-status="hit"><td class="n">2</td><td>10:00:09</td><td>claude-opus-5-5</td><td class="n">48,632</td><td class="n">48,200</td><td class="n">420</td><td class="n">12</td><td class="n">95</td><td class="n">99.1%</td><td class="n">$0.01</td><td>hit</td></tr>
+<tr class="hit" data-status="hit"><td class="n">3</td><td>10:00:17</td><td>claude-opus-5-5</td><td class="n">49,012</td><td class="n">48,620</td><td class="n">380</td><td class="n">12</td><td class="n">110</td><td class="n">99.2%</td><td class="n">$0.01</td><td>hit</td></tr>
+<tr class="miss" data-status="miss"><td class="n">4</td><td>10:00:26</td><td>claude-opus-5-5</td><td class="n">49,912</td><td class="n">0</td><td class="n">49,900</td><td class="n">12</td><td class="n">160</td><td class="n">0%</td><td class="n">$0.25</td><td><a href="#turn-4">miss: tool list changed (+1 tool: 3 → 4)</a></td></tr>
+<tr class="hit" data-status="hit"><td class="n">5</td><td>10:00:34</td><td>claude-opus-5-5</td><td class="n">50,262</td><td class="n">49,900</td><td class="n">350</td><td class="n">12</td><td class="n">60</td><td class="n">99.3%</td><td class="n">$0.01</td><td>hit</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+
+<footer>Generated by prefixlens. Hit rate = tokens read from cache ÷ prompt tokens. A miss is a call that read fewer tokens from cache than the previous call in its lane left there.</footer>
+</main>
+<script>
+document.getElementById("only-misses").addEventListener("change", function (event) {
+  for (const row of document.querySelectorAll("#turns tbody tr"))
+    row.hidden = event.target.checked && row.dataset.status === "hit";
+});
+</script>
+</body>
+</html>

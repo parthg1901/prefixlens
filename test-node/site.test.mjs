@@ -26,6 +26,18 @@ test("the site builds, with every placeholder filled", () => {
   assert.doesNotMatch(prompt, /\{\{[a-z_]+\}\}/)
 })
 
+test("the committed page, site/public, is what the build gives now", () => {
+  // The host serves site/public as it is committed. When this fails: run `node site/build.mjs` and commit the result.
+  const committed = path.join(root, "site", "public")
+  // The report states when it was generated, which no two builds share.
+  const same = (name) => readFileSync(path.join(committed, name), "utf8").replace(/ · generated [^<]*/, "")
+  assert.deepEqual(readdirSync(committed).sort(), readdirSync(out).sort())
+  for (const name of readdirSync(out)) {
+    const fresh = readFileSync(path.join(out, name), "utf8").replace(/ · generated [^<]*/, "")
+    assert.equal(same(name), fresh, `site/public/${name} is out of date: run node site/build.mjs and commit the result`)
+  }
+})
+
 test("the page shows what prefixlens check prints for the sample session, and its ledger has one row per call", () => {
   const check = spawnSync(process.execPath, [path.join(root, "dist", "cli.js"), "check", path.join(root, "test", "fixtures", "agent-session.jsonl")], { encoding: "utf8", env: { ...process.env, NO_COLOR: "1" } })
   assert.equal(check.status, 1)
