@@ -6,6 +6,8 @@ Cache regressions are silent and expensive: one reordered tool list or a timesta
 
 It works on the request itself. Anything that sends OpenAI Responses, OpenAI Chat Completions or Anthropic Messages requests can use it with no adapter: your own harness, an SDK, a framework such as the Vercel AI SDK or Mastra, or a gateway.
 
+[prefixlens.parthg.dev](https://prefixlens.parthg.dev) shows a live report, and has instructions you can hand to a coding agent to add the test to your repository.
+
 A session of an agent whose tool list grew before its fourth call:
 
 ```
