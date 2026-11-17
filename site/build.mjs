@@ -27,6 +27,7 @@ const out = path.resolve(args.find((arg, index) => !arg.startsWith("--") && args
 const cli = path.join(root, "dist", "cli.js")
 const fixture = path.join(root, "test", "fixtures", "agent-session.jsonl")
 const { version } = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))
+const ORIGIN = "https://prefixlens.parthg.dev"
 
 if (!existsSync(cli)) {
   console.error("site: dist/cli.js is missing. Build the package first: npm run build")
@@ -233,15 +234,20 @@ mkdirSync(out, { recursive: true })
 writeFileSync(path.join(out, "index.html"), `${page}\n`)
 writeFileSync(path.join(out, "agent.md"), `${prompt}\n`)
 writeFileSync(path.join(out, "favicon.svg"), favicon)
-writeFileSync(path.join(out, "robots.txt"), "User-agent: *\nAllow: /\n")
+writeFileSync(path.join(out, "robots.txt"), `User-agent: *\nAllow: /\n\nSitemap: ${ORIGIN}/sitemap.xml\n`)
+writeFileSync(path.join(out, "sitemap.xml"), `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>${ORIGIN}/</loc></url>\n</urlset>\n`)
+// What the tool is and where its documents are, for a program that reads the site instead of a person.
+writeFileSync(path.join(out, "llms.txt"), `${read("llms.txt").replaceAll("{{version}}", version)}\n`)
+// With this file the host answers an unknown address with 404, not with the page.
+copyFileSync(path.join(src, "404.html"), path.join(out, "404.html"))
 copyFileSync(path.join(src, "og.png"), path.join(out, "og.png"))
 // Cloudflare Pages reads response headers from this file. The instructions are served as Markdown that any page may fetch.
 writeFileSync(
   path.join(out, "_headers"),
-  ["/*", "  Referrer-Policy: strict-origin-when-cross-origin", "  X-Content-Type-Options: nosniff", "", "/agent.md", "  Content-Type: text/markdown; charset=utf-8", "  Access-Control-Allow-Origin: *", ""].join("\n"),
+  ["/*", "  Referrer-Policy: strict-origin-when-cross-origin", "  X-Content-Type-Options: nosniff", "", "/agent.md", "  Content-Type: text/markdown; charset=utf-8", "  Access-Control-Allow-Origin: *", "", "/llms.txt", "  Content-Type: text/plain; charset=utf-8", "  Access-Control-Allow-Origin: *", ""].join("\n"),
 )
 // prefixlens writes a report readable by its owner only, since a real one holds prompts. This one is published.
 writeFileSync(path.join(out, "report.html"), reportText, { mode: 0o644 })
 rmSync(work, { recursive: true, force: true })
 
-console.log(`site: wrote index.html, agent.md, report.html, og.png, favicon.svg, robots.txt and _headers to ${path.relative(process.cwd(), out) || "."} (prefixlens ${version})`)
+console.log(`site: wrote index.html, agent.md, llms.txt, report.html, 404.html, og.png, favicon.svg, robots.txt, sitemap.xml and _headers to ${path.relative(process.cwd(), out) || "."} (prefixlens ${version})`)
