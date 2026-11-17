@@ -142,6 +142,8 @@ describe("prefixlens check --requests", () => {
       expect(result.stderr).toContain(message)
     }
     const file = write("options.json", JSON.stringify(steady))
+    expectError(["--requests"], "--requests needs a value")
+    expectError(["--requests", file, "--allow-brake-at", "3=compaction"], "unknown option --allow-brake-at")
     expectError(["--requests", file, "--allow-break-at", "3"], "--allow-break-at 3: write <call>=<reason>, e.g. 7=compaction")
     expectError(["--requests", file, "--allow-break-at", "3=compaction,3=revert"], "--allow-break-at names call 3 twice")
     expectError(["--requests", file, "--allow-break-at", "9=compaction"], "--allow-break-at names call 9, but options.json holds 4 request bodies (numbered from 1)")

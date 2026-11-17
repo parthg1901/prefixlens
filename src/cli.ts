@@ -114,10 +114,12 @@ const ALIASES: Record<string, string> = { o: "out", h: "help", v: "version" }
 
 export async function main(argv: string[]): Promise<number> {
   const { positionals, flags } = parseArgs(argv)
+  // check documents 2 for an option it cannot use.
+  const optionError = positionals[0] === "check" ? 2 : 1
   const unknown = Object.keys(flags).find((name) => !KNOWN_FLAGS.has(name))
-  if (unknown) return fail(`unknown option --${unknown}; run prefixlens --help`)
+  if (unknown) return fail(`unknown option --${unknown}; run prefixlens --help`, optionError)
   const empty = [...VALUE_FLAGS].find((name) => flags[name] === "")
-  if (empty) return fail(`--${empty} needs a value`)
+  if (empty) return fail(`--${empty} needs a value`, optionError)
   if (flags.version) {
     console.log(VERSION)
     return 0
