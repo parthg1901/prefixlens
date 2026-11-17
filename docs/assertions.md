@@ -196,7 +196,7 @@ It works with anything that accepts a `fetch` function and sends Anthropic Messa
 
 ### What a session does
 
-- **Records.** `session.fetch` keeps the body of every model call exactly as sent. `session.requests` lists them in order, each with its `call` number (from 1), `format`, `lane`, `url` and `body`.
+- **Records.** `session.fetch` keeps the body of every model call exactly as sent. `session.requests` lists them in order, each with its `call` number (from 1), `format`, `lane`, `url`, `body` and, once the test has marked one, its [`step`](#steps).
 - **Answers.** Each call gets a reply in its own format's wire shape: JSON, or server-sent events when the request has `stream: true`. Ids, timestamps and usage are the same on every run; usage is estimated from the size of the request (four characters to a token), with nothing read from a cache.
 - **Tells conversations apart.** A framework makes side calls between the main ones: a title, a summary, an observer. Each request is put in a lane, and compared only with the request before it in that lane. See [Lanes](#lanes).
 - **Refuses what it cannot answer.** A request in another format (an embeddings call, a `count_tokens` call) gets a 404 whose message names the URL, and `assertStable` then throws that message: a model call that was not recorded never passes silently.
@@ -259,7 +259,79 @@ Both take the [options](#options) of `assertPrefixStable` (`allowBreak`, `ignore
 |---|---|
 | `allowBreakAt` | Intentional breaks at particular calls: the call number to what [`allowBreak`](#allowbreak) takes. `{ 7: "compaction" }` allows a compaction at call 7 and nowhere else. |
 
-A compaction is allowed once, where it happens, so prefer `allowBreakAt` to `allowBreak` in a session. The call number is in the failure message. A number that is not a call, or is the first call of its lane, is an error.
+| `allowBreakIn` | Intentional breaks by [step](#steps): the step's name to what `allowBreak` takes. `{ compaction: "compaction" }` allows one break in the step `compaction`. |
+
+A compaction is allowed once, where it happens, so prefer `allowBreakAt` or `allowBreakIn` to `allowBreak` in a session. The call number is in the failure message. A number that is not a call, or is the first call of its lane, is an error.
+
+### Steps
+
+A test that covers several changes can name each one. `session.step(name)` marks what the test does next: every call made after it, until the next `step()`, belongs to that step.
+
+```ts
+const session = recordRequests()
+const agent = createAgent({ fetch: session.fetch })   // your harness
+
+session.step("first question")
+await agent.send("Fix the failing test.")
+session.step("reload instructions")
+await agent.reloadInstructions()
+await agent.send("Go on.")
+session.step("compaction")
+await agent.compact()
+await agent.send("And now?")
+
+console.log(session.summary({ allowBreakIn: { compaction: "compaction" } }).text)
+session.assertStable({ allowBreakIn: { compaction: "compaction" } })
+```
+
+Mark the step just before the action, and send the request that shows the change before you mark the next step. A step that records no call fails `assertStable`: nothing in it was checked.
+
+With steps:
+
+- **Failure messages name the step**: `prefix not stable at call 4 (step "reload instructions", lane main, compared with call 3)`.
+- **`explain()` entries** and **`session.requests`** carry `step`. Calls made before the first step have none.
+- **`allowBreakIn`** allows a break by step name, so the test does not change when the run shifts by a call.
+- **`assertStable` lists every step that breaks** after the first failure's full message:
+
+```
+PrefixBreakError: prefix not stable at call 4 (step "reload instructions", lane main, compared with call 3): system prompt changed (part 1 of 1 edited)
+
+  first changed block: 4 of 10 (system part 1); blocks 1-3 still match, everything from block 4 on is re-read
+
+      type: text
+    - text: You are a coding agent.
+    + text: You are a coding agent. Updated.
+
+  fix: freeze the system prompt for the session and append updated instructions as a new message.
+  if this change is intentional, pass { allowBreakIn: { "reload instructions": { reason: "..." } } }
+
+  3 of 6 steps break the prefix:
+
+    step                 calls  result
+    reload instructions  4      break at call 4: system prompt changed (part 1 of 1 edited)
+    add a tool           7      break at call 7: tool list changed (+1 tool: 3 → 4)
+    remove the tool      8      break at call 8: tool list changed (-1 tool: 4 → 3)
+```
+
+`session.summary(options?)` gives one result per step and never throws for a change. `summary.steps` holds, for each step, its `step` name, its `calls`, a `status`, the `result` line and its `explanations`. `summary.text` is the table:
+
+```
+step                 calls  result
+first question       1-2    stable
+queue a reminder     3      stable
+reload instructions  4      break at call 4: system prompt changed (part 1 of 1 edited)
+compaction           5-6    allowed at call 6 (compaction): history compacted (10 → 3 messages from message #1)
+add a tool           7      break at call 7: tool list changed (+1 tool: 3 → 4)
+remove the tool      8      break at call 8: tool list changed (-1 tool: 4 → 3)
+```
+
+The status is one of `break`, `not checked`, `allowed`, `stable`, `nothing to compare` (each call is the first of its lane) and `no calls`, the first that applies. Calls made before the first step are a row of their own, `(no step)`.
+
+#### What `allowBreakIn` allows
+
+A named step allows one break: the first call in the step whose prefix changed, in any lane. Calls in the step that keep the prefix do not use it up, so a summariser call that extends the history before the compaction is fine. A second change in the same step fails, with a message saying which call took the allowance; give that change a step of its own. The reach of the break is set as for [`allowBreak`](#allowbreak). For that call it takes the place of `allowBreak`, and `allowBreakAt` for the same call comes before both.
+
+A name used for several steps gives each of them its own allowance. A name that is not a step, or a step with no call that has an earlier one in its lane, is an error.
 
 ### Lanes
 
@@ -287,6 +359,12 @@ Two conversations of the same agent look like one whose history was replaced. Re
 import { assertSessionStable } from "prefixlens/test"
 
 assertSessionStable(capturedBodies, { allowBreakAt: { 12: "compaction" } })
+```
+
+`steps` names the steps of the bodies: the call number where each step begins, to its name. A step holds every call up to the next one.
+
+```ts
+assertSessionStable(capturedBodies, { steps: { 1: "first question", 12: "compaction" }, allowBreakIn: { compaction: "compaction" } })
 ```
 
 ### Complete examples
