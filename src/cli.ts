@@ -28,6 +28,8 @@ Usage:
   prefixlens import <adapter> <path> [options]   convert harness logs to a trace (JSONL)
   prefixlens report <trace.jsonl|-> [options]    report hit rates, costs and miss causes
   prefixlens check <trace.jsonl|-> [options]     exit 1 when the harness broke its own cache (for CI)
+  prefixlens check --requests <file|-> [options] exit 1 when a request body does not keep the prefix
+                                                 of the one before it (bodies your tests captured)
   prefixlens record --provider <p> [options]     run a local proxy that records every model call
   prefixlens adapters                            list adapters and what they can diagnose
   prefixlens pricing update [--from <file>]      fetch models.dev prices into the user cache (network)
@@ -72,6 +74,18 @@ check options:
   --pricing, --no-catalogue, --catalogue-provider, --tolerance   as for report
   exit codes: 0 pass, 1 a call fails, 2 the trace could not be checked
 
+check --requests options:
+  --requests <file|->   request bodies in the order they were sent: a JSON array, or one per line
+                        (JSON Lines); each is compared with the one before it in its conversation,
+                        as assertSessionStable does. Calls are numbered from 1.
+  --allow-break-at <call>=<reason>[,...]
+                        intentional breaks at particular calls, e.g. 7=compaction
+  --ignore-params <names>
+                        request parameters to leave out of the comparison, comma-separated
+  --provider <name>     anthropic, openai or gemini, when the body does not say (always for gemini)
+  exit codes: 0 pass, 1 a call breaks the prefix, 2 the bodies could not be checked (unreadable,
+  not request bodies, nothing to compare, or a call continues a conversation the provider keeps)
+
 pricing options:
   --from <file>         read a saved copy of https://models.dev/api.json instead of fetching it
   --pricing <file>      the table to compare with or look in (default: as for report)
@@ -88,12 +102,13 @@ Examples:
   prefixlens import opencode ~/.local/share/opencode/opencode.db --list
   prefixlens report session.trace.jsonl --html
   prefixlens check run.trace.jsonl --fail-on expiry           # in CI, after a recorded run
+  prefixlens check --requests bodies.jsonl --allow-break-at 7=compaction   # bodies a test wrote
   prefixlens record --provider anthropic -o run.trace.jsonl   # then ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 `
 
 type Flags = Record<string, string | true>
 
-const VALUE_FLAGS = new Set(["out", "session", "pricing", "tolerance", "provider", "port", "host", "upstream", "allow-origin", "from", "date", "catalogue-provider", "fail-on", "allow"])
+const VALUE_FLAGS = new Set(["out", "session", "pricing", "tolerance", "provider", "port", "host", "upstream", "allow-origin", "from", "date", "catalogue-provider", "fail-on", "allow", "requests", "allow-break-at", "ignore-params"])
 const KNOWN_FLAGS = new Set([...VALUE_FLAGS, "list", "no-subagents", "json", "html", "all", "no-color", "no-catalogue", "keep-identifiers", "keep-binary", "quiet", "help", "version"])
 const ALIASES: Record<string, string> = { o: "out", h: "help", v: "version" }
 
@@ -244,6 +259,12 @@ async function runReport(args: string[], flags: Flags): Promise<number> {
 // The CI gate: the report's analysis, sorted into classes, with an exit code. 2 means the check could not be made.
 async function runCheck(args: string[], flags: Flags): Promise<number> {
   const [input] = args
+  if (typeof flags.requests === "string") {
+    if (input !== undefined) return fail(`check takes a trace or --requests <file>, not both (got ${input} and --requests ${flags.requests})`, 2)
+    return runRequestsCheck(flags.requests, flags)
+  }
+  const requestsOnly = ["allow-break-at", "ignore-params", "provider"].find((name) => flags[name] !== undefined)
+  if (requestsOnly) return fail(`--${requestsOnly} applies to request bodies, with --requests <file>; for a trace, see --allow and --fail-on`, 2)
   if (!input) return fail("usage: prefixlens check <trace.jsonl|-> [--fail-on <classes>] [--allow <causes>] [--json]", 2)
   const list = (flag: string | true | undefined) => (typeof flag === "string" ? flag.split(",").map((name) => name.trim()).filter(Boolean) : [])
   const optional = MISS_CLASSES.filter((name) => name !== "ok" && name !== "avoidable" && name !== "undeclared-change")
@@ -260,6 +281,35 @@ async function runCheck(args: string[], flags: Flags): Promise<number> {
   const check = classifyMisses(loaded.analysis, { failOn: failOn as MissClass[], allow: allow as Cause[] })
   process.stdout.write(flags.json ? renderCheckJson(check, { trace: input }) : renderCheck(check, { title: input === "-" ? "stdin" : path.basename(input) }))
   return check.ok ? 0 : 1
+}
+
+// `check --requests`: request bodies a test captured, checked as assertSessionStable checks them. Same exit codes.
+async function runRequestsCheck(input: string, flags: Flags): Promise<number> {
+  const traceOnly = ["fail-on", "allow", "json", "pricing", "no-catalogue", "catalogue-provider", "tolerance"].find((name) => flags[name] !== undefined)
+  if (traceOnly) return fail(`--${traceOnly} applies to a trace, not to --requests${traceOnly === "allow" ? "; to allow a break at one call, use --allow-break-at <call>=<reason>" : ""}`, 2)
+  const { checkRequests, parseAllowBreakAt, parseRequestBodies, REQUEST_PROVIDERS } = await import("./check-requests.ts")
+  const provider = flags.provider
+  if (provider !== undefined && !REQUEST_PROVIDERS.includes(provider as never)) return fail(`--provider ${String(provider)}: choose from ${REQUEST_PROVIDERS.join(", ")}`, 2)
+  const allowBreakAt = typeof flags["allow-break-at"] === "string" ? parseAllowBreakAt(flags["allow-break-at"]) : undefined
+  if (typeof allowBreakAt === "string") return fail(allowBreakAt, 2)
+  const ignoreParams = typeof flags["ignore-params"] === "string" ? flags["ignore-params"].split(",").map((name) => name.trim()).filter(Boolean) : undefined
+  const text = input === "-" ? await streamText(process.stdin) : await readFile(expandHome(input))
+  if (text === undefined) return fail(`cannot read ${input}`, 2)
+  const name = input === "-" ? "stdin" : input
+  const bodies = parseRequestBodies(text, name)
+  if (typeof bodies === "string") return fail(printable(bodies), 2)
+  const result = checkRequests(
+    bodies,
+    {
+      ...(allowBreakAt ? { allowBreakAt } : {}),
+      ...(ignoreParams ? { ignoreParams } : {}),
+      ...(provider ? { provider: provider as (typeof REQUEST_PROVIDERS)[number] } : {}),
+    },
+    input === "-" ? "stdin" : path.basename(input),
+  )
+  if (result.stdout) process.stdout.write(result.stdout)
+  if (result.error) return fail(printable(result.error), result.code)
+  return result.code
 }
 
 /** Reads a trace and analyzes it with the pricing the flags name. Returns a message when it cannot. */

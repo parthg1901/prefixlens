@@ -6,7 +6,10 @@
 prefixlens check run.trace.jsonl                 # a trace from the proxy, wrap, lens.fetch or an importer
 prefixlens check run.trace.jsonl --json          # the verdict for every call
 prefixlens import otel spans.json | prefixlens check -    # "-" reads the trace from stdin
+prefixlens check --requests bodies.jsonl         # request bodies your own tests captured, in any language
 ```
+
+The last form needs no trace: see [request bodies from your own tests](#request-bodies-from-your-own-tests).
 
 For a failing trace it prints:
 
@@ -96,6 +99,49 @@ A call whose request continues a conversation the provider keeps (Anthropic's `t
 ```
 
 `calls` has one entry per call, in trace order (two are shown). `session` is present when the trace names one, `cause`, `block`, `diff` and `fix` when the call has them, and `baseline_turn` for every call but the first of its lane. Like the JSON report, these fields may change in a minor version before 1.0. The exit code is the same with and without `--json`.
+
+## Request bodies from your own tests
+
+A project in another language (Python, Go) can check its prefix without writing JavaScript. Have its tests write the JSON body of each model request, in the order they were sent, then:
+
+```sh
+npx prefixlens check --requests bodies.jsonl
+npx prefixlens check --requests bodies.json --allow-break-at 7=compaction
+```
+
+In CI, pin the version (`npx prefixlens@<version> check --requests ...`), so a new release cannot change the verdict between runs.
+
+This checks the bodies exactly as [`assertSessionStable`](assertions.md#request-bodies-you-already-have) does. Each body is put in a lane and compared with the body before it in that lane. Calls are numbered by position, from 1. Nothing is sent to a provider, and no package.json is needed.
+
+The file holds either a JSON array of bodies, or one body per line (JSON Lines), which suits a test that appends as it goes. Blank lines are skipped, and do not count as calls. Bodies are Anthropic Messages, OpenAI Chat Completions or OpenAI Responses requests, or Gemini `generateContent` requests with `--provider gemini`.
+
+A passing run prints one line, so a test log shows what was checked:
+
+```
+prefixlens check: bodies.jsonl
+ok: 11 calls compared, each keeps the prefix of the call before it in its lane (12 request bodies, 1 lane; break allowed at call 7 (compaction))
+```
+
+A failing run prints prefixlens's failure message for the first call that breaks the prefix: the call, its lane, the call it is compared with, the first changed block, a diff and a fix.
+
+| option | meaning |
+|---|---|
+| `--requests <file>` | The request bodies. `-` reads them from stdin. |
+| `--allow-break-at <call>=<reason>` | Intentional breaks at particular calls, comma-separated, e.g. `7=compaction`. The reason has the meaning it has for [`allowBreak`](assertions.md#allowbreak): `revert` and `refusal` must keep the tools and the system prompt, any other reason may change anything. |
+| `--ignore-params <names>` | Request parameters to leave out of the comparison, comma-separated, e.g. `truncation`. |
+| `--provider <name>` | `anthropic`, `openai` or `gemini`, when it cannot be told from the body (see [`provider`](assertions.md#provider)). Gemini bodies always need it. |
+
+The exit codes are those of a trace check:
+
+| code | meaning |
+|---|---|
+| 0 | Every call that has a call before it in its lane keeps that call's prefix, or breaks it where `--allow-break-at` allows. |
+| 1 | A call breaks the prefix. The first is printed; the message lists up to five more. |
+| 2 | The check could not be made: the file is missing, empty, not JSON, not a list of objects, or a trace; no lane has a second call; a call continues a conversation the provider keeps; or an option is wrong. |
+
+A body that continues a conversation the provider keeps (Anthropic's `thread`, OpenAI's `previous_response_id` or `conversation`) carries only what is new, so it is not compared, and the run does not pass: it exits 2 and names the calls. Run the tests with that turned off, so that every request carries the conversation in full. A break among the calls that were compared is still reported first, with exit code 1.
+
+`--fail-on`, `--allow`, `--json` and the pricing options apply to a trace only. There is no JSON output for request bodies: the exit code and the message are the result.
 
 ## From code
 

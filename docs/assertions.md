@@ -367,6 +367,14 @@ assertSessionStable(capturedBodies, { allowBreakAt: { 12: "compaction" } })
 assertSessionStable(capturedBodies, { steps: { 1: "first question", 12: "compaction" }, allowBreakIn: { compaction: "compaction" } })
 ```
 
+A test in another language does the same from the command line, with no script and no package.json. Write the bodies to a file, as a JSON array or one per line (JSON Lines), and run:
+
+```sh
+npx prefixlens check --requests bodies.jsonl --allow-break-at 12=compaction
+```
+
+It checks them as `assertSessionStable` does, prints the same failure message, and exits 0 on a pass, 1 on a break and 2 when the bodies cannot be checked (a call that continues a conversation the provider keeps is one such case). `--ignore-params` and `--provider` are the options of the same names. See [request bodies from your own tests](check.md#request-bodies-from-your-own-tests).
+
 ### Complete examples
 
 These four tests are [`examples/framework-session-test`](../examples/framework-session-test), which runs them with `bun test`. The official SDKs stand in for a framework.
