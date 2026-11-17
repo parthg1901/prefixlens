@@ -1,7 +1,7 @@
 /* Grey paper, black ink, square edges, and one orange that always means the same thing: this was paid for twice. */
 :root {
   --bg: #f2f3f5; --surface: #ffffff; --surface-2: #f2f3f5;
-  --text: #0b0b0c; --text-2: #45474d; --text-3: #787b83;
+  --text: #0b0b0c; --text-2: #45474d; --text-3: #63666e;
   --line: #dcdee3; --line-strong: #0b0b0c; --panel-line: #0b0b0c;
   --shadow: none;
   --cta: #0b0b0c; --cta-hover: #2b2c30; --cta-text: #ffffff; --focus: #0b0b0c;
@@ -48,7 +48,7 @@ h1 { margin: 0; font: var(--display-weight) var(--display-size) / var(--display-
 h1 em { font-style: normal; color: var(--miss-text); }
 .lede { margin: 24px 0 0; max-width: 33em; font-size: var(--lede-size); line-height: 1.55; color: var(--text-2); }
 .actions { margin-top: 32px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-.fine { margin: 24px 0 0; max-width: 40em; font-size: 13.5px; line-height: 1.6; color: var(--text-3); }
+.fine { margin: 24px 0 0; max-width: 40em; font-size: 13.5px; line-height: 1.6; color: var(--text-2); }
 
 .btn { appearance: none; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); color: var(--text); font: 500 14.5px/1.2 var(--font-body); padding: 13px 18px; cursor: pointer; text-align: left; transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.15s ease; }
 .btn:hover { background: var(--surface-2); }
@@ -178,7 +178,9 @@ h1 em { font-style: normal; color: var(--miss-text); }
 .foot__nav { display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 14px; color: var(--text-2); }
 .foot__nav a { text-decoration: none; }
 .foot__nav a:hover { color: var(--text); }
-.foot__fine { grid-column: 1 / -1; margin: 10px 0 0; font-size: 13px; color: var(--text-3); }
+.foot__by { grid-column: 1 / -1; margin: 14px 0 0; font-size: 14px; color: var(--text-2); }
+.foot__by a { color: var(--text); }
+.foot__fine { grid-column: 1 / -1; margin: 4px 0 0; font-size: 13px; color: var(--text-3); }
 
 /* One entrance, in order */
 .rise { animation: rise 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both; animation-delay: calc(var(--d) * 0.07s); }
@@ -204,3 +206,10 @@ h1 em { font-style: normal; color: var(--miss-text); }
   .rise, .row__bar { animation: none; }
   .btn { transition: none; }
 }
+
+/* The link-preview image (site/build.mjs --og): the page's own headline and ledger at 1200 by 630. */
+body.og { width: 1200px; height: 630px; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) 520px; gap: 56px; align-items: center; padding: 0 64px; }
+.og .mark { display: block; font-size: 24px; margin-bottom: 44px; }
+.og h1 { font-size: 70px; }
+.og__sub { margin: 28px 0 0; font-size: 23px; line-height: 1.4; color: var(--text-2); max-width: 20em; }
+.og .rise, .og .row__bar { animation: none; }

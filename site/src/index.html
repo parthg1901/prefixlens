@@ -10,6 +10,16 @@
 <meta property="og:description" content="Prompt-cache regression tests for agent harnesses and frameworks. Names the call, the block that changed, what it cost and the fix.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://prefixlens.parthg.dev/">
+<meta property="og:site_name" content="prefixlens">
+<meta property="og:image" content="https://prefixlens.parthg.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A session of five model calls: the fourth reads nothing from the prompt cache because the tool list changed, and 49,000 cached tokens are paid for again.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="prefixlens: find the request that broke your prompt cache">
+<meta name="twitter:description" content="Prompt-cache regression tests for agent harnesses and frameworks. Names the call, the block that changed, what it cost and the fix.">
+<meta name="twitter:image" content="https://prefixlens.parthg.dev/og.png">
+<meta name="author" content="Parth Gupta">
 <meta name="theme-color" content="#f2f3f5">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="alternate" type="text/markdown" href="/agent.md" title="Instructions for a coding agent">
@@ -86,13 +96,13 @@
   </header>
   <div class="agent">
     <div class="agent__text">
-      <p>Paste these instructions into the coding agent that works in your harness's repository. It reads how your requests are built, adds the matching test with your real system prompt, tools and memory settings, runs it, and tells you about any cache break it finds.</p>
+      <p>Paste these instructions into the coding agent that works in your harness's repository. It reads how your requests are built, adds the matching test with your real system prompt, tools and memory settings, runs it, and tells you about any cache break it finds. It asks before it changes your own code, your CI or your repository's layout.</p>
       <ol class="steps">
         <li>Finds whether you build the request yourself or a framework does, and whether the code is JavaScript at all.</li>
         <li>Adds <code>prefixlens</code> as a dev dependency.</li>
         <li>Writes the test in your own test runner, beside your other tests.</li>
-        <li>Runs it. A failure is a real cache break: it fixes the small safe ones and shows you the rest.</li>
-        <li>Checks that your CI picks the test up.</li>
+        <li>Runs it. A failure is a real cache break: it shows you the message and a fix, and applies the fix only when you say so.</li>
+        <li>Checks that your CI picks the test up, and commits or pushes nothing unless you ask.</li>
       </ol>
       <p class="note">The test makes no network call and needs no API key: a stand-in answers every model call. Read the instructions before you paste them. They are all here, and the same text is at <a href="/agent.md">/agent.md</a>.</p>
       <button class="btn btn--primary" type="button" data-copy-from="prompt" data-done="Copied. Paste it to your agent">
@@ -209,6 +219,7 @@
     <a href="https://github.com/parthg1901/prefixlens/blob/main/SPEC.md">Trace format</a>
     <a href="/agent.md">agent.md</a>
   </nav>
+  <p class="foot__by">Built by <a href="https://parthg.dev">Parth Gupta</a> · <a href="https://parthg.dev">parthg.dev</a> · The thinking behind it: <a href="https://parthg.dev/posts/most-prompt-cache-misses-are-self-inflicted/">Most prompt cache misses are self-inflicted</a></p>
   <p class="foot__fine">MIT licence. prefixlens {{version}}, the npm package; not related to the Python package of the same name on PyPI.</p>
 </footer>
 

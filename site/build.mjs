@@ -20,7 +20,10 @@ import { fileURLToPath } from "node:url"
 const site = path.dirname(fileURLToPath(import.meta.url))
 const root = path.join(site, "..")
 const src = path.join(site, "src")
-const out = path.resolve(process.argv[2] ?? path.join(site, "public"))
+const args = process.argv.slice(2)
+// `--og <dir>` writes only og.html there: the page to screenshot at 1200 by 630 for src/og.png (site/README.md).
+const ogDir = args.includes("--og") ? path.resolve(args[args.indexOf("--og") + 1] ?? ".") : null
+const out = path.resolve(args.find((arg, index) => !arg.startsWith("--") && args[index - 1] !== "--og") ?? path.join(site, "public"))
 const cli = path.join(root, "dist", "cli.js")
 const fixture = path.join(root, "test", "fixtures", "agent-session.jsonl")
 const { version } = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))
@@ -203,6 +206,19 @@ const page = read("index.html").replace(/\{\{([a-z_]+)\}\}/g, (whole, key) => {
   return values[key]
 })
 
+if (ogDir !== null) {
+  const head = /<link rel="preconnect"[\s\S]*?rel="stylesheet">/.exec(read("index.html"))[0]
+  const ledger = /<figure class="ledger[\s\S]*?<\/figure>/.exec(page)[0]
+  mkdirSync(ogDir, { recursive: true })
+  writeFileSync(
+    path.join(ogDir, "og.html"),
+    `<!doctype html>\n<html lang="en"><head><meta charset="utf-8">${head}<style>${values.styles}</style></head>\n<body class="og">\n<div><span class="mark"><span class="mark__prefix">prefix</span><span class="mark__lens">lens</span></span><h1>Find the request that <em>broke</em> your prompt cache.</h1><p class="og__sub">Prompt-cache regression tests for agent harnesses and frameworks.</p></div>\n${ledger}\n</body></html>\n`,
+  )
+  rmSync(work, { recursive: true, force: true })
+  console.log(`site: wrote og.html to ${path.relative(process.cwd(), ogDir) || "."}`)
+  process.exit(0)
+}
+
 const favicon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#0b0b0c"/><rect x="5" y="9" width="22" height="5" fill="#ffffff"/><rect x="5" y="18" width="9" height="5" fill="#ffffff"/><rect x="16" y="18" width="11" height="5" fill="#ff4d00"/></svg>\n`
 
 // A report states when it was generated. When nothing else in it changed, the one already there is kept, so that
@@ -218,6 +234,7 @@ writeFileSync(path.join(out, "index.html"), `${page}\n`)
 writeFileSync(path.join(out, "agent.md"), `${prompt}\n`)
 writeFileSync(path.join(out, "favicon.svg"), favicon)
 writeFileSync(path.join(out, "robots.txt"), "User-agent: *\nAllow: /\n")
+copyFileSync(path.join(src, "og.png"), path.join(out, "og.png"))
 // Cloudflare Pages reads response headers from this file. The instructions are served as Markdown that any page may fetch.
 writeFileSync(
   path.join(out, "_headers"),
@@ -227,4 +244,4 @@ writeFileSync(
 writeFileSync(path.join(out, "report.html"), reportText, { mode: 0o644 })
 rmSync(work, { recursive: true, force: true })
 
-console.log(`site: wrote index.html, agent.md, report.html, favicon.svg, robots.txt and _headers to ${path.relative(process.cwd(), out) || "."} (prefixlens ${version})`)
+console.log(`site: wrote index.html, agent.md, report.html, og.png, favicon.svg, robots.txt and _headers to ${path.relative(process.cwd(), out) || "."} (prefixlens ${version})`)
