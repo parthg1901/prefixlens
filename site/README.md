@@ -24,5 +24,24 @@ Rules for what the page says:
   the versions named beside it.
 - Change `src/agent.md` only together with a run of it by a coding agent on a real repository.
 
-`test-node/site.test.mjs` builds the page and checks it. Deployment is Vercel, configured by `vercel.json` at the
-repository's root; nothing here is part of the npm package.
+`test-node/site.test.mjs` builds the page and checks it. Nothing here is part of the npm package.
+
+## Deploying: Cloudflare Pages
+
+Connect this repository to a Pages project and set:
+
+| Setting | Value |
+|---|---|
+| Framework preset | None |
+| Build command | `bun install --frozen-lockfile && node scripts/build.mjs && node site/build.mjs` |
+| Build output directory | `site/dist` |
+| Root directory | (leave empty: the page is built with the package's own command line) |
+| Deploy command | (leave empty) |
+| Environment variable | `SKIP_DEPENDENCY_INSTALL` = `1`, since the build command installs with Bun |
+
+The build needs Node.js 22 or later and Bun 1.2 or later (for the text lockfile); the current Pages build image
+(v3) has both. On an older image, also set `NODE_VERSION` to `22` and `BUN_VERSION` to `1.4.0`.
+
+Then add the custom domain `prefixlens.parthg.dev` under the project's Custom domains; with the domain's DNS on
+Cloudflare the record is made for you. `build.mjs` writes a `_headers` file, which Pages applies: two security
+headers, and `/agent.md` served as Markdown that any page may fetch.
