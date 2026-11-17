@@ -207,9 +207,14 @@ writeFileSync(path.join(out, "index.html"), `${page}\n`)
 writeFileSync(path.join(out, "agent.md"), `${prompt}\n`)
 writeFileSync(path.join(out, "favicon.svg"), favicon)
 writeFileSync(path.join(out, "robots.txt"), "User-agent: *\nAllow: /\n")
+// Cloudflare Pages reads response headers from this file. The instructions are served as Markdown that any page may fetch.
+writeFileSync(
+  path.join(out, "_headers"),
+  ["/*", "  Referrer-Policy: strict-origin-when-cross-origin", "  X-Content-Type-Options: nosniff", "", "/agent.md", "  Content-Type: text/markdown; charset=utf-8", "  Access-Control-Allow-Origin: *", ""].join("\n"),
+)
 copyFileSync(path.join(work, "report.html"), path.join(out, "report.html"))
 // prefixlens writes a report readable by its owner only, since a real one holds prompts. This one is published.
 chmodSync(path.join(out, "report.html"), 0o644)
 rmSync(work, { recursive: true, force: true })
 
-console.log(`site: wrote index.html, agent.md, report.html, favicon.svg and robots.txt to ${path.relative(process.cwd(), out) || "."} (prefixlens ${version})`)
+console.log(`site: wrote index.html, agent.md, report.html, favicon.svg, robots.txt and _headers to ${path.relative(process.cwd(), out) || "."} (prefixlens ${version})`)
