@@ -10,6 +10,10 @@ All notable changes to prefixlens are recorded here. The format follows [Keep a 
 - **Steps in a test session.** `session.step(name)` marks what the test does next ("reload instructions", "compaction"); every call made after it, until the next mark, belongs to that step. Failure messages name it (`prefix not stable at call 15 (step "compaction", lane main, compared with call 14)`), and `explain()` entries and `session.requests` carry `step`. `allowBreakIn: { compaction: "compaction" }` allows a break by step name, so a test no longer changes when its run shifts by a call: it allows one break per step, the first call in the step whose prefix changed. `session.summary()` gives one result per step (stable, break with its one-line summary, allowed, not checked), as data and as a table, and a failing `assertStable` lists every step that breaks after the first failure's full message. A step that records no call fails `assertStable`. `assertSessionStable` takes the same through `steps: { 1: "first question", 12: "compaction" }`. A test with no steps behaves as before.
 - **`prefixlens check --requests <file>`** checks request bodies that a project's own tests captured, in any language, with no script and no package.json. The file is a JSON array of bodies or JSON Lines, in the order they were sent. The bodies are checked as `assertSessionStable` checks them, with the same lanes and the same failure message. `--allow-break-at 7=compaction`, `--ignore-params` and `--provider` are its options. A pass prints how many calls were compared. It exits 0 on a pass, 1 on a break, and 2 when the bodies cannot be checked: unreadable input, nothing to compare, or a call that continues a conversation the provider keeps. See [docs/check.md](https://github.com/parthg1901/prefixlens/blob/main/docs/check.md#request-bodies-from-your-own-tests).
 
+### Fixed
+
+- `prefixlens check` exits 2, as documented, for an unknown option or an option given no value. It exited 1.
+
 ## [0.6.1] - 2026-11-17
 
 ### Fixed

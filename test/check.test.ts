@@ -210,6 +210,8 @@ describe("prefixlens check", () => {
     const cause = run([fixture, "--allow", "cache_expired"])
     expect(cause.code).toBe(2)
     expect(cause.stderr).toStartWith("prefixlens: --allow cache_expired: not a cause a harness controls; choose from model_changed, params_changed, tools_changed,")
+    expect(run([fixture, "--fail-om", "expiry"])).toMatchObject({ code: 2, stderr: "prefixlens: unknown option --fail-om; run prefixlens --help\n" })
+    expect(run([fixture, "--fail-on"])).toMatchObject({ code: 2, stderr: "prefixlens: --fail-on needs a value\n" })
   })
 
   test("the trace of a test session: stable passes, a rewritten history fails as an undeclared prefix change", async () => {
