@@ -12,6 +12,9 @@ export interface Lane {
   /** The cache key of its latest call: the session-id header, else prompt_cache_key. */
   cacheKey?: string
   blocks: Block[]
+  /** The id of its latest reply, and the id its latest request continued: a request that names either continues this lane. */
+  reply?: string
+  continued?: string
   /** Calls in this lane that may still be in flight for a call beginning now: `began` and `ended` are call sequence numbers. */
   calls: { began: number; ended?: number }[]
   used: number
@@ -26,6 +29,11 @@ export interface LaneCall {
   /** The call's sequence number. */
   began: number
   group?: string
+  /**
+   * The reply or conversation id a request names when the provider keeps the conversation (`keptConversation`).
+   * Its blocks are only what is new, so they choose no lane: the call joins the lane that id belongs to.
+   */
+  continues?: string
 }
 
 export interface LanesOptions {
@@ -72,9 +80,17 @@ export class Lanes {
     const candidates = this.lanes.filter((lane) => lane.session === call.session && (call.forced !== undefined || lane.group === call.group))
     // Calls that ended before this one began can never be in flight for a later call either.
     for (const lane of candidates) lane.calls = lane.calls.filter((other) => other.ended === undefined || other.ended >= call.began)
-    const chosen = call.forced !== undefined ? candidates.find((lane) => lane.name === call.forced) : pickLane(candidates, blocks, call.cacheKey, call.began, this.options.joinOnSharedStart === true)
+    const chosen =
+      call.forced !== undefined
+        ? candidates.find((lane) => lane.name === call.forced)
+        : call.continues !== undefined
+          ? continuedLane(candidates, call.continues, call.cacheKey)
+          : pickLane(candidates, blocks, call.cacheKey, call.began, this.options.joinOnSharedStart === true)
     const lane = chosen ?? this.open(call.forced, call.session, call.group)
-    lane.blocks = blocks
+    // A request that continues a conversation the provider keeps leaves the lane's last full request in place:
+    // the next request sent in full is matched against that one.
+    if (call.continues === undefined) lane.blocks = blocks
+    else lane.continued = call.continues
     if (call.cacheKey === undefined) delete lane.cacheKey
     else lane.cacheKey = call.cacheKey
     lane.used = ++this.clock
@@ -88,6 +104,13 @@ export class Lanes {
     this.lanes.push(lane)
     return lane
   }
+}
+
+/** The lane a request that names `id` continues: the one that id belongs to, else the lane used last (the id came from outside what was recorded). */
+function continuedLane(lanes: Lane[], id: string, cacheKey: string | undefined): Lane | undefined {
+  const named = lanes.find((lane) => id !== "" && (lane.reply === id || lane.continued === id))
+  if (named) return named
+  return lanes.filter((lane) => lane.cacheKey === undefined || cacheKey === undefined || lane.cacheKey === cacheKey).sort((a, b) => b.used - a.used)[0]
 }
 
 function pickLane(lanes: Lane[], blocks: Block[], cacheKey: string | undefined, began: number, joinOnSharedStart: boolean): Lane | undefined {

@@ -268,6 +268,7 @@ A parameter is classified by its top-level request key, per provider. *Verified*
 | anthropic | `speed` | yes | system and messages | documented |
 | anthropic | `context_management`, `mcp_servers` | yes | everything | assumed: they change what the model reads (server-side context edits, extra tools) |
 | anthropic | `service_tier` | no | | assumed: billing and capacity only |
+| anthropic | `thread` | no | | assumed: it names a conversation the provider keeps, and is not part of the prompt (section 8.2) |
 | openai | `tool_choice` | **no** | | **verified on the Responses API**: a warm 5,159-token prefix read 4,992 cached tokens with `"auto"`, again with `"none"` and the tool list unchanged, and again after switching back. Assumed the same on Chat Completions, consistent with OpenAI's advice to set `tool_choice: "none"` rather than remove tools |
 | openai | `parallel_tool_calls`, `reasoning` (`effort`), `text` (`verbosity`, `format`), `context_management` | yes | everything (they change hidden instructions ahead of the prompt) | documented ("Which settings affect the cached prefix?") |
 | openai | `reasoning_effort`, `verbosity`, `response_format` | yes | everything | assumed: the Chat Completions names of the documented Responses settings |
@@ -275,11 +276,20 @@ A parameter is classified by its top-level request key, per provider. *Verified*
 | openai | `prompt_cache_options`, `prompt_cache_retention` | no | | assumed: they choose which breakpoints are written (`mode`), their minimum lifetime (`ttl`), diagnostics (`comparison_response_id`, new on every call) and a maximum retention; a read still needs the rendered prefix to match. The mode does change what can be read: in explicit-only mode a request reads only at boundaries it marks itself (OpenAI checks "the first 2 and latest 50 explicit breakpoints" of the request), so a call that drops the previous call's breakpoint misses with the prefix intact; prefixlens reports that as a provider-side miss, as it does for Anthropic breakpoints beyond the lookback window |
 | openai | `user` | yes | everything | documented: the API reference says `user` is used to bucket similar requests for cache hits, and deprecates it in favour of `prompt_cache_key` |
 | openai | `store`, `include`, `service_tier`, `safety_identifier`, `background` | no | | assumed: storage, response fields, billing or delivery only |
+| openai | `previous_response_id`, `conversation` | no | | assumed: they name a conversation the provider keeps, and are not part of the prompt (section 8.2) |
 | gemini | everything but the common rows (`generationConfig`, `toolConfig`, `cachedContent`, ...) | yes | everything | assumed |
 
 **Identifying fields.** `metadata`, `user`, `safety_identifier` and `client_metadata` identify a person, account, device or installation and are not model input; writers SHOULD leave them out of `params` (section 2). When one of them is absent from either of two records, a reader MUST NOT report it as changed: absent means not recorded, not removed. Of these, only OpenAI's `user` is a cache-routing key, so a trace written without it cannot show that a change of `user` caused a miss; such a miss reads as one with the prefix intact. A writer that needs it keeps the field (prefixlens: `keepIdentifiers`, `--keep-identifiers`).
 
 Classifications are by provider, not by API: OpenAI's Chat Completions and Responses APIs use different names for most settings, and where they share one (`tool_choice`), the Responses measurement is applied to both, as stated. A provider not listed (a gateway id) gets the common rows and the default.
+
+### 8.2 Requests that continue a conversation the provider keeps
+
+A provider can keep a conversation, so that a request carries only what is new and the provider puts the earlier turns in front of it. A record's `params` say so: Anthropic's `thread` with `type: "continue"` (a `thread` with `type: "create"` is a request sent in full), and OpenAI's `previous_response_id` or `conversation`.
+
+Such a request is not meant to extend the one before it, so prefixlens does not compare the two, in either direction: a call whose request, or whose previous call's request, continues a kept conversation is judged by its usage alone, as a usage-only record is (section 5). Its hit rate, lost tokens and cost are exact. A miss gets a cause only from timing and hints, and a change to the prefix on that call cannot be seen. The report says how many calls this applies to.
+
+A recorder SHOULD put such a call in the lane of the call whose response it names (`thread.previous_message_id` or `previous_response_id` equal to that record's `id`), not in a lane chosen by its blocks.
 
 ## 9. Example
 

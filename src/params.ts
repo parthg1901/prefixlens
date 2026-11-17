@@ -52,6 +52,9 @@ const COMMON: Record<string, ParamRule> = Object.fromEntries(OUTPUT_ONLY.map((ke
 const ANTHROPIC_DOCS = "Anthropic prompt-caching docs, \"What invalidates the cache\""
 const OPENAI_DOCS = "OpenAI prompt-caching guide, \"Which settings affect the cached prefix?\""
 
+// SPEC 8.2: the field is not part of the prompt, and a request that continues such a conversation is not compared at all.
+const KEPT_BASIS = "names a conversation the provider keeps; a request that continues one carries only what is new and is not compared"
+
 export const PARAM_RULES: Record<string, Record<string, ParamRule>> = {
   anthropic: {
     ...COMMON,
@@ -62,6 +65,7 @@ export const PARAM_RULES: Record<string, Record<string, ParamRule>> = {
     context_management: prefix("start", "assumed", "server-side context editing changes what the model reads"),
     mcp_servers: prefix("start", "assumed", "MCP servers add tools to the prompt"),
     service_tier: none("assumed", "billing and capacity only"),
+    thread: none("assumed", KEPT_BASIS),
   },
   openai: {
     ...COMMON,
@@ -82,6 +86,8 @@ export const PARAM_RULES: Record<string, Record<string, ParamRule>> = {
     service_tier: none("assumed", "billing and capacity only"),
     safety_identifier: none("assumed", "abuse monitoring only"),
     background: none("assumed", "response delivery only"),
+    previous_response_id: none("assumed", KEPT_BASIS),
+    conversation: none("assumed", KEPT_BASIS),
   },
   gemini: { ...COMMON },
 }

@@ -50,7 +50,7 @@ Every call gets exactly one class. The check adds no analysis of its own: a clas
 |---|---|---|
 | `avoidable` | lost cached tokens because the tool list, system prompt, history, model or a cache-relevant parameter changed, and no declaration allows it | fails |
 | `undeclared-change` | lost no cached tokens, but its request does not extend the previous one in its lane, and no declaration allows that | fails |
-| `unexplained` | lost cached tokens, and the trace cannot say why: the record is usage-only and nothing the harness logged explains it | passes |
+| `unexplained` | lost cached tokens, and the trace cannot say why: the record is usage-only, or its request continues a conversation the provider keeps, and nothing the harness logged explains it | passes |
 | `intentional` | lost cached tokens to a break the harness [declared](intentional-breaks.md), or to a cause named with `--allow` | passes |
 | `expiry` | had its prefix intact, and was sent after the cache lifetime | passes |
 | `provider-side` | had its prefix intact and in time: the provider evicted the entry or routed the request elsewhere | passes |
@@ -63,6 +63,8 @@ An `undeclared-change` is a break waiting for a cache to hit. It is found when n
 - one a `prefix_break` hint on the call allows;
 - one after the previous call's last cache breakpoint, in a part the provider never cached;
 - a request that shares no message with the previous one in its lane: that is another conversation with the same tools and system prompt, not a rewritten one.
+
+A call whose request continues a conversation the provider keeps (Anthropic's `thread`, OpenAI's `previous_response_id` or `conversation`) carries only what is new, so it is not compared with the call before it: it is `ok` when it read the cache and `unexplained` when it did not, and its summary says it was not compared. To check the prefix of such a harness, record a run that sends the conversation in full.
 
 ## Options
 

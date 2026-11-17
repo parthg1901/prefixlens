@@ -10,7 +10,7 @@ import type { Cause } from "./diff.ts"
  * What a call is, for a pass-or-fail decision:
  * - `avoidable`: it lost cached tokens for a reason the harness controls (a changed tool list, system prompt, history, model or parameter) that no declaration allows;
  * - `undeclared-change`: it lost none, but its request does not extend the previous one in its lane where the next call could have read the cache, and no declaration allows that;
- * - `unexplained`: it lost cached tokens and the trace cannot say why (a usage-only record);
+ * - `unexplained`: it lost cached tokens and the trace cannot say why (a usage-only record, or a request that continues a conversation the provider keeps);
  * - `intentional`: it lost cached tokens to a break the harness declared, or to a cause named in `allow`;
  * - `expiry`: the prefix was intact and the cache lifetime had passed;
  * - `provider-side`: the prefix was intact and in time: the provider evicted the entry or routed the request elsewhere;
@@ -100,7 +100,7 @@ function verdict(turn: TurnResult, failOn: MissClass[], allow: readonly Cause[])
   const allowed = change !== undefined && allow.includes(change.cause)
   const name = allowed ? "intentional" : found
   const shown = change ?? (lost ? turn.cause : undefined)
-  const fix = name === "intentional" ? undefined : change ? fixFor(change.cause, "trace") : FIXES[name]
+  const fix = name === "intentional" ? undefined : change ? fixFor(change.cause, "trace") : name === "unexplained" && turn.not_compared ? `${turn.not_compared}: there is nothing to compare, so no cause can be found. To check the prefix, record a run that sends the conversation in full.` : FIXES[name]
   return {
     turn: turn.turn,
     lane: turn.lane,
@@ -133,6 +133,7 @@ function classOf(turn: TurnResult, lost: boolean, changed: boolean): MissClass {
 function summaryOf(turn: TurnResult, name: MissClass, change: string | undefined, allowed: Cause | undefined): string {
   if (name === "cold-start") return "first call in its lane: nothing cached yet"
   if (name === "warm-start") return "first call in its lane, and it read a cache left from outside the lane"
+  if (name === "ok" && turn.not_compared) return `${turn.status === "uncached" ? "nothing cacheable from the call before" : "read the cache the call before left"}; the request was not compared (${turn.not_compared})`
   if (name === "ok") return turn.status === "uncached" ? "nothing cacheable from the call before, and the request extends it" : "read the cache the call before left"
   if (allowed) return `${change} (allowed: ${allowed})`
   if (name === "intentional") return `${change ?? "cause unknown"} (declared: ${turn.declared_break!.reasons.join(", ")})`

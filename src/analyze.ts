@@ -7,6 +7,7 @@ import { coveringBreaks, declaredBreaks, describePosition, keptBlocks, type Decl
 import { CAUSE_GROUP, comparePrefix, type Cause, type CauseGroup, type PrefixChange, type Region } from "./diff.ts"
 import { resolvePrice, type CatalogueTable, type PriceSources, type Resolution } from "./catalogue.ts"
 import { costOf, DEFAULT_STALE_AFTER_DAYS, findFamily, pricedDays, pricingAge, providerFacts, ratesFor, uncachedRate, type Cost, type PricingTable } from "./pricing.ts"
+import { keptConversation } from "./kept.ts"
 import { laneKey, prefixBlocks, type Billing, type Block, type Fidelity, type TraceRecord, type Usage } from "./trace.ts"
 import { promptTokens } from "./usage.ts"
 
@@ -78,6 +79,12 @@ export interface TurnResult {
    * prefix cached (an earlier session with the same tools and instructions, say). Reported as a hit.
    */
   warm_start?: true
+  /**
+   * Set when the request was not compared with the one before it although both were recorded in full, with
+   * the reason: one of them continues a conversation the provider keeps (SPEC 8.2). The call is judged by
+   * its usage alone, as a usage-only record is.
+   */
+  not_compared?: string
   /** The response was cut off before it ended (SPEC 2, `interrupted`): input-side counts are final, output tokens and cost are lower bounds. */
   interrupted?: true
   /** How the call was billed, when the trace says (SPEC 2, `billing`). */
@@ -223,7 +230,9 @@ function analyzeTurn(
   const step = steps.get(stepKey(previous)) ?? IMPLICIT_STEP_TOKENS
   const expected = Math.min(prompt, expectedCached(previous, facts.min_cacheable_tokens, step))
   const lost = Math.max(0, expected - record.usage.cache_read_tokens)
-  const full = record.fidelity === "full-request" && previous.fidelity === "full-request" && record.request && previous.request
+  // A request the provider continues carries only what is new: it and the call before it are judged by usage alone.
+  const kept = keptConversation(record.params) ?? keptConversation(previous.params)
+  const full = !kept && record.fidelity === "full-request" && previous.fidelity === "full-request" && record.request && previous.request
   // The prompt prefix of each request: deferred tools are recorded but not rendered into the prompt, so they are not compared.
   const before = full ? prefixBlocks(previous.request!.blocks) : []
   const sent = full ? prefixBlocks(record.request!.blocks) : []
@@ -264,6 +273,7 @@ function analyzeTurn(
   const ttl = previous.cache_ttl_seconds ?? facts.cache_ttl_seconds
   const turn = {
     ...base,
+    ...(kept ? { not_compared: `${keptConversation(record.params) ? "it" : "the call before it"} continues a conversation the provider keeps (${kept.by}), so the request carries only what is new` } : {}),
     expected_cached_tokens: expected,
     lost_tokens: lost,
     status,
@@ -282,13 +292,13 @@ function analyzeTurn(
       declared.length === 0 || !verdict ? sized(result) : { ...sized(result), declared_break: { reasons: [...new Set(declared.map((entry) => entry.reason))], declarations: declared, ...verdict } }
     const lapse = `${duration(gap)} since the previous call, TTL ${duration(ttl)}`
     if (!full) {
-      const cause = inferredCause(previous, record, gap, ttl, declared, status === "miss")
+      const cause = inferredCause(previous, record, gap, ttl, declared, status === "miss", kept !== undefined)
       // The cache was gone whatever the harness did, so a declared break does not make the miss an intentional one.
       return withDeclared(
         { ...turn, cause },
         cause.cause === "cache_expired"
           ? { intentional: false, checked: false, note: `a break was declared (${declared.map((entry) => entry.reason).join(", ")}), but the cache had probably expired by then (${lapse}), so the miss is counted as an expiry` }
-          : { intentional: true, checked: false, note: "usage-only: where the prefix changed cannot be checked against the declaration" },
+          : { intentional: true, checked: false, note: `${kept ? "the provider keeps the conversation" : "usage-only"}: where the prefix changed cannot be checked against the declaration` },
       )
     }
     const afterCached = change?.block_index !== undefined && lastBreakpoint !== -1 && change.block_index > lastBreakpoint
@@ -449,8 +459,9 @@ function unchangedCause(gap: number, ttl: number, previousWrite: number, session
   }
 }
 
-const USAGE_ONLY = "usage-only trace: root-cause diffs need full requests"
-const UNCONFIRMED = "unconfirmed (usage-only)"
+// Why a cause is inferred and not found: the record holds usage only, or the provider keeps the conversation.
+const NO_DIFF = { usage: "usage-only trace: root-cause diffs need full requests", kept: "the provider keeps the conversation, so the request holds only what is new and there is nothing to diff" }
+const NOT_CONFIRMED = { usage: "unconfirmed (usage-only)", kept: "unconfirmed (the provider keeps the conversation)" }
 
 // The cause a declared reason stands for when only usage is known.
 const REASON_CAUSE: Record<string, Cause> = {
@@ -461,7 +472,8 @@ const REASON_CAUSE: Record<string, Cause> = {
   settings_change: "params_changed",
 }
 
-function inferredCause(previous: TraceRecord, record: TraceRecord, gap: number, ttl: number, declared: DeclaredBreak[], nothingRead: boolean): CauseInfo {
+function inferredCause(previous: TraceRecord, record: TraceRecord, gap: number, ttl: number, declared: DeclaredBreak[], nothingRead: boolean, kept: boolean): CauseInfo {
+  const UNCONFIRMED = NOT_CONFIRMED[kept ? "kept" : "usage"]
   const inferred = (cause: Cause, summary: string, detail?: Record<string, unknown>): CauseInfo => ({
     cause,
     group: CAUSE_GROUP[cause],
@@ -510,7 +522,7 @@ function inferredCause(previous: TraceRecord, record: TraceRecord, gap: number, 
     return inferred("tools_changed", `agent switched (${agent.detail ?? "different agent"}); its tool list and system prompt usually differ; ${UNCONFIRMED}`)
   if (pruned)
     return inferred("tool_output_rewritten", `the harness pruned earlier tool outputs before this call${pruned.detail ? ` (${pruned.detail})` : ""}; ${UNCONFIRMED}`)
-  return { cause: "unknown", group: CAUSE_GROUP.unknown, summary: `cause unknown: ${USAGE_ONLY}`, confidence: "unknown" }
+  return { cause: "unknown", group: CAUSE_GROUP.unknown, summary: `cause unknown: ${NO_DIFF[kept ? "kept" : "usage"]}`, confidence: "unknown" }
 }
 
 function fromChange(change: PrefixChange, confidence: Confidence): CauseInfo {
@@ -568,6 +580,7 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
   const status = { cold: 0, hit: 0, partial: 0, miss: 0, uncached: 0 }
   for (const turn of turns) status[turn.status]++
   const usageOnly = turns.filter((turn) => turn.fidelity === "usage-only").length
+  const notCompared = turns.filter((turn) => turn.not_compared !== undefined).length
   const unpriced = [...new Set(turns.filter((turn) => turn.cost === null).map((turn) => turn.model))]
   const cutOff = turns.filter((turn) => turn.interrupted).map((turn) => turn.turn)
   const partlyUnknown = records.filter((record) => record.request?.blocks.some((block) => block.unknown)).length
@@ -604,6 +617,11 @@ function summarize(turns: TurnResult[], records: TraceRecord[], sources: PriceSo
     ...(cutOff.length > 0
       ? [
           `${cutOff.length === 1 ? `Call ${cutOff[0]} was` : `Calls ${cutOff.join(", ")} were`} cut off before the response ended (the client disconnected): ${cutOff.length === 1 ? "its" : "their"} input and cache counts are final, so hit rates and misses are exact, but output tokens and cost are lower bounds.`,
+        ]
+      : []),
+    ...(notCompared > 0
+      ? [
+          `${notCompared} of ${turns.length} calls were not compared with the call before them: the provider keeps the conversation (Anthropic's \`thread\`, OpenAI's \`previous_response_id\` or \`conversation\`), so a request carries only what is new. Hit rates and costs are exact, but a prefix change on those calls cannot be seen (causes shown are inferred from timing and harness hints).`,
         ]
       : []),
     ...(usageOnly > 0

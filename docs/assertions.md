@@ -209,6 +209,20 @@ PrefixBreakError: prefix not stable at call 13 (lane main, compared with call 12
 
 It also throws when there was nothing to check: no request was recorded (the provider was not given `session.fetch`), or no lane has a second call.
 
+### Conversations the provider keeps
+
+A harness can let the provider keep the conversation: Anthropic's `thread`, OpenAI's `previous_response_id` or `conversation`. A request that continues one carries only what is new, so it is not meant to extend the request before it, and prefixlens does not compare the two. It does not pass such a call either. `assertStable` throws an `Error` (not a `PrefixBreakError`) that names the calls:
+
+```
+Error: prefixlens/test: 14 of the 15 calls were not checked (calls 2-15): each continues a conversation the provider keeps (Anthropic's `thread`), so its request carries only what is new and there is nothing to compare it with.
+
+  Run the agent with that turned off, so that every request carries the conversation in full, and say that the path the provider keeps is not covered by this test.
+```
+
+Run the agent for the test with the setting that sends the conversation in full. What the test then covers is the request builder; the path the provider keeps is not covered.
+
+`session.explain()` lists such a call with `notChecked` set to the reason, `ok: false` and `change: null`. A request sent in full after some that were not (a new thread) is compared with the last request that was sent in full. A break in the calls that were compared is reported first. `assertPrefixStable` and `assertSessionStable` do the same for the requests they are given.
+
 `session.explain(options?)` returns the same comparisons without throwing: one [explanation](#assertprefixstable-and-explainprefixdiff) per call that has a call before it, with `call`, `previous` and `lane` added. `assertStable` returns that list when every call is `ok`.
 
 Both take the [options](#options) of `assertPrefixStable` (`allowBreak`, `ignoreParams`, `hints`, `provider`), which apply to every call, and one more:
