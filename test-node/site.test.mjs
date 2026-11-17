@@ -21,7 +21,7 @@ const text = (html) => html.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replac
 
 test("the site builds, with every placeholder filled", () => {
   assert.equal(built.status, 0, built.stderr)
-  assert.deepEqual(readdirSync(out).sort(), ["_headers", "agent.md", "favicon.svg", "index.html", "report.html", "robots.txt"])
+  assert.deepEqual(readdirSync(out).sort(), ["_headers", "agent.md", "favicon.svg", "index.html", "og.png", "report.html", "robots.txt"])
   assert.doesNotMatch(page, /\{\{[a-z_]+\}\}/)
   assert.doesNotMatch(prompt, /\{\{[a-z_]+\}\}/)
 })
@@ -51,7 +51,8 @@ test("the copy button copies the instructions exactly as agent.md has them, nami
   const sheet = /<pre class="sheet__body" id="prompt"[^>]*>([\s\S]*?)<\/pre>/.exec(page)
   assert.ok(sheet, "the page has no instructions")
   assert.equal(text(sheet[1]), prompt.replace(/\n$/, ""))
-  assert.ok(prompt.includes(`version ${version} or later`))
+  assert.ok(prompt.includes(`at exactly version ${version}`))
+  assert.doesNotMatch(prompt, /\^\d/, "the instructions give a version range")
   for (const part of ["assertPrefixStable", "recordRequests", "session.assertStable()", "allowBreakAt", "## 6. Report"]) assert.ok(prompt.includes(part), `the instructions lack ${part}`)
 })
 
