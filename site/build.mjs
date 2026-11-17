@@ -199,7 +199,7 @@ const page = read("index.html").replace(/\{\{([a-z_]+)\}\}/g, (whole, key) => {
   return values[key]
 })
 
-const favicon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="5" fill="#16130f"/><rect x="5" y="9" width="13" height="5" fill="#f4f0e6"/><rect x="5" y="18" width="13" height="5" fill="#f4f0e6"/><rect x="20" y="9" width="7" height="5" fill="#1b6a4e"/><rect x="20" y="18" width="7" height="5" fill="#d2381c"/></svg>\n`
+const favicon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#0b0b0c"/><rect x="5" y="9" width="22" height="5" fill="#ffffff"/><rect x="5" y="18" width="9" height="5" fill="#ffffff"/><rect x="16" y="18" width="11" height="5" fill="#ff4d00"/></svg>\n`
 
 rmSync(out, { recursive: true, force: true })
 mkdirSync(out, { recursive: true })
