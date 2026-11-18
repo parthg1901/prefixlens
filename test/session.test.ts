@@ -316,6 +316,21 @@ describe("the trace of a session", () => {
 })
 
 describe("assertSessionStable", () => {
+  test("an agent that changes its tools and its instructions together is still compared with its previous request", () => {
+    const tool = (name: string) => ({ name, description: `The ${name} tool.`, input_schema: { type: "object" as const, properties: {} } })
+    const request = (names: string[], messages: unknown[]) => ({ model: "claude-test-1", max_tokens: 100, system: `Your tools: ${names.join(", ")}.`, tools: names.map(tool), messages })
+    const one = [{ role: "user", content: "task" }]
+    const two = [...one, { role: "assistant", content: "on it" }, { role: "user", content: "go on" }]
+    const three = [...two, { role: "assistant", content: "more" }, { role: "user", content: "and then" }]
+    const all = ["read", "write", "shell"]
+    for (const changed of [["write", "shell"], ["shell", "write", "read"]]) {
+      // Nothing at the start of the third request is the lane's, so it opens one of its own. Before, it was then
+      // compared with nothing and the run passed with one comparison of two.
+      expect(() => assertSessionStable([request(all, one), request(all, two), request(changed, three)])).toThrow("prefix not stable at call 3 (lane lane-2, compared with call 2 of lane main, whose conversation it carries on)")
+    }
+    expect(assertSessionStable([request(all, one), request(all, two), request(all, three)]).map((entry) => entry.stable)).toEqual([true, true])
+  })
+
   const system = "You are a synthetic agent."
   const first = { model: "claude-test-1", max_tokens: 100, system, messages: [{ role: "user", content: "One." }] }
   const second = { ...first, messages: [...first.messages, { role: "assistant", content: "OK." }, { role: "user", content: "Two." }] }

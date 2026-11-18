@@ -144,12 +144,15 @@ export class Recorder {
    * chooses its reply knowing the lane. `finish` builds and writes the record, as `record` does.
    * Returns undefined when the call cannot be recorded.
    */
-  open(input: CallInput): { lane: string; session?: string; finish(response: unknown): TraceRecord | undefined } | undefined {
+  open(input: CallInput): { lane: string; session?: string; follows?: string; finish(response: unknown): TraceRecord | undefined } | undefined {
     const call = this.read(input)
     if (!call) return undefined
     const canonical = canonicalizeRequest(PROVIDER_OF[call.api], call.body)
-    const lane = this.lanes.assign(canonical.blocks, { ...laneCall(call), began: ++this.sequence })
-    return { lane: lane.name, ...(call.session ? { session: call.session } : {}), finish: (response) => this.write(call, canonical, lane, response) }
+    const began = ++this.sequence
+    const lane = this.lanes.assign(canonical.blocks, { ...laneCall(call), began })
+    // Only the call that opens a lane carries a conversation on from another one.
+    const follows = lane.first === began ? lane.follows : undefined
+    return { lane: lane.name, ...(call.session ? { session: call.session } : {}), ...(follows ? { follows } : {}), finish: (response) => this.write(call, canonical, lane, response) }
   }
 
   private read(input: CallInput) {

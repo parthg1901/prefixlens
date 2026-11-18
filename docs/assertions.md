@@ -343,6 +343,14 @@ A request joins the first of these that applies:
 4. else a lane whose latest request starts with the same block: the same first tool, or the same first system part (a rewritten system prompt and a rewritten history at once);
 5. else it opens a new lane: `main` for the first, then `lane-2`, `lane-3`.
 
+A lane holds requests that can read each other's cache, so a request that changes its tools and its instructions together opens a new one: nothing at its start is the old lane's. An agent whose instructions list its tools does this on every tool change. Such a request is still the conversation's next one, and it re-reads all of it, so it is compared with the latest request of the lane it came from. The failure says so:
+
+```
+prefix not stable at call 14 (lane lane-2, compared with call 13 of lane main, whose conversation it carries on): tool order changed (2 of 3 tools moved; same tools, different order)
+```
+
+What marks it as that conversation's is a reply it holds: a first user message can be handed to any agent, a reply comes only from the conversation that produced it. The request must also offer tools, as that conversation does. In `explain()` such an entry has `follows`, the lane it is compared with.
+
 So a title generator or a summariser, with its own instructions and no tools, gets a lane of its own, and a request that breaks the agent's prefix is still compared with the agent's previous request.
 
 Two conversations of the same agent look like one whose history was replaced. Record each in its own session, or name them: a request sent with the header `x-prefixlens-lane: <name>` goes in that lane (with the Vercel AI SDK, `createAnthropic({ fetch: session.fetch, headers: { "x-prefixlens-lane": "thread-a" } })`).

@@ -3,7 +3,9 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { analyze } from "../src/analyze.ts"
+import { canonicalizeAnthropic } from "../src/canonical.ts"
 import { parsePricing } from "../src/pricing.ts"
+import { Lanes } from "../src/record/lanes.ts"
 import { Recorder } from "../src/record/recorder.ts"
 import { parseTrace } from "../src/trace.ts"
 import { assistant, body, TEST_PRICING, TOOLS, user } from "./helpers.ts"
@@ -65,6 +67,72 @@ describe("lane assignment", () => {
 
   test("a side query with other tools and system prompt does not join the conversation", async () => {
     expect(await sequential([body([user("Fix the bug.")]), body([user("Fix the bug.")], { tools: [], system: "Write a title." })])).toEqual(["main", "lane-2"])
+  })
+
+  // An agent whose instructions list its tools changes both at once. Nothing at the start of the request is
+  // then the lane's: it can read none of its cache and opens a lane of its own. It is that conversation's
+  // next request all the same, and the lane says which lane it follows, so that it is compared with it.
+  describe("an agent that changes its tools and its instructions together", () => {
+    const names = (tools: { name: string }[]) => `You are an agent. Your tools: ${tools.map((tool) => tool.name).join(", ")}.`
+    const agent = (messages: unknown[], tools: { name: string }[] = TOOLS) => body(messages, { tools, system: names(tools) })
+    const review = [{ name: "review", description: "Synthetic review tool.", input_schema: { type: "object" } }]
+    const first = [user("Fix the bug.")]
+    const second = [...first, assistant("Looking."), user("Go on.")]
+    const third = [...second, assistant("Found it."), user("Fix it.")]
+
+    /** Each request's lane and, for one that opens a lane, the lane it follows. Each call ends before the next begins. */
+    function placed(requests: Record<string, unknown>[]) {
+      const recorder = new Recorder({ trace: false, name: "test" })
+      return requests.map((request) => {
+        const call = recorder.open({ body: request, api: "anthropic-messages" })!
+        call.finish(response)
+        return call.follows === undefined ? call.lane : `${call.lane} follows ${call.follows}`
+      })
+    }
+
+    test.each([
+      ["the first tool removed", TOOLS.slice(1)],
+      ["the tools in another order", [...TOOLS].reverse()],
+      ["other tools altogether", review],
+    ])("opens a lane that follows its conversation's, with %s", (_, tools) => {
+      expect(placed([agent(first), agent(second), agent(third, tools)])).toEqual(["main", "main", "lane-2 follows main"])
+    })
+
+    test("follows it when an earlier message changed as well, or when it adds none: it holds the conversation's own reply", () => {
+      const edited = [user("Fix the bug!"), ...third.slice(1)]
+      expect(placed([agent(first), agent(second), agent(third), agent(edited, TOOLS.slice(1))])).toEqual(["main", "main", "main", "lane-2 follows main"])
+      expect(placed([agent(first), agent(second), agent(second, TOOLS.slice(1))])).toEqual(["main", "main", "lane-2 follows main"])
+    })
+
+    test("its later requests stay in the new lane, and a return to the old tools and instructions returns to the old lane", () => {
+      const fourth = [...third, assistant("Fixed."), user("Thanks.")]
+      const fifth = [...fourth, assistant("Welcome."), user("One more.")]
+      expect(placed([agent(first), agent(second), agent(third, TOOLS.slice(1)), agent(fourth, TOOLS.slice(1)), agent(fifth)])).toEqual(["main", "main", "lane-2 follows main", "lane-2", "main"])
+    })
+
+    test("a summary written from its messages, by other instructions and with no tools, follows nothing, and the agent's next step still follows the agent", () => {
+      const summary = body([...second, user("Summarise the conversation so far.")], { tools: [], system: "You write summaries." })
+      expect(placed([agent(first), agent(second), summary, agent(third, TOOLS.slice(1))])).toEqual(["main", "main", "lane-2", "lane-3 follows main"])
+    })
+
+    test("another agent handed the same first message, with its own tools and instructions, follows nothing", () => {
+      const other = body(first, { tools: review, system: "You are the reviewer." })
+      // Whether the first agent has made one call or several, and whatever the other one goes on to add:
+      // all the two share is a user message, which holds nothing the first conversation produced.
+      expect(placed([agent(first), other])).toEqual(["main", "lane-2"])
+      const more = body([...first, assistant("Reviewing."), user("Go on.")], { tools: review, system: "You are the reviewer." })
+      expect(placed([agent(first), agent(second), other, more])).toEqual(["main", "main", "lane-2", "lane-2"])
+    })
+
+    test("a call that runs alongside the agent's latest one is not its next step", async () => {
+      expect(await concurrent([agent(second), agent(third, TOOLS.slice(1))])).toEqual(["main", "lane-2"])
+      // And with the first still in flight, the second follows nothing.
+      const lanes = new Lanes()
+      const blocks = (request: Record<string, unknown>) => canonicalizeAnthropic(request).blocks
+      lanes.assign(blocks(agent(second)), { began: 1 }).calls.push({ began: 1 })
+      const next = lanes.assign(blocks(agent(third, TOOLS.slice(1))), { began: 2 })
+      expect([next.name, next.follows]).toEqual(["lane-2", undefined])
+    })
   })
 })
 
