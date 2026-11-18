@@ -122,6 +122,8 @@ prefixlens check: bodies.jsonl
 ok: 11 calls compared, each keeps the prefix of the call before it in its lane (12 request bodies, 1 lane; break allowed at call 7 (compaction))
 ```
 
+With more than one lane, the line names every call that was judged to start a conversation of its own, since such a call is compared with nothing: `(8 request bodies, 2 lanes: call 5 starts a conversation of its own and is compared with nothing)`. When such a call is the same agent going on, that comparison was missed and the pass says less than it seems to: [the lane rules](assertions.md#lanes) say how a request is placed.
+
 A failing run prints prefixlens's failure message for the first call that breaks the prefix: the call, its lane, the call it is compared with, the first changed block, a diff and a fix.
 
 | option | meaning |
