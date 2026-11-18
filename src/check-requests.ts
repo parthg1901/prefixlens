@@ -100,16 +100,27 @@ export function checkRequests(bodies: Record<string, unknown>[], options: Stabil
     // Nothing to compare, calls that continue a conversation the provider keeps, or an option that names no call it can apply to.
     return { code: 2, error: forCommandLine(error instanceof Error ? error.message : String(error)) }
   }
-  const lanes = bodies.length - explanations.length
+  // A lane opens with a call that is compared with nothing, or with one that carries another lane's conversation on.
+  const lanes = bodies.length - explanations.length + explanations.filter((explanation) => explanation.follows !== undefined).length
   const allowed = explanations.filter((explanation) => !explanation.stable && explanation.allowed !== undefined)
   const breaks =
     allowed.length === 0
       ? ""
       : `; ${allowed.length === 1 ? "break allowed at call" : "breaks allowed at calls"} ${allowed.map((explanation) => `${explanation.call} (${printable(explanation.allowed!)})`).join(", ")}`
   const compared = explanations.length === 1 ? "1 call compared" : `${explanations.length} calls compared`
+  // A call that is not compared with an earlier one is the first of a lane. After call 1 that is a request
+  // judged to be another conversation: named, so that a reader can see when that judgement is wrong.
+  const checked = new Set(explanations.map((explanation) => explanation.call))
+  const starts = bodies.map((_, index) => index + 1).filter((call) => call > 1 && !checked.has(call))
+  const alone =
+    starts.length === 0
+      ? ""
+      : starts.length === 1
+        ? `: call ${starts[0]} starts a conversation of its own and is compared with nothing`
+        : `: calls ${starts.slice(0, -1).join(", ")} and ${starts.at(-1)} each start a conversation of their own and are compared with nothing`
   return {
     code: 0,
-    stdout: `${heading}ok: ${compared}, each keeps the prefix of the call before it in its lane (${bodies.length} request bodies, ${lanes === 1 ? "1 lane" : `${lanes} lanes`}${breaks})\n`,
+    stdout: `${heading}ok: ${compared}, each keeps the prefix of the call before it in its lane (${bodies.length} request bodies, ${lanes === 1 ? "1 lane" : `${lanes} lanes`}${alone}${breaks})\n`,
   }
 }
 

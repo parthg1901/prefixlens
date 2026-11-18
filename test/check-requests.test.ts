@@ -39,7 +39,7 @@ describe("prefixlens check --requests", () => {
     const result = run(["--requests", write("steady.json", JSON.stringify(steady))])
     expect(result).toEqual({
       code: 0,
-      stdout: "prefixlens check: steady.json\nok: 2 calls compared, each keeps the prefix of the call before it in its lane (4 request bodies, 2 lanes)\n",
+      stdout: "prefixlens check: steady.json\nok: 2 calls compared, each keeps the prefix of the call before it in its lane (4 request bodies, 2 lanes: call 2 starts a conversation of its own and is compared with nothing)\n",
       stderr: "",
     })
   })
