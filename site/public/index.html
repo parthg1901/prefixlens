@@ -32,7 +32,7 @@
   "url": "https://prefixlens.parthg.dev/",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Node.js 22 or later, Bun",
-  "softwareVersion": "0.6.1",
+  "softwareVersion": "0.7.0",
   "license": "https://opensource.org/licenses/MIT",
   "downloadUrl": "https://www.npmjs.com/package/prefixlens",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
@@ -298,7 +298,7 @@ body.og { width: 1200px; height: 630px; overflow: hidden; display: grid; grid-te
         <span class="btn__label"><span class="prompt-sign" aria-hidden="true">$</span> npm install --save-dev prefixlens</span>
       </button>
     </div>
-    <p class="fine rise" style="--d:4">Open source, MIT, version 0.6.1. No account, no telemetry, no runtime dependencies. Reads Anthropic Messages, OpenAI Chat Completions and OpenAI Responses requests, from your own harness or through a framework.</p>
+    <p class="fine rise" style="--d:4">Open source, MIT, version 0.7.0. No account, no telemetry, no runtime dependencies. Reads Anthropic Messages, OpenAI Chat Completions and OpenAI Responses requests, from your own harness or through a framework.</p>
   </div>
 
   <figure class="ledger rise" style="--d:3" aria-labelledby="ledger-caption">
@@ -382,7 +382,7 @@ body.og { width: 1200px; height: 630px; overflow: hidden; display: grid; grid-te
       <div class="sheet__bar"><span>agent.md</span><button class="sheet__copy" type="button" data-copy-from="prompt" data-done="Copied">Copy</button></div>
 <pre class="sheet__body" id="prompt" tabindex="0"><span class="p-h p-h1"># Add a prompt-cache regression test with prefixlens</span>
 
-This repository sends requests to an LLM API, directly or through a framework. Add a test that fails when a code change breaks the provider's prompt cache. Use prefixlens: the npm package `prefixlens`, at exactly version 0.6.1 (https://github.com/parthg1901/prefixlens).
+This repository sends requests to an LLM API, directly or through a framework. Add a test that fails when a code change breaks the provider's prompt cache. Use prefixlens: the npm package `prefixlens`, at exactly version 0.7.0 (https://github.com/parthg1901/prefixlens).
 
 Why it matters: a provider caches the start of a request. When anything early in the request differs from the previous call of the same conversation (the tool list or its order, the system prompt, an earlier message), everything after that point is billed at full price, and nothing reports it. prefixlens compares consecutive requests and names the first block that changed.
 
@@ -409,7 +409,7 @@ When A and B are both true, do case B on the main agent loop: it covers more.
 
 <span class="p-h">## 3. Install</span>
 
-Add `prefixlens` as a dev dependency at exactly version 0.6.1, with the package manager the project already uses (for example `npm install --save-dev --save-exact prefixlens@0.6.1`), and keep the lockfile change. It needs Node.js 22 or later, or Bun, and has no dependencies of its own. In case C nothing is installed: step 4 runs prefixlens with `npx` at that exact version.
+Add `prefixlens` as a dev dependency at exactly version 0.7.0, with the package manager the project already uses (for example `npm install --save-dev --save-exact prefixlens@0.7.0`), and keep the lockfile change. It needs Node.js 22 or later, or Bun, and has no dependencies of its own. In case C nothing is installed: step 4 runs prefixlens with `npx` at that exact version.
 
 <span class="p-h">## 4. Write the test</span>
 
@@ -460,7 +460,7 @@ Case C, request bodies captured by the project's own tests. Nothing is added to 
 2. In the test, write the bodies to a temporary file, as one JSON array or one body on each line, and run:
 
 <span class="p-code">```</span>
-<span class="p-code">npx --yes prefixlens@0.6.1 check --requests &lt;file&gt;</span>
+<span class="p-code">npx --yes prefixlens@0.7.0 check --requests &lt;file&gt;</span>
 <span class="p-code">```</span>
 
 3. Fail the test when the command exits with anything but 0, showing what it printed. That output is prefixlens's message. It exits 1 for a cache break and 2 when the bodies could not be checked.
@@ -490,7 +490,7 @@ Start with what you found in step 1. Then say which case it was, the files you a
 - Ask before changing the project's own code. That covers any fix from step 5, and any change made only so that a test can reach the model provider. Show the change as a diff first, and keep it as small as it can be.
 - Ask before adding a CI workflow, or making the tests need Node.js in case C.
 - When there is nobody to ask, stop at that point and put the question in your report.
-- Install exactly version 0.6.1, and keep the lockfile change.
+- Install exactly version 0.7.0, and keep the lockfile change.
 - Commit no trace files: a trace holds prompts.
 - In your report, quote only the lines prefixlens names; don't paste full system prompts or anything that looks like a secret.
 - Do not commit, push or open a pull request unless the user asks you to.
@@ -676,7 +676,7 @@ npx prefixlens check run.trace.jsonl            <span class="h-c"># exits 1 when
     <a href="/agent.md">agent.md</a>
   </nav>
   <p class="foot__by">Built by <a href="https://parthg.dev">Parth Gupta</a> · <a href="https://parthg.dev">parthg.dev</a> · The thinking behind it: <a href="https://parthg.dev/posts/most-prompt-cache-misses-are-self-inflicted/">Most prompt cache misses are self-inflicted</a></p>
-  <p class="foot__fine">MIT licence. prefixlens 0.6.1, the npm package; not related to the Python package of the same name on PyPI.</p>
+  <p class="foot__fine">MIT licence. prefixlens 0.7.0, the npm package; not related to the Python package of the same name on PyPI.</p>
 </footer>
 
 <script>

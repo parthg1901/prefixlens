@@ -4,6 +4,8 @@ All notable changes to prefixlens are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-18
+
 ### Added
 
 - **The size of a break in a test.** A failed `assertPrefixStable`, `session.assertStable()` or `assertSessionStable` now has a `size:` line under the first changed block. It says about how many tokens the break re-reads and how many still match. When the model has a price in the pricing table, it also says what the re-read costs above the cache-read price at list prices, for that one call. The token counts are an estimate from the request text, four characters of JSON to a token, the rule the test session already uses for its usage. The explanation carries the numbers as `size` (`reread`, `matching`, `unsized`, `cost`), for allowed breaks too. A new `pricing` option takes your own pricing table, or `false` for tokens only. By default the pricing table bundled with the package is read from disk once, on the first break. Nothing is fetched, and a table that cannot be read means no price, not an error. Messages for a stable pair and for allowed breaks are unchanged. See [docs/assertions.md](https://github.com/parthg1901/prefixlens/blob/main/docs/assertions.md#the-size-of-a-break).
@@ -60,7 +62,8 @@ First public release.
 - **Privacy defaults.** Credentials and all but four request headers are never written. Identifying request fields and the bytes of images and documents are left out unless asked for. Trace and report files are created readable by their owner only. Control characters in trace content are written visibly on the terminal. No telemetry. See [SECURITY.md](SECURITY.md).
 - **Runtimes.** Node.js 22 or later and Bun, with type declarations and no runtime dependencies.
 
-[Unreleased]: https://github.com/parthg1901/prefixlens/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/parthg1901/prefixlens/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/parthg1901/prefixlens/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/parthg1901/prefixlens/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/parthg1901/prefixlens/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/parthg1901/prefixlens/compare/v0.5.0...v0.5.1
