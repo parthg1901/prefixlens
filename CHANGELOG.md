@@ -12,6 +12,7 @@ All notable changes to prefixlens are recorded here. The format follows [Keep a 
 
 ### Fixed
 
+- **A break that passed unseen.** A request that changed its tool list and its system prompt at once shares nothing at its start with the conversation's earlier requests, so it opened a lane of its own and was compared with nothing: a test passed with the first tool removed or the tools reordered, wherever the system prompt lists the tools. The lane is still its own, since such a request can read none of the old lane's cache, but its first request is now compared with the latest request of the conversation it carries on, and the change is reported: "prefix not stable at call 14 (lane lane-2, compared with call 13 of lane main, whose conversation it carries on)". What marks a request as that conversation's is a reply it holds, and that it offers tools; a title or a summary written from the messages with no tools, and another agent handed the same first message, are compared with nothing, as before. This applies to test sessions, `assertSessionStable` and `check --requests`; `explain()` entries gain `follows`. Recorded traces and their lanes are unchanged.
 - `prefixlens check` exits 2, as documented, for an unknown option or an option given no value. It exited 1.
 
 ## [0.6.1] - 2026-11-17

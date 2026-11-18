@@ -94,6 +94,12 @@ export interface CallExplanation extends PrefixExplanation {
   /** The call it is compared with: the one before it in the same lane. */
   previous: number
   lane: string
+  /**
+   * Set when the call opens its lane and is compared with a call of another one: that lane. The call changed its
+   * tools and its instructions together, so it shares no start with that lane's requests and is not in it, but it
+   * holds replies of its conversation: it is that conversation's next request.
+   */
+  follows?: string
   /** The step the later call was sent in. Absent for a call sent before the first step. */
   step?: string
 }
@@ -171,6 +177,8 @@ export function recordRequests(options: SessionOptions = {}): RequestSession {
   const steps: string[] = []
   // The step of each call, by its index in `steps`.
   const stepOf: (number | undefined)[] = []
+  // For a call that opens a lane: the lane whose conversation it carries on (what tells it apart), if any.
+  const followsOf: (string | undefined)[] = []
   const recorder = new Recorder({ trace: false, name: "test", joinOnSharedStart: true })
   const script = options.reply ?? (() => "OK.")
   let ids = 0
@@ -201,6 +209,7 @@ export function recordRequests(options: SessionOptions = {}): RequestSession {
     const answer = ANSWERS[format](body, reply, id)
     requests.push(request)
     stepOf.push(marked)
+    followsOf.push(call.follows === undefined ? undefined : laneKey({ ...(call.session ? { session: call.session } : {}), lane: call.follows }))
     // The reply always reports usage, so the call always has a record.
     records.push(call.finish(answer.json)!)
     if (body.stream !== true) return Response.json(answer.json)
@@ -208,7 +217,14 @@ export function recordRequests(options: SessionOptions = {}): RequestSession {
   }
 
   const calls = (): Call[] =>
-    records.map((record, index) => ({ call: index + 1, lane: laneKey(record), name: requests[index]!.lane, request: record, ...(stepOf[index] === undefined ? {} : { step: stepOf[index] }) }))
+    records.map((record, index) => ({
+      call: index + 1,
+      lane: laneKey(record),
+      name: requests[index]!.lane,
+      request: record,
+      ...(followsOf[index] === undefined ? {} : { follows: followsOf[index] }),
+      ...(stepOf[index] === undefined ? {} : { step: stepOf[index] }),
+    }))
   const explain = (given: StabilityOptions = {}) => explainCalls(calls(), given, steps).explanations
   return {
     fetch,
@@ -263,8 +279,8 @@ export function assertSessionStable(bodies: readonly Record<string, unknown>[], 
     if (!isRecord(body)) throw new TypeError(`assertSessionStable: bodies[${index}] is not a request body object`)
     const canonical = canonicalizeRequest(options.provider ?? PROVIDER_OF[apiFromBody(body)], body)
     const kept = keptBy(body)
-    const lane = lanes.assign(canonical.blocks, { began: index + 1, ...(typeof body.prompt_cache_key === "string" ? { cacheKey: body.prompt_cache_key } : {}), ...(kept ? { continues: kept.id } : {}) }).name
-    return { call: index + 1, lane, name: lane, request: body }
+    const lane = lanes.assign(canonical.blocks, { began: index + 1, ...(typeof body.prompt_cache_key === "string" ? { cacheKey: body.prompt_cache_key } : {}), ...(kept ? { continues: kept.id } : {}) })
+    return { call: index + 1, lane: lane.name, name: lane.name, ...(lane.first === index + 1 && lane.follows ? { follows: lane.follows } : {}), request: body }
   })
   if (calls.length === 0) throw new Error("assertSessionStable: no request bodies were given, so there is nothing to check")
   const starts = stepStarts(marks, calls.length)
@@ -297,6 +313,12 @@ interface Call {
   lane: string
   /** The lane as shown. */
   name: string
+  /**
+   * For the call that opens a lane: the lane (what tells it apart) whose conversation it carries on. Such a call
+   * changed its tools and its instructions together, so nothing at the start of its request is that lane's and it
+   * is not in it; it is that conversation's next request all the same, and is compared with its latest one.
+   */
+  follows?: string
   request: RequestLike
   /** Its step, as an index into the session's steps. */
   step?: number
@@ -319,7 +341,7 @@ function explainCalls(calls: Call[], options: StabilityOptions, steps: readonly 
   const pairs = calls.flatMap((next) => {
     const kept = keptBy(next.request)
     // A call the provider continues has nothing to be compared with; it is listed against the call before it.
-    const previous = (kept ? latest : full).get(next.lane)
+    const previous = (kept ? latest : full).get(next.lane) ?? (next.follows === undefined ? undefined : full.get(next.follows))
     latest.set(next.lane, next)
     if (kept) unchecked.push({ call: next.call, by: kept.by })
     else full.set(next.lane, next)
@@ -352,6 +374,8 @@ function explainCalls(calls: Call[], options: StabilityOptions, steps: readonly 
     const takenBy = next.step === undefined ? undefined : taken.get(next.step)
     const allowBreak = allowBreakAt?.[next.call] ?? (allowance !== undefined && takenBy === undefined ? allowance : shared.allowBreak)
     const where = step === undefined ? `lane ${next.name}` : `step ${quote(step)}, lane ${next.name}`
+    // The first call of a lane, compared with the conversation it carries on in another lane.
+    const across = previous.lane === next.lane ? "" : ` of lane ${previous.name}, whose conversation it carries on`
     const allow =
       step === undefined
         ? `pass { allowBreakAt: { ${next.call}: { reason: "..." } } }`
@@ -359,12 +383,12 @@ function explainCalls(calls: Call[], options: StabilityOptions, steps: readonly 
           ? `give it a step of its own: step ${quote(step)} allows one break, and call ${takenBy} took it`
           : `pass { allowBreakIn: { ${quote(step)}: { reason: "..." } } }`
     const explanation = explainPair(previous.request, next.request, { ...shared, ...(allowBreak === undefined ? {} : { allowBreak }) }, {
-      heading: `prefix not stable at call ${next.call} (${where}, compared with call ${previous.call})`,
+      heading: `prefix not stable at call ${next.call} (${where}, compared with call ${previous.call}${across})`,
       allow,
       skipped: `call ${next.call} not checked (${where})`,
     })
     if (allowance !== undefined && takenBy === undefined && !explanation.stable && !explanation.notChecked) taken.set(next.step!, next.call)
-    return { call: next.call, previous: previous.call, lane: next.name, ...(step === undefined ? {} : { step }), ...explanation }
+    return { call: next.call, previous: previous.call, lane: next.name, ...(across === "" ? {} : { follows: previous.name }), ...(step === undefined ? {} : { step }), ...explanation }
   })
   return { explanations, unchecked }
 }
