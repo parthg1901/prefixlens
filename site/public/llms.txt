@@ -4,7 +4,7 @@
 
 A provider caches the start of a request. When the tool list, the system prompt or an earlier message differs from the previous call of the same conversation, everything after that point is billed at full price, and nothing reports it. prefixlens compares consecutive requests and names the first block that changed. It reads Anthropic Messages, OpenAI Chat Completions and OpenAI Responses requests.
 
-- Install: `npm install --save-dev --save-exact prefixlens@0.6.1`. It needs Node.js 22 or later, or Bun, and has no dependencies.
+- Install: `npm install --save-dev --save-exact prefixlens@0.7.0`. It needs Node.js 22 or later, or Bun, and has no dependencies.
 - Licence: MIT.
 - It is the npm package. It is not related to the Python package of the same name on PyPI.
 
