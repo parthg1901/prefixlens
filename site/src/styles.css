@@ -44,9 +44,13 @@ code { font: 500 0.88em var(--font-mono); background: var(--surface-2); border: 
 .top__in { padding-top: 20px; padding-bottom: 20px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
 .mark { text-decoration: none; font: var(--mark-weight) 17px/1 var(--font-display); letter-spacing: var(--mark-tracking); white-space: nowrap; }
 .mark__lens { color: var(--text-3); }
-.top__nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 26px; font-size: 14px; color: var(--text-2); }
+.top__nav { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px 26px; font-size: 14px; color: var(--text-2); }
 .top__nav a { text-decoration: none; }
 .top__nav a:hover { color: var(--text); }
+/* The one link in the bar drawn as a button: it goes to the repository, where the star is. */
+.top__nav .star { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 7px 11px; color: var(--text); font-weight: 600; font-size: 13.5px; line-height: 1; transition: background 0.15s ease, color 0.15s ease; }
+.top__nav .star:hover { background: var(--text); color: var(--surface); }
+.star__icon { width: 13px; height: 13px; fill: currentColor; flex: none; }
 
 /* The hero */
 .hero { padding-top: clamp(48px, 8vw, 112px); padding-bottom: clamp(40px, 6vw, 80px); display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr); gap: clamp(32px, 5vw, 72px); align-items: center; }
