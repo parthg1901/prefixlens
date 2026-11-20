@@ -86,15 +86,15 @@ code { font: 500 0.88em var(--font-mono); background: var(--surface-2); border: 
 
 /* The top bar */
 .top { border-bottom: 1px solid var(--line); }
-.top__in { padding-top: 20px; padding-bottom: 20px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.top__in { padding-top: 20px; padding-bottom: 20px; display: flex; align-items: center; justify-content: space-between; gap: 26px; }
 .mark { text-decoration: none; font: var(--mark-weight) 17px/1 var(--font-display); letter-spacing: var(--mark-tracking); white-space: nowrap; }
 .mark__lens { color: var(--text-3); }
-.top__nav { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px 26px; font-size: 14px; color: var(--text-2); }
+.top__nav { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px 26px; margin-left: auto; font-size: 14px; color: var(--text-2); }
 .top__nav a { text-decoration: none; }
 .top__nav a:hover { color: var(--text); }
-/* The one link in the bar drawn as a button: it goes to the repository, where the star is. */
-.top__nav .star { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 7px 11px; color: var(--text); font-weight: 600; font-size: 13.5px; line-height: 1; transition: background 0.15s ease, color 0.15s ease; }
-.top__nav .star:hover { background: var(--text); color: var(--surface); }
+/* The one link in the bar drawn as a button: it goes to the repository, where the star is. It stays on the mark's line at every width. */
+.star { display: inline-flex; align-items: center; gap: 7px; flex: none; border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 7px 11px; color: var(--text); text-decoration: none; white-space: nowrap; font-weight: 600; font-size: 13.5px; line-height: 1; transition: background 0.15s ease, color 0.15s ease; }
+.star:hover { background: var(--text); color: var(--surface); }
 .star__icon { width: 13px; height: 13px; fill: currentColor; flex: none; }
 
 /* The hero */
@@ -249,8 +249,9 @@ h1 em { font-style: normal; color: var(--miss-text); }
   .sheet__body { max-height: 440px; }
 }
 @media (max-width: 560px) {
-  .top__in { flex-direction: column; align-items: flex-start; gap: 12px; }
-  .top__nav { justify-content: flex-start; gap: 6px 18px; }
+  .top__in { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px 16px; }
+  .top__nav { grid-column: 1 / -1; grid-row: 2; margin-left: 0; justify-content: flex-start; gap: 6px 18px; }
+  .star { grid-column: 2; grid-row: 1; }
   .ledger { padding: 18px 16px 14px; }
   .row--miss { margin: 0 -16px; padding-left: 16px; padding-right: 16px; }
   .ledger__head, .row { column-gap: 8px; }
@@ -282,8 +283,8 @@ body.og { width: 1200px; height: 630px; overflow: hidden; display: grid; grid-te
     <a href="#recipes">Recipes</a>
     <a href="#report">Report</a>
     <a href="https://www.npmjs.com/package/prefixlens">npm</a>
-    <a class="star" href="https://github.com/parthg1901/prefixlens" aria-label="Star prefixlens on GitHub"><svg class="star__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/></svg>Star on GitHub</a>
   </nav>
+  <a class="star" href="https://github.com/parthg1901/prefixlens" aria-label="Star prefixlens on GitHub"><svg class="star__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/></svg>Star on GitHub</a>
   </div>
 </header>
 
